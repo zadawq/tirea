@@ -3,7 +3,7 @@ use super::effect_applicator::apply_phase_output;
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext};
+use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StateScope, StepContext};
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
@@ -75,6 +75,8 @@ async fn dispatch_agent_phase<'a>(
 
 fn validate_owned_state_actions(
     agent: &dyn AgentBehavior,
+    phase: Phase,
+    step: &StepContext<'_>,
     output: &PhaseOutput,
 ) -> Result<(), AgentLoopError> {
     if output.state_actions.is_empty() {
@@ -92,6 +94,23 @@ fn validate_owned_state_actions(
                 action.state_type_name()
             )));
         }
+        if action.scope() == StateScope::ToolCall {
+            if phase != Phase::BeforeToolExecute && phase != Phase::AfterToolExecute {
+                return Err(AgentLoopError::StateError(format!(
+                    "behavior '{}' emitted ToolCall-scoped action '{}' in invalid phase {:?}",
+                    agent.id(),
+                    action.state_type_name(),
+                    phase
+                )));
+            }
+            if step.tool_call_id().is_none() {
+                return Err(AgentLoopError::StateError(format!(
+                    "behavior '{}' emitted ToolCall-scoped action '{}' without active tool context",
+                    agent.id(),
+                    action.state_type_name()
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -108,7 +127,7 @@ pub(super) async fn emit_agent_phase(
 ) -> Result<(), AgentLoopError> {
     let ctx = build_read_only_context(phase, step, doc);
     let output = dispatch_agent_phase(agent, phase, &ctx).await;
-    validate_owned_state_actions(agent, &output)?;
+    validate_owned_state_actions(agent, phase, step, &output)?;
     apply_phase_output(phase, step, output, doc)
 }
 
@@ -359,6 +378,7 @@ mod tests {
     use crate::contracts::runtime::plugin::phase::state_spec::StateSpec;
     use crate::contracts::runtime::plugin::phase::AnyStateAction;
     use crate::contracts::testing::TestFixture;
+    use crate::contracts::thread::ToolCall;
     use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
@@ -401,6 +421,42 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    struct ToolScopedFlagState {
+        value: bool,
+    }
+
+    struct ToolScopedFlagStateRef;
+
+    impl State for ToolScopedFlagState {
+        type Ref<'a> = ToolScopedFlagStateRef;
+        const PATH: &'static str = "__tool_call_states.flag";
+
+        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+            ToolScopedFlagStateRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+    }
+
+    impl StateSpec for ToolScopedFlagState {
+        type Action = bool;
+        const SCOPE: StateScope = StateScope::ToolCall;
+
+        fn reduce(&mut self, action: Self::Action) {
+            self.value = action;
+        }
+    }
+
     struct UnownedActionBehavior;
 
     #[async_trait]
@@ -428,6 +484,31 @@ mod tests {
 
         async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             PhaseOutput::default().with_state_action(AnyStateAction::new::<OwnedDebugState>(true))
+        }
+    }
+
+    struct ToolScopedActionBehavior;
+
+    #[async_trait]
+    impl AgentBehavior for ToolScopedActionBehavior {
+        fn id(&self) -> &str {
+            "tool_scoped_action"
+        }
+
+        fn owned_states(&self) -> HashSet<TypeId> {
+            HashSet::from([TypeId::of::<ToolScopedFlagState>()])
+        }
+
+        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().with_state_action(AnyStateAction::new::<ToolScopedFlagState>(
+                true,
+            ))
+        }
+
+        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().with_state_action(AnyStateAction::new::<ToolScopedFlagState>(
+                true,
+            ))
         }
     }
 
@@ -459,6 +540,46 @@ mod tests {
         emit_agent_phase(Phase::RunStart, &mut step, &OwnedActionBehavior, &doc)
             .await
             .expect("owned action should pass validation");
+
+        assert!(!step.state_effects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn emit_agent_phase_rejects_tool_scoped_action_without_tool_context() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(serde_json::json!({}));
+
+        let err = emit_agent_phase(Phase::RunStart, &mut step, &ToolScopedActionBehavior, &doc)
+            .await
+            .expect_err("tool-scoped action should fail outside tool phases");
+
+        match err {
+            AgentLoopError::StateError(message) => {
+                assert!(message.contains("ToolCall-scoped"));
+            }
+            other => panic!("expected StateError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_agent_phase_accepts_tool_scoped_action_with_tool_context() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let call = ToolCall::new("call_1", "echo", serde_json::json!({"ok": true}));
+        step.tool = Some(crate::contracts::runtime::plugin::phase::ToolContext::new(
+            &call,
+        ));
+        let doc = DocCell::new(serde_json::json!({}));
+
+        emit_agent_phase(
+            Phase::BeforeToolExecute,
+            &mut step,
+            &ToolScopedActionBehavior,
+            &doc,
+        )
+        .await
+        .expect("tool-scoped action should pass with active tool context");
 
         assert!(!step.state_effects.is_empty());
     }
