@@ -66,6 +66,10 @@ impl PhaseOutput {
         self.effects.is_empty() && self.state_actions.is_empty() && self.pending_patches.is_empty()
     }
 
+    #[deprecated(
+        since = "0.2.0",
+        note = "use with_state_action(AnyStateAction::Patch(patch)) instead"
+    )]
     #[must_use]
     pub fn with_pending_patch(mut self, patch: TrackedPatch) -> Self {
         self.pending_patches.push(patch);

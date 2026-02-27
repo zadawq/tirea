@@ -1,7 +1,7 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
 use crate::contracts::runtime::plugin::phase::{
-    reduce_state_actions, Phase, RunAction, StateEffect, StepContext,
+    reduce_state_actions, AnyStateAction, Phase, RunAction, StateEffect, StepContext,
 };
 use tirea_state::DocCell;
 
@@ -24,16 +24,13 @@ pub fn apply_phase_output(
         apply_effect(step, effect);
     }
 
-    // Apply state actions → produce patches.
-    let tracked_actions = reduce_state_actions(output.state_actions, &doc.snapshot(), "agent")
+    // Apply state actions and compatibility pending patches through one reducer path.
+    let mut actions = output.state_actions;
+    actions.extend(output.pending_patches.into_iter().map(AnyStateAction::Patch));
+    let tracked_actions = reduce_state_actions(actions, &doc.snapshot(), "agent")
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     for tracked in tracked_actions {
         step.emit_state_effect(StateEffect::Patch(tracked));
-    }
-
-    // Apply pending patches (raw TrackedPatch values from behavior hooks).
-    for patch in output.pending_patches {
-        step.pending_patches.push(patch);
     }
 
     Ok(())
