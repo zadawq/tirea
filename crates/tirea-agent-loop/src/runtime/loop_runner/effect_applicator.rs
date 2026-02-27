@@ -1,7 +1,8 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
+use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
 use crate::contracts::runtime::plugin::phase::{Phase, RunAction, StateEffect, StepContext};
-use tirea_state::{DocCell, TrackedPatch};
+use tirea_state::{apply_patch, DocCell, TrackedPatch};
 
 /// Apply a [`PhaseOutput`] to the mutable [`StepContext`].
 ///
@@ -23,14 +24,29 @@ pub fn apply_phase_output(
     }
 
     // Apply state actions → produce patches.
+    let mut rolling_snapshot = doc.snapshot();
     for action in output.state_actions {
-        let snapshot = doc.snapshot();
-        let patch = action
-            .apply(&snapshot)
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        if !patch.is_empty() {
-            let tracked = TrackedPatch::new(patch).with_source("agent");
-            step.emit_state_effect(StateEffect::Patch(tracked));
+        match action {
+            // Preserve raw tracked patch metadata exactly as emitted.
+            AnyStateAction::Patch(tracked) => {
+                if tracked.patch().is_empty() {
+                    continue;
+                }
+                rolling_snapshot = apply_patch(&rolling_snapshot, tracked.patch())
+                    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+                step.emit_state_effect(StateEffect::Patch(tracked));
+            }
+            typed_action => {
+                let patch = typed_action
+                    .apply(&rolling_snapshot)
+                    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+                if !patch.is_empty() {
+                    rolling_snapshot = apply_patch(&rolling_snapshot, &patch)
+                        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+                    let tracked = TrackedPatch::new(patch).with_source("agent");
+                    step.emit_state_effect(StateEffect::Patch(tracked));
+                }
+            }
         }
     }
 
@@ -65,14 +81,60 @@ fn apply_effect(step: &mut StepContext<'_>, effect: PhaseEffect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::plugin::phase::effect::PhaseEffect;
+    use crate::contracts::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
     use crate::contracts::runtime::plugin::phase::ToolContext;
     use crate::contracts::runtime::run::TerminationReason;
     use crate::contracts::runtime::tool_call::Suspension;
     use crate::contracts::testing::{mock_tools_with, test_suspend_ticket, TestFixture};
     use crate::contracts::thread::ToolCall;
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use tirea_state::DocCell;
+    use serde_json::Value;
+    use tirea_state::{
+        apply_patches, path, DocCell, Op, Patch, PatchSink, Path as TPath, State, TireaResult,
+        TrackedPatch,
+    };
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    struct CounterState {
+        value: i64,
+    }
+
+    struct CounterRef;
+
+    impl State for CounterState {
+        type Ref<'a> = CounterRef;
+        const PATH: &'static str = "counter";
+
+        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+            CounterRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+    }
+
+    enum CounterAction {
+        Increment(i64),
+    }
+
+    impl StateSpec for CounterState {
+        type Action = CounterAction;
+
+        fn reduce(&mut self, action: Self::Action) {
+            match action {
+                CounterAction::Increment(delta) => self.value += delta,
+            }
+        }
+    }
 
     #[test]
     fn apply_system_context() {
@@ -162,9 +224,8 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
         let doc = DocCell::new(json!({}));
 
-        let ticket = test_suspend_ticket(
-            Suspension::new("confirm", "confirm").with_message("Execute?"),
-        );
+        let ticket =
+            test_suspend_ticket(Suspension::new("confirm", "confirm").with_message("Execute?"));
         let output = PhaseOutput::new().suspend_tool(ticket);
         apply_phase_output(Phase::BeforeToolExecute, &mut step, output, &doc).unwrap();
 
@@ -226,5 +287,55 @@ mod tests {
 
         assert!(step.system_context.is_empty());
         assert!(step.session_context.is_empty());
+    }
+
+    #[test]
+    fn apply_state_actions_use_rolling_snapshot() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let initial = json!({"counter": {"value": 1}});
+        let doc = DocCell::new(initial.clone());
+
+        let output = PhaseOutput::new()
+            .with_state_action(AnyStateAction::new::<CounterState>(
+                CounterAction::Increment(1),
+            ))
+            .with_state_action(AnyStateAction::new::<CounterState>(
+                CounterAction::Increment(1),
+            ));
+
+        apply_phase_output(Phase::BeforeInference, &mut step, output, &doc).unwrap();
+
+        let patches: Vec<&Patch> = step
+            .state_effects
+            .iter()
+            .filter_map(|effect| match effect {
+                StateEffect::Patch(tracked) => Some(tracked.patch()),
+            })
+            .collect();
+        assert_eq!(patches.len(), 2);
+
+        let final_state = apply_patches(&initial, patches).unwrap();
+        assert_eq!(final_state["counter"]["value"], 3);
+    }
+
+    #[test]
+    fn apply_raw_patch_preserves_source_metadata() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(json!({}));
+
+        let tracked = TrackedPatch::new(Patch::new().with_op(Op::set(path!("flag"), json!(true))))
+            .with_source("plugin:test");
+        let output = PhaseOutput::new().with_state_action(AnyStateAction::Patch(tracked));
+
+        apply_phase_output(Phase::BeforeInference, &mut step, output, &doc).unwrap();
+
+        match step.state_effects.first() {
+            Some(StateEffect::Patch(patch)) => {
+                assert_eq!(patch.source.as_deref(), Some("plugin:test"));
+            }
+            other => panic!("expected patch state effect, got: {other:?}"),
+        }
     }
 }

@@ -49,6 +49,7 @@ impl CompositeBehavior {
 fn merge_output(target: &mut PhaseOutput, source: PhaseOutput) {
     target.effects.extend(source.effects);
     target.state_actions.extend(source.state_actions);
+    target.pending_patches.extend(source.pending_patches);
 }
 
 #[async_trait]
@@ -143,7 +144,7 @@ mod tests {
     use crate::contracts::runtime::plugin::phase::Phase;
     use crate::contracts::RunConfig;
     use serde_json::json;
-    use tirea_state::DocCell;
+    use tirea_state::{path, DocCell, Op, Patch, TrackedPatch};
 
     struct ContextBehavior {
         id: String,
@@ -204,6 +205,49 @@ mod tests {
         assert_eq!(output.effects.len(), 2);
         assert!(matches!(&output.effects[0], PhaseEffect::SystemContext(s) if s == "ctx_a"));
         assert!(matches!(&output.effects[1], PhaseEffect::SystemContext(s) if s == "ctx_b"));
+    }
+
+    #[tokio::test]
+    async fn composite_merges_pending_patches() {
+        struct PendingPatchBehavior {
+            id: &'static str,
+            key: &'static str,
+        }
+
+        #[async_trait]
+        impl AgentBehavior for PendingPatchBehavior {
+            fn id(&self) -> &str {
+                self.id
+            }
+
+            async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+                let patch = TrackedPatch::new(
+                    Patch::new().with_op(Op::set(path!("debug", self.key), json!(true))),
+                )
+                .with_source(self.id);
+                PhaseOutput::default().with_pending_patch(patch)
+            }
+        }
+
+        let behaviors: Vec<Arc<dyn AgentBehavior>> = vec![
+            Arc::new(PendingPatchBehavior {
+                id: "a",
+                key: "from_a",
+            }),
+            Arc::new(PendingPatchBehavior {
+                id: "b",
+                key: "from_b",
+            }),
+        ];
+        let composite = CompositeBehavior::new("test", behaviors);
+
+        let doc = DocCell::new(json!({}));
+        let ctx = make_ctx(&doc, Phase::BeforeInference);
+        let output = composite.before_inference(&ctx).await;
+
+        assert_eq!(output.pending_patches.len(), 2);
+        assert_eq!(output.pending_patches[0].source.as_deref(), Some("a"));
+        assert_eq!(output.pending_patches[1].source.as_deref(), Some("b"));
     }
 
     #[tokio::test]

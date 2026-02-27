@@ -60,6 +60,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.run_start(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
@@ -69,6 +70,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.step_start(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
@@ -78,6 +80,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.before_inference(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
@@ -87,6 +90,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.after_inference(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
@@ -96,6 +100,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.before_tool_execute(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
@@ -105,6 +110,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.after_tool_execute(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
@@ -114,6 +120,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.step_end(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
@@ -123,6 +130,7 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 let o = b.run_end(ctx).await;
                 m.effects.extend(o.effects);
                 m.state_actions.extend(o.state_actions);
+                m.pending_patches.extend(o.pending_patches);
             }
             m
         }
