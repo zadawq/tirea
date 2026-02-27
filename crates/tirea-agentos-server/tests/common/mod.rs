@@ -3,8 +3,9 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
-use tirea_agentos::contracts::runtime::plugin::phase::BeforeInferenceContext;
-use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
+use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
+use tirea_agentos::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_agentos::contracts::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos_server::service::AppState;
@@ -25,13 +26,13 @@ impl TerminatePlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for TerminatePlugin {
+impl AgentBehavior for TerminatePlugin {
     fn id(&self) -> &str {
         &self.id
     }
 
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        PhaseOutput::default().terminate_plugin_requested()
     }
 }
 
@@ -51,14 +52,14 @@ impl SlowTerminatePlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for SlowTerminatePlugin {
+impl AgentBehavior for SlowTerminatePlugin {
     fn id(&self) -> &str {
         &self.id
     }
 
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         tokio::time::sleep(self.delay).await;
-        step.terminate_plugin_requested();
+        PhaseOutput::default().terminate_plugin_requested()
     }
 }
 

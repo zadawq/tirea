@@ -1,6 +1,7 @@
 use super::{Phase, SuspendTicket};
 use crate::runtime::run::TerminationReason;
 use crate::runtime::tool_call::ToolResult;
+use tirea_state::TrackedPatch;
 
 use super::state_spec::AnyStateAction;
 
@@ -40,6 +41,7 @@ pub enum PhaseEffect {
 pub struct PhaseOutput {
     pub effects: Vec<PhaseEffect>,
     pub state_actions: Vec<AnyStateAction>,
+    pub pending_patches: Vec<TrackedPatch>,
 }
 
 impl PhaseOutput {
@@ -61,7 +63,13 @@ impl PhaseOutput {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.effects.is_empty() && self.state_actions.is_empty()
+        self.effects.is_empty() && self.state_actions.is_empty() && self.pending_patches.is_empty()
+    }
+
+    #[must_use]
+    pub fn with_pending_patch(mut self, patch: TrackedPatch) -> Self {
+        self.pending_patches.push(patch);
+        self
     }
 
     // -- convenience builders for effects --

@@ -1,9 +1,12 @@
 use super::*;
-use crate::contracts::runtime::plugin::phase::{BeforeInferenceContext, RunEndContext};
+use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::phase::BeforeInferenceContext;
 use crate::contracts::storage::{ThreadReader, ThreadWriter};
 use crate::contracts::thread::Thread;
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
+use crate::contracts::AgentBehavior;
 use crate::contracts::ToolCallContext;
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
@@ -177,25 +180,54 @@ impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
     }
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RunEndMarkerState(bool);
+
+impl tirea_state::State for RunEndMarkerState {
+    type Ref<'a> = ();
+
+    const PATH: &'static str = "run_end_marker";
+
+    fn state_ref<'a>(
+        _doc: &'a tirea_state::DocCell,
+        _base: tirea_state::Path,
+        _sink: tirea_state::PatchSink<'a>,
+    ) -> Self::Ref<'a> {
+    }
+
+    fn from_value(value: &serde_json::Value) -> tirea_state::TireaResult<Self> {
+        Ok(Self(value.as_bool().unwrap_or(false)))
+    }
+
+    fn to_value(&self) -> tirea_state::TireaResult<serde_json::Value> {
+        Ok(json!(self.0))
+    }
+}
+
+impl crate::contracts::runtime::plugin::phase::state_spec::StateSpec for RunEndMarkerState {
+    type Action = bool;
+
+    fn reduce(&mut self, action: bool) {
+        self.0 = action;
+    }
+}
+
 #[derive(Debug)]
 struct TerminateWithRunEndPatchPlugin;
 
 #[async_trait]
-impl AgentPlugin for TerminateWithRunEndPatchPlugin {
+impl AgentBehavior for TerminateWithRunEndPatchPlugin {
     fn id(&self) -> &str {
         "terminate_with_run_end_patch"
     }
 
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
     }
 
-    async fn run_end(&self, step: &mut RunEndContext<'_, '_>) {
-        let patch = tirea_state::TrackedPatch::new(tirea_state::Patch::new().with_op(
-            tirea_state::Op::set(tirea_state::path!("run_end_marker"), json!(true)),
-        ))
-        .with_source("test:run_end_marker");
-        step.step_mut_for_tests().pending_patches.push(patch);
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
+        PhaseOutput::default().with_state_action(AnyStateAction::new::<RunEndMarkerState>(true))
     }
 }
 
@@ -318,7 +350,7 @@ fn wire_plugins_into_orders_plugin_ids() {
     struct LocalPlugin(&'static str);
 
     #[async_trait]
-    impl AgentPlugin for LocalPlugin {
+    impl AgentBehavior for LocalPlugin {
         fn id(&self) -> &str {
             self.0
         }
@@ -345,7 +377,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
     struct LocalPlugin(&'static str);
 
     #[async_trait]
-    impl AgentPlugin for LocalPlugin {
+    impl AgentBehavior for LocalPlugin {
         fn id(&self) -> &str {
             self.0
         }
@@ -372,7 +404,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
 struct FakeSkillsPlugin;
 
 #[async_trait::async_trait]
-impl AgentPlugin for FakeSkillsPlugin {
+impl AgentBehavior for FakeSkillsPlugin {
     fn id(&self) -> &str {
         "skills"
     }
@@ -408,7 +440,7 @@ fn build_errors_if_agent_references_reserved_skills_plugin_id() {
 struct FakeAgentToolsPlugin;
 
 #[async_trait::async_trait]
-impl AgentPlugin for FakeAgentToolsPlugin {
+impl AgentBehavior for FakeAgentToolsPlugin {
     fn id(&self) -> &str {
         "agent_tools"
     }
@@ -436,7 +468,7 @@ fn build_errors_if_agent_references_reserved_agent_tools_plugin_id() {
 struct FakeAgentRecoveryPlugin;
 
 #[async_trait::async_trait]
-impl AgentPlugin for FakeAgentRecoveryPlugin {
+impl AgentBehavior for FakeAgentRecoveryPlugin {
     fn id(&self) -> &str {
         "agent_recovery"
     }
@@ -924,13 +956,13 @@ async fn run_and_run_stream_work_without_llm_when_terminate_plugin_requested() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait::async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested"
         }
 
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.terminate_plugin_requested();
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -1277,13 +1309,13 @@ async fn resolve_rewrites_model_when_registry_present() {
 struct TestPlugin(&'static str);
 
 #[async_trait]
-impl AgentPlugin for TestPlugin {
+impl AgentBehavior for TestPlugin {
     fn id(&self) -> &str {
         self.0
     }
 
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.add_system_context(format!("<plugin id=\"{}\"/>", self.0));
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        PhaseOutput::default().system_context(format!("<plugin id=\"{}\"/>", self.0))
     }
 }
 
@@ -1484,12 +1516,12 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested"
         }
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.terminate_plugin_requested();
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -1548,12 +1580,12 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested"
         }
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.terminate_plugin_requested();
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -1602,12 +1634,12 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested"
         }
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.terminate_plugin_requested();
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -1659,12 +1691,12 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested"
         }
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.terminate_plugin_requested();
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -1732,12 +1764,12 @@ async fn execute_prepared_runs_stream() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested"
         }
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.terminate_plugin_requested();
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -1793,13 +1825,13 @@ async fn execute_prepared_runs_stream() {
 struct DecisionTerminatePlugin;
 
 #[async_trait]
-impl AgentPlugin for DecisionTerminatePlugin {
+impl AgentBehavior for DecisionTerminatePlugin {
     fn id(&self) -> &str {
         "decision_terminate_plugin_requested"
     }
 
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
     }
 }
 
@@ -3004,7 +3036,7 @@ async fn prepare_run_scope_appends_plugins() {
     struct RunScopedPlugin;
 
     #[async_trait::async_trait]
-    impl AgentPlugin for RunScopedPlugin {
+    impl AgentBehavior for RunScopedPlugin {
         fn id(&self) -> &str {
             "run_scoped"
         }
@@ -3020,7 +3052,7 @@ async fn prepare_run_scope_appends_plugins() {
     let resolved = os
         .resolve("a1")
         .unwrap()
-        .with_plugin(Arc::new(RunScopedPlugin));
+        .add_behavior(Arc::new(RunScopedPlugin));
 
     let prepared = os
         .prepare_run(
@@ -3058,7 +3090,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
     struct DupPlugin;
 
     #[async_trait::async_trait]
-    impl AgentPlugin for DupPlugin {
+    impl AgentBehavior for DupPlugin {
         fn id(&self) -> &str {
             "agent_tools"
         }
@@ -3071,7 +3103,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
         .build()
         .unwrap();
 
-    let resolved = os.resolve("a1").unwrap().with_plugin(Arc::new(DupPlugin));
+    let resolved = os.resolve("a1").unwrap().add_behavior(Arc::new(DupPlugin));
 
     let result = os
         .prepare_run(

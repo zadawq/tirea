@@ -9,12 +9,12 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_agentos::runtime::loop_runner::{
-    ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
+    BaseAgent, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
-use tirea_contract::runtime::plugin::phase::{
-    BeforeInferenceContext, BeforeToolExecuteContext, SuspendTicket, ToolCallAction,
-};
-use tirea_contract::runtime::plugin::AgentPlugin;
+use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
+use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_contract::runtime::plugin::phase::SuspendTicket;
+use tirea_contract::runtime::plugin::{AgentBehavior, CompositeBehavior};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
@@ -67,20 +67,33 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput
         resolved.tools.entry(id).or_insert(stub as Arc<dyn Tool>);
     }
 
-    // Run-scoped plugins
+    // Run-scoped behaviors
     if !frontend_tool_names.is_empty() {
-        resolved.agent.plugins.insert(
-            0,
+        add_behavior_mut(
+            &mut resolved.agent,
             Arc::new(FrontendToolPendingPlugin::new(frontend_tool_names)),
         );
     }
 
     // Context injection: forward useCopilotReadable context to the agent's system prompt.
     if let Some(addendum) = build_context_addendum(request) {
-        resolved
-            .agent
-            .plugins
-            .push(Arc::new(ContextInjectionPlugin::new(addendum)));
+        add_behavior_mut(
+            &mut resolved.agent,
+            Arc::new(ContextInjectionPlugin::new(addendum)),
+        );
+    }
+}
+
+/// Add a behavior to a `BaseAgent` by reference, composing with any existing behavior.
+fn add_behavior_mut(agent: &mut BaseAgent, behavior: Arc<dyn AgentBehavior>) {
+    if agent.behavior.id() == "noop" {
+        agent.behavior = behavior;
+    } else {
+        let id = format!("{}+{}", agent.behavior.id(), behavior.id());
+        agent.behavior = Arc::new(CompositeBehavior::new(
+            id,
+            vec![agent.behavior.clone(), behavior],
+        ));
     }
 }
 
@@ -203,13 +216,13 @@ impl ContextInjectionPlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for ContextInjectionPlugin {
+impl AgentBehavior for ContextInjectionPlugin {
     fn id(&self) -> &str {
         "agui_context_injection"
     }
 
-    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        ctx.add_system_context(&self.addendum);
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        PhaseOutput::default().system_context(&self.addendum)
     }
 }
 
@@ -225,52 +238,47 @@ impl FrontendToolPendingPlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for FrontendToolPendingPlugin {
+impl AgentBehavior for FrontendToolPendingPlugin {
     fn id(&self) -> &str {
         "agui_frontend_tools"
     }
 
-    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        if !matches!(ctx.decision(), ToolCallAction::Proceed) {
-            return;
-        }
-
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         let Some(tool_name) = ctx.tool_name() else {
-            return;
+            return PhaseOutput::default();
         };
         if !self.frontend_tools.contains(tool_name) {
-            return;
+            return PhaseOutput::default();
         }
 
         if let Some(resume) = ctx.resume_input() {
             let result = match resume.action {
                 tirea_contract::io::ResumeDecisionAction::Resume => {
-                    ToolResult::success(tool_name.to_string(), resume.result)
+                    ToolResult::success(tool_name.to_string(), resume.result.clone())
                 }
                 tirea_contract::io::ResumeDecisionAction::Cancel => ToolResult::error(
                     tool_name.to_string(),
                     resume
                         .reason
+                        .clone()
                         .filter(|r| !r.trim().is_empty())
                         .unwrap_or_else(|| "User denied the action".to_string()),
                 ),
             };
-            ctx.set_tool_result(result);
-            ctx.allow();
-            return;
+            return PhaseOutput::default().override_tool_result(result).allow_tool();
         }
         let Some(call_id) = ctx.tool_call_id().map(str::to_string) else {
-            return;
+            return PhaseOutput::default();
         };
 
         let args = ctx.tool_args().cloned().unwrap_or_default();
         let suspension = tirea_contract::Suspension::new(&call_id, format!("tool:{tool_name}"))
             .with_parameters(args.clone());
-        ctx.suspend(SuspendTicket::new(
+        PhaseOutput::default().suspend_tool(SuspendTicket::new(
             suspension,
             PendingToolCall::new(call_id, tool_name.to_string(), args),
             ToolCallResumeMode::UseDecisionAsToolResult,
-        ));
+        ))
     }
 }
 
@@ -282,22 +290,11 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tirea_agentos::runtime::loop_runner::BaseAgent;
-    use tirea_contract::io::ResumeDecisionAction;
-    use tirea_contract::runtime::plugin::phase::{StepContext, ToolContext};
-    use tirea_contract::runtime::plugin::AgentPlugin;
+    use tirea_contract::runtime::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
-
-    async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
-        let mut ctx = tirea_contract::runtime::plugin::phase::BeforeToolExecuteContext::new(step);
-        plugin.before_tool_execute(&mut ctx).await;
-    }
-
-    async fn run_before_inference(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
-        let mut ctx = tirea_contract::runtime::plugin::phase::BeforeInferenceContext::new(step);
-        plugin.before_inference(&mut ctx).await;
-    }
 
     fn empty_resolved() -> ResolvedRun {
         ResolvedRun {
@@ -307,10 +304,36 @@ mod tests {
         }
     }
 
+    fn build_read_only_ctx<'a>(
+        phase: Phase,
+        step: &'a StepContext<'a>,
+    ) -> ReadOnlyContext<'a> {
+        let mut ctx = ReadOnlyContext::new(
+            phase,
+            step.thread_id(),
+            step.messages(),
+            step.run_config(),
+            step.ctx().doc(),
+        );
+        if let Some(tool) = step.tool.as_ref() {
+            ctx = ctx.with_tool_info(&tool.name, &tool.id, Some(&tool.args));
+            if let Some(result) = tool.result.as_ref() {
+                ctx = ctx.with_tool_result(result);
+            }
+        }
+        if let Some(call_id) = step.tool_call_id() {
+            if let Ok(Some(resume)) = step.ctx().resume_input_for(call_id) {
+                let resume = Box::leak(Box::new(resume));
+                ctx = ctx.with_resume_input(resume);
+            }
+        }
+        ctx
+    }
+
     struct MarkerPlugin;
 
     #[async_trait]
-    impl AgentPlugin for MarkerPlugin {
+    impl AgentBehavior for MarkerPlugin {
         fn id(&self) -> &str {
             "marker_plugin"
         }
@@ -352,16 +375,16 @@ mod tests {
         assert!(resolved.tools.contains_key("copyToClipboard"));
         // Only 1 frontend tool (backend tools are not stubs)
         assert_eq!(resolved.tools.len(), 1);
-        // FrontendToolPendingPlugin
+        // FrontendToolPendingPlugin behavior
         assert!(resolved
             .agent
-            .plugins
-            .iter()
-            .any(|p| p.id() == "agui_frontend_tools"));
+            .behavior
+            .id()
+            .contains("agui_frontend_tools"));
     }
 
     #[test]
-    fn no_plugins_added_when_only_decisions_are_present() {
+    fn no_behaviors_added_when_only_decisions_are_present() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -382,11 +405,11 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
-        assert!(resolved.agent.plugins.is_empty());
+        assert_eq!(resolved.agent.behavior.id(), "noop");
     }
 
     #[test]
-    fn no_plugins_added_for_non_boolean_decision_payload_without_frontend_tools() {
+    fn no_behaviors_added_for_non_boolean_decision_payload_without_frontend_tools() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -427,11 +450,11 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
-        assert!(resolved.agent.plugins.is_empty());
+        assert_eq!(resolved.agent.behavior.id(), "noop");
     }
 
     #[test]
-    fn injects_frontend_plugin_even_when_decisions_are_present() {
+    fn injects_frontend_behavior_even_when_decisions_are_present() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -454,13 +477,12 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.contains_key("copyToClipboard"));
-        // FrontendToolPendingPlugin only
-        assert_eq!(resolved.agent.plugins.len(), 1);
-        assert_eq!(resolved.agent.plugins[0].id(), "agui_frontend_tools");
+        // FrontendToolPendingPlugin behavior only
+        assert_eq!(resolved.agent.behavior.id(), "agui_frontend_tools");
     }
 
     #[test]
-    fn prepends_frontend_pending_plugin_before_existing_plugins() {
+    fn composes_frontend_pending_behavior_with_existing_behavior() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -481,17 +503,18 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        resolved.agent.plugins.push(Arc::new(MarkerPlugin));
+        add_behavior_mut(&mut resolved.agent, Arc::new(MarkerPlugin));
 
         apply_agui_extensions(&mut resolved, &request);
 
-        assert_eq!(
-            resolved.agent.plugins.first().map(|p| p.id()),
-            Some("agui_frontend_tools")
+        let behavior_id = resolved.agent.behavior.id();
+        assert!(
+            behavior_id.contains("agui_frontend_tools"),
+            "behavior should contain frontend tools, got: {behavior_id}"
         );
-        assert_eq!(
-            resolved.agent.plugins.get(1).map(|p| p.id()),
-            Some("marker_plugin")
+        assert!(
+            behavior_id.contains("marker_plugin"),
+            "behavior should contain marker plugin, got: {behavior_id}"
         );
     }
 
@@ -502,7 +525,7 @@ mod tests {
         apply_agui_extensions(&mut resolved, &request);
         assert_eq!(resolved.agent.tool_executor.name(), "parallel_streaming");
         assert!(resolved.tools.is_empty());
-        assert!(resolved.agent.plugins.is_empty());
+        assert_eq!(resolved.agent.behavior.id(), "noop");
     }
 
     #[tokio::test]
@@ -514,31 +537,23 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        run_before_tool_execute(&plugin, &mut step).await;
+        let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
+        let output = plugin.before_tool_execute(&ctx).await;
 
-        assert!(step.tool_pending());
+        // Should contain a SuspendTool effect
+        let suspend_effect = output.effects.iter().find(|e| matches!(e, PhaseEffect::SuspendTool(_)));
+        assert!(suspend_effect.is_some(), "should have SuspendTool effect");
 
-        // Suspension interaction should be set
-        let pending = step
-            .tool
-            .as_ref()
-            .and_then(|t| t.suspend_ticket.as_ref())
-            .map(|ticket| ticket.suspension.clone())
-            .expect("suspended interaction should exist");
-        assert_eq!(pending.action, "tool:copyToClipboard");
-
-        let ticket = step
-            .tool
-            .as_ref()
-            .and_then(|t| t.suspend_ticket.as_ref())
-            .expect("pending ticket should exist");
-        assert_eq!(ticket.pending.id, "call_1");
-        assert_eq!(ticket.pending.name, "copyToClipboard");
-        assert_eq!(ticket.pending.arguments["text"], "hello");
-        assert_eq!(
-            ticket.resume_mode,
-            tirea_contract::runtime::ToolCallResumeMode::UseDecisionAsToolResult
-        );
+        if let Some(PhaseEffect::SuspendTool(ticket)) = suspend_effect {
+            assert_eq!(ticket.suspension.action, "tool:copyToClipboard");
+            assert_eq!(ticket.pending.id, "call_1");
+            assert_eq!(ticket.pending.name, "copyToClipboard");
+            assert_eq!(ticket.pending.arguments["text"], "hello");
+            assert_eq!(
+                ticket.resume_mode,
+                tirea_contract::runtime::ToolCallResumeMode::UseDecisionAsToolResult
+            );
+        }
     }
 
     #[tokio::test]
@@ -570,13 +585,19 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        run_before_tool_execute(&plugin, &mut step).await;
+        let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
+        let output = plugin.before_tool_execute(&ctx).await;
 
-        assert!(!step.tool_pending());
-        let result = step.tool_result().expect("resume should set tool result");
+        // Should have OverrideToolResult + AllowTool
+        let override_effect = output.effects.iter().find_map(|e| {
+            if let PhaseEffect::OverrideToolResult(result) = e { Some(result) } else { None }
+        });
+        assert!(override_effect.is_some(), "resume should produce OverrideToolResult");
+        let result = override_effect.unwrap();
         assert_eq!(result.tool_name, "copyToClipboard");
         assert_eq!(result.status, tirea_contract::runtime::tool_call::ToolStatus::Success);
         assert_eq!(result.data, json!({"accepted": true}));
+        assert!(output.effects.iter().any(|e| matches!(e, PhaseEffect::AllowTool)));
     }
 
     #[tokio::test]
@@ -609,21 +630,21 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        run_before_tool_execute(&plugin, &mut step).await;
+        let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
+        let output = plugin.before_tool_execute(&ctx).await;
 
-        let result = step.tool_result().expect("cancel should set tool result");
+        let override_effect = output.effects.iter().find_map(|e| {
+            if let PhaseEffect::OverrideToolResult(result) = e { Some(result) } else { None }
+        });
+        assert!(override_effect.is_some(), "cancel should produce OverrideToolResult");
+        let result = override_effect.unwrap();
         assert_eq!(result.status, tirea_contract::runtime::tool_call::ToolStatus::Error);
         assert_eq!(result.message.as_deref(), Some("user denied"));
-        let resume = step
-            .ctx()
-            .resume_input_for("call_1")
-            .expect("resume input should still be readable")
-            .expect("resume input should exist");
-        assert_eq!(resume.action, ResumeDecisionAction::Cancel);
+        assert!(output.effects.iter().any(|e| matches!(e, PhaseEffect::AllowTool)));
     }
 
     #[test]
-    fn injects_context_injection_plugin_when_context_present() {
+    fn injects_context_injection_behavior_when_context_present() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -645,13 +666,13 @@ mod tests {
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved
             .agent
-            .plugins
-            .iter()
-            .any(|p| p.id() == "agui_context_injection"));
+            .behavior
+            .id()
+            .contains("agui_context_injection"));
     }
 
     #[tokio::test]
-    async fn context_injection_plugin_adds_system_context() {
+    async fn context_injection_behavior_adds_system_context() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -671,20 +692,19 @@ mod tests {
 
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        let plugin = resolved
-            .agent
-            .plugins
-            .iter()
-            .find(|p| p.id() == "agui_context_injection")
-            .unwrap();
+        let behavior = &resolved.agent.behavior;
 
         let fixture = TestFixture::new();
-        let mut step = fixture.step(vec![]);
+        let step = fixture.step(vec![]);
+        let ctx = build_read_only_ctx(Phase::BeforeInference, &step);
 
-        run_before_inference(plugin.as_ref(), &mut step).await;
+        let output = behavior.before_inference(&ctx).await;
 
-        assert!(!step.system_context.is_empty());
-        let merged = step.system_context.join("\n");
+        let system_contexts: Vec<&str> = output.effects.iter().filter_map(|e| {
+            if let PhaseEffect::SystemContext(s) = e { Some(s.as_str()) } else { None }
+        }).collect();
+        assert!(!system_contexts.is_empty());
+        let merged = system_contexts.join("\n");
         assert!(
             merged.contains("Task list"),
             "should contain context description"
@@ -696,15 +716,15 @@ mod tests {
     }
 
     #[test]
-    fn no_context_injection_plugin_when_context_empty() {
+    fn no_context_injection_behavior_when_context_empty() {
         let request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(!resolved
             .agent
-            .plugins
-            .iter()
-            .any(|p| p.id() == "agui_context_injection"));
+            .behavior
+            .id()
+            .contains("agui_context_injection"));
     }
 
     #[test]

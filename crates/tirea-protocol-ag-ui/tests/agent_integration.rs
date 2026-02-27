@@ -4582,10 +4582,14 @@ use tirea_agentos::contracts::runtime::plugin::phase::{
     BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
     StepContext, StepEndContext, StepStartContext, ToolContext,
 };
-use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
+use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
+use tirea_agentos::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_agentos::contracts::runtime::plugin::{AgentBehavior, AgentPlugin};
 use tirea_agentos::contracts::io::ResumeDecisionAction;
-use tirea_agentos::contracts::runtime::{ToolCallState, ToolCallResume, ToolCallStatus};
-use tirea_agentos::contracts::runtime::SuspendedCall;
+use tirea_agentos::contracts::runtime::{
+    AnyStateAction, SuspendedCall, SuspendedToolCallsState,
+    ToolCallResume, ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
+};
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
 
@@ -4716,6 +4720,116 @@ where
     }
 }
 
+fn build_read_only_ctx_for_dispatch<'a>(
+    phase: Phase,
+    step: &'a StepContext<'a>,
+) -> ReadOnlyContext<'a> {
+    let mut ctx = ReadOnlyContext::new(
+        phase,
+        step.thread_id(),
+        step.messages(),
+        step.run_config(),
+        step.ctx().doc(),
+    );
+    if let Some(tool) = step.tool.as_ref() {
+        ctx = ctx.with_tool_info(&tool.name, &tool.id, Some(&tool.args));
+        if let Some(result) = tool.result.as_ref() {
+            ctx = ctx.with_tool_result(result);
+        }
+    }
+    if phase == Phase::BeforeToolExecute {
+        if let Some(call_id) = step.tool_call_id() {
+            if let Ok(Some(resume)) = step.ctx().resume_input_for(call_id) {
+                let resume = Box::leak(Box::new(resume));
+                ctx = ctx.with_resume_input(resume);
+            }
+        }
+    }
+    if let Some(response) = step.response.as_ref() {
+        ctx = ctx.with_response(response);
+    }
+    ctx
+}
+
+fn apply_phase_output_for_test(
+    phase: Phase,
+    step: &mut StepContext<'_>,
+    output: PhaseOutput,
+) {
+    use tirea_agentos::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect};
+    use tirea_agentos::contracts::runtime::plugin::phase::{RunAction, StateEffect};
+    use tirea_state::TrackedPatch;
+
+    for effect in &output.effects {
+        validate_effect(phase, effect).expect("phase effect should be valid");
+    }
+    for effect in output.effects {
+        match effect {
+            PhaseEffect::SystemContext(s) => step.system(s),
+            PhaseEffect::SessionContext(s) => step.thread(s),
+            PhaseEffect::SystemReminder(s) => step.reminder(s),
+            PhaseEffect::ExcludeTool(id) => step.exclude(&id),
+            PhaseEffect::IncludeOnlyTools(ids) => {
+                let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                step.include_only(&refs);
+            }
+            PhaseEffect::BlockTool(reason) => step.block(reason),
+            PhaseEffect::AllowTool => step.allow(),
+            PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
+            PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
+            PhaseEffect::RequestTermination(reason) => {
+                step.set_run_action(RunAction::Terminate(reason));
+            }
+        }
+    }
+    for action in output.state_actions {
+        let snapshot = step.ctx().doc().snapshot();
+        let patch = action.apply(&snapshot).expect("state action should apply");
+        if !patch.is_empty() {
+            let tracked = TrackedPatch::new(patch).with_source("agent");
+            step.emit_state_effect(StateEffect::Patch(tracked));
+        }
+    }
+}
+
+/// Dispatch `AgentPluginTestDispatch` for `InteractionPlugin` via `AgentBehavior`.
+#[async_trait::async_trait]
+impl AgentPluginTestDispatch for InteractionPlugin {
+    async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        let ctx = build_read_only_ctx_for_dispatch(phase, step);
+        let output = match phase {
+            Phase::RunStart => self.run_start(&ctx).await,
+            Phase::StepStart => self.step_start(&ctx).await,
+            Phase::BeforeInference => self.before_inference(&ctx).await,
+            Phase::AfterInference => self.after_inference(&ctx).await,
+            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
+            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
+            Phase::StepEnd => self.step_end(&ctx).await,
+            Phase::RunEnd => self.run_end(&ctx).await,
+        };
+        apply_phase_output_for_test(phase, step, output);
+    }
+}
+
+/// Dispatch `AgentPluginTestDispatch` for `TestFrontendToolPlugin` via `AgentBehavior`.
+#[async_trait::async_trait]
+impl AgentPluginTestDispatch for TestFrontendToolPlugin {
+    async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        let ctx = build_read_only_ctx_for_dispatch(phase, step);
+        let output = match phase {
+            Phase::RunStart => self.run_start(&ctx).await,
+            Phase::StepStart => self.step_start(&ctx).await,
+            Phase::BeforeInference => self.before_inference(&ctx).await,
+            Phase::AfterInference => self.after_inference(&ctx).await,
+            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
+            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
+            Phase::StepEnd => self.step_end(&ctx).await,
+            Phase::RunEnd => self.run_end(&ctx).await,
+        };
+        apply_phase_output_for_test(phase, step, output);
+    }
+}
+
 #[derive(Debug, Default)]
 struct InteractionPlugin {
     responses: HashMap<String, Value>,
@@ -4796,26 +4910,27 @@ impl InteractionPlugin {
 }
 
 #[async_trait::async_trait]
-impl AgentPlugin for InteractionPlugin {
+impl AgentBehavior for InteractionPlugin {
     fn id(&self) -> &str {
         "test_interaction"
     }
 
-    async fn run_start(&self, step: &mut RunStartContext<'_, '_>) {
+    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         if self.responses.is_empty() {
-            return;
+            return PhaseOutput::default();
         }
 
-        let suspended_state =
-            step.state_of::<tirea_agentos::contracts::runtime::SuspendedToolCallsState>();
-        let suspended_calls = suspended_state.calls().ok().unwrap_or_default();
+        let suspended_state = ctx.snapshot_of::<SuspendedToolCallsState>()
+            .unwrap_or_default();
+        let suspended_calls = suspended_state.calls;
         if suspended_calls.is_empty() {
-            return;
+            return PhaseOutput::default();
         }
 
-        let tool_states =
-            step.state_of::<tirea_agentos::contracts::runtime::ToolCallStatesMap>();
-        let mut states = tool_states.calls().ok().unwrap_or_default();
+        let existing_states = ctx.snapshot_of::<ToolCallStatesMap>()
+            .unwrap_or_default();
+        let mut states = existing_states.calls;
+        let mut output = PhaseOutput::default();
         for (call_id, suspended_call) in suspended_calls {
             if states
                 .get(&call_id)
@@ -4847,9 +4962,13 @@ impl AgentPlugin for InteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            states.insert(call_id.clone(), state);
+            output = output.with_state_action(
+                AnyStateAction::new::<ToolCallStatesMap>(ToolCallStatesAction::InsertState {
+                    state,
+                }),
+            );
         }
-        let _ = tool_states.set_calls(states);
+        output
     }
 }
 
@@ -4872,32 +4991,25 @@ impl TestFrontendToolPlugin {
 }
 
 #[async_trait::async_trait]
-impl AgentPlugin for TestFrontendToolPlugin {
+impl AgentBehavior for TestFrontendToolPlugin {
     fn id(&self) -> &str {
         "test_frontend_tools"
     }
 
-    async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
-        if !matches!(
-            step.decision(),
-            tirea_agentos::contracts::runtime::plugin::phase::ToolCallAction::Proceed
-        ) {
-            return;
-        }
-
-        let Some(tool_name) = step.tool_name() else {
-            return;
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let Some(tool_name) = ctx.tool_name() else {
+            return PhaseOutput::default();
         };
 
         if !self.frontend_tools.contains(tool_name) {
-            return;
+            return PhaseOutput::default();
         }
 
-        let Some(tool_call_id) = step.tool_call_id() else {
-            return;
+        let Some(tool_call_id) = ctx.tool_call_id() else {
+            return PhaseOutput::default();
         };
 
-        let args = step.tool_args().cloned().unwrap_or_default();
+        let args = ctx.tool_args().cloned().unwrap_or_default();
         let invocation = FrontendToolInvocation::new(
             tool_call_id.to_string(),
             tool_name.to_string(),
@@ -4909,7 +5021,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
             },
             ResponseRouting::ReplayOriginalTool,
         );
-        step.suspend(suspend_ticket_from_invocation(invocation));
+        PhaseOutput::default().suspend_tool(suspend_ticket_from_invocation(invocation))
     }
 }
 

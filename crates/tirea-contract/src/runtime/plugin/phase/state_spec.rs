@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
-use tirea_state::{get_at_path, parse_path, Op, Patch, Path, State, TireaResult};
+use tirea_state::{get_at_path, parse_path, Op, Patch, Path, State, TrackedPatch, TireaResult};
 
 type ApplyFn = Box<dyn FnOnce(&Value) -> TireaResult<Patch> + Send>;
 
@@ -34,13 +34,20 @@ pub trait StateSpec: State + Sized + Send + 'static {
 
 /// Type-erased state action that can be applied to a JSON document.
 ///
-/// Created via [`AnyStateAction::new`] which captures the concrete `StateSpec`
-/// type and action in a closure. The kernel applies these after each phase hook
-/// returns, without needing to know the concrete state/action types.
-pub struct AnyStateAction {
-    state_type_id: TypeId,
-    state_type_name: &'static str,
-    apply_fn: ApplyFn,
+/// Two variants:
+/// - `Typed`: Created via [`AnyStateAction::new`] which captures a concrete
+///   `StateSpec` type and action. The kernel applies these after each phase hook.
+/// - `Patch`: A pre-built [`TrackedPatch`] that bypasses the typed reducer
+///   pipeline, emitted directly as a state effect.
+pub enum AnyStateAction {
+    /// Type-erased action targeting a specific `StateSpec` type.
+    Typed {
+        state_type_id: TypeId,
+        state_type_name: &'static str,
+        apply_fn: ApplyFn,
+    },
+    /// Pre-built tracked patch emitted directly as a state effect.
+    Patch(TrackedPatch),
 }
 
 impl AnyStateAction {
@@ -55,7 +62,7 @@ impl AnyStateAction {
             "StateSpec type has no bound path; cannot create AnyStateAction"
         );
 
-        Self {
+        Self::Typed {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
             apply_fn: Box::new(move |doc: &Value| {
@@ -73,29 +80,61 @@ impl AnyStateAction {
     }
 
     /// The [`TypeId`] of the state type this action targets.
-    pub fn state_type_id(&self) -> TypeId {
-        self.state_type_id
+    ///
+    /// Returns `None` for raw `Patch` actions.
+    pub fn state_type_id(&self) -> Option<TypeId> {
+        match self {
+            Self::Typed { state_type_id, .. } => Some(*state_type_id),
+            Self::Patch(_) => None,
+        }
     }
 
     /// Human-readable name of the state type (for diagnostics).
     pub fn state_type_name(&self) -> &str {
-        self.state_type_name
+        match self {
+            Self::Typed { state_type_name, .. } => state_type_name,
+            Self::Patch(_) => "raw_patch",
+        }
     }
 
     /// Apply this action to a JSON document, producing a patch.
     ///
     /// Consumes `self` since the inner closure is `FnOnce`.
+    ///
+    /// For `Patch` variants, the document is ignored and the inner patch is returned.
     pub fn apply(self, doc: &Value) -> TireaResult<Patch> {
-        (self.apply_fn)(doc)
+        match self {
+            Self::Typed { apply_fn, .. } => apply_fn(doc),
+            Self::Patch(tracked) => Ok(tracked.patch),
+        }
+    }
+
+    /// If this is a raw `Patch` action, return the tracked patch directly.
+    ///
+    /// Used by the effect applicator to preserve source metadata.
+    pub fn into_tracked_patch(self) -> Option<TrackedPatch> {
+        match self {
+            Self::Patch(tracked) => Some(tracked),
+            Self::Typed { .. } => None,
+        }
     }
 }
 
 impl fmt::Debug for AnyStateAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AnyStateAction")
-            .field("state", &self.state_type_name)
-            .field("type_id", &self.state_type_id)
-            .finish()
+        match self {
+            Self::Typed { state_type_name, state_type_id, .. } => {
+                f.debug_struct("AnyStateAction::Typed")
+                    .field("state", state_type_name)
+                    .field("type_id", state_type_id)
+                    .finish()
+            }
+            Self::Patch(tracked) => {
+                f.debug_struct("AnyStateAction::Patch")
+                    .field("source", &tracked.source)
+                    .finish()
+            }
+        }
     }
 }
 

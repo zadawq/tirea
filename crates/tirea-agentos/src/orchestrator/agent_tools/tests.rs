@@ -4,7 +4,10 @@ use crate::contracts::runtime::plugin::phase::{
     BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
     StepStartContext,
 };
+use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::AgentBehavior;
 use crate::contracts::thread::Thread;
 use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::orchestrator::InMemoryAgentRegistry;
@@ -288,14 +291,14 @@ async fn agent_run_tool_rejects_self_target_agent() {
 struct SlowTerminatePlugin;
 
 #[async_trait]
-impl AgentPlugin for SlowTerminatePlugin {
+impl AgentBehavior for SlowTerminatePlugin {
     fn id(&self) -> &str {
         "slow_terminate_plugin_requested"
     }
 
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         tokio::time::sleep(Duration::from_millis(120)).await;
-        step.terminate_plugin_requested();
+        PhaseOutput::default().terminate_plugin_requested()
     }
 }
 

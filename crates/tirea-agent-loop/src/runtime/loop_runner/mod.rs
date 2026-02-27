@@ -98,9 +98,9 @@ use core::{
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 #[cfg(test)]
-use plugin_runtime::emit_phase_checked;
+use plugin_runtime::emit_agent_phase;
 #[cfg(test)]
-use plugin_runtime::{emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase};
+use plugin_runtime::unified_emit_cleanup_phases_and_apply;
 use plugin_runtime::run_phase_block;
 use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;

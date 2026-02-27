@@ -1,6 +1,7 @@
 use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::NoOpBehavior;
+use crate::contracts::runtime::plugin::composite_agent::CompositeBehavior;
 use crate::contracts::runtime::plugin::AgentBehavior;
 use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::ToolExecutor;
@@ -432,12 +433,27 @@ impl BaseAgent {
         self
     }
 
-    /// Set the agent behavior (declarative model).
+    /// Set the agent behavior (declarative model), replacing any existing behavior.
     ///
     /// The loop dispatches all phase hooks exclusively through this behavior.
     #[must_use]
     pub fn with_behavior(mut self, behavior: Arc<dyn AgentBehavior>) -> Self {
         self.behavior = behavior;
+        self
+    }
+
+    /// Add a behavior, composing with any existing behavior via [`CompositeBehavior`].
+    ///
+    /// If the current behavior is [`NoOpBehavior`], it is replaced.
+    /// Otherwise the current and new behaviors are wrapped in a [`CompositeBehavior`].
+    #[must_use]
+    pub fn add_behavior(mut self, behavior: Arc<dyn AgentBehavior>) -> Self {
+        if self.behavior.id() == "noop" {
+            self.behavior = behavior;
+        } else {
+            let id = format!("{}+{}", self.behavior.id(), behavior.id());
+            self.behavior = Arc::new(CompositeBehavior::new(id, vec![self.behavior, behavior]));
+        }
         self
     }
 

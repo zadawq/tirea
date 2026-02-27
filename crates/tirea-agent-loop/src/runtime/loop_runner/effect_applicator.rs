@@ -34,6 +34,11 @@ pub fn apply_phase_output(
         }
     }
 
+    // Apply pending patches (raw TrackedPatch values from behavior hooks).
+    for patch in output.pending_patches {
+        step.pending_patches.push(patch);
+    }
+
     Ok(())
 }
 
