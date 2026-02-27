@@ -516,6 +516,12 @@ impl AgentBehavior for TestInteractionPlugin {
         "test_interaction"
     }
 
+    fn owned_states(&self) -> std::collections::HashSet<std::any::TypeId> {
+        std::collections::HashSet::from([std::any::TypeId::of::<
+            crate::contracts::runtime::ToolCallStatesMap,
+        >()])
+    }
+
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         if self.responses.is_empty() {
             return PhaseOutput::default();
@@ -6855,6 +6861,10 @@ impl AgentBehavior for RunStartSideEffectPlugin {
         "run_start_side_effect_plugin"
     }
 
+    fn owned_states(&self) -> std::collections::HashSet<std::any::TypeId> {
+        std::collections::HashSet::from([std::any::TypeId::of::<DebugFlags>()])
+    }
+
     async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         PhaseOutput::default().with_state_action(AnyStateAction::new::<DebugFlags>(
             DebugFlagAction::SetRunStartSideEffect,
@@ -7388,6 +7398,10 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
     impl AgentBehavior for LegacyResumeReplayRequeuePlugin {
         fn id(&self) -> &str {
             "legacy_resume_replay_stream_queue"
+        }
+
+        fn owned_states(&self) -> std::collections::HashSet<std::any::TypeId> {
+            std::collections::HashSet::from([std::any::TypeId::of::<ResumeToolCallsState>()])
         }
 
         async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {

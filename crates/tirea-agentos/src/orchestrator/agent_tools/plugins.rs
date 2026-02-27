@@ -2,6 +2,8 @@ use super::state::current_unix_millis;
 use super::*;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use std::any::TypeId;
+use std::collections::HashSet;
 use tirea_extension_permission::PermissionState;
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
@@ -18,6 +20,15 @@ impl AgentRecoveryPlugin {
 impl AgentBehavior for AgentRecoveryPlugin {
     fn id(&self) -> &str {
         AGENT_RECOVERY_PLUGIN_ID
+    }
+
+    fn owned_states(&self) -> HashSet<TypeId> {
+        use crate::contracts::runtime::{SuspendedToolCallsState, ToolCallStatesMap};
+        HashSet::from([
+            TypeId::of::<DelegationState>(),
+            TypeId::of::<SuspendedToolCallsState>(),
+            TypeId::of::<ToolCallStatesMap>(),
+        ])
     }
 
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {

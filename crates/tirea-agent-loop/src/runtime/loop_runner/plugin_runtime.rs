@@ -2,6 +2,7 @@ use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::effect_applicator::apply_phase_output;
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext};
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
@@ -72,6 +73,29 @@ async fn dispatch_agent_phase<'a>(
     }
 }
 
+fn validate_owned_state_actions(
+    agent: &dyn AgentBehavior,
+    output: &PhaseOutput,
+) -> Result<(), AgentLoopError> {
+    if output.state_actions.is_empty() {
+        return Ok(());
+    }
+    let owned_states = agent.owned_states();
+    for action in &output.state_actions {
+        let Some(state_type_id) = action.state_type_id() else {
+            continue;
+        };
+        if !owned_states.contains(&state_type_id) {
+            return Err(AgentLoopError::StateError(format!(
+                "behavior '{}' emitted action for unowned state '{}' (declare it in owned_states)",
+                agent.id(),
+                action.state_type_name()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Emit a single phase using the [`Agent`] declarative model.
 ///
 /// Builds a [`ReadOnlyContext`], calls the agent hook, and applies the
@@ -84,6 +108,7 @@ pub(super) async fn emit_agent_phase(
 ) -> Result<(), AgentLoopError> {
     let ctx = build_read_only_context(phase, step, doc);
     let output = dispatch_agent_phase(agent, phase, &ctx).await;
+    validate_owned_state_actions(agent, &output)?;
     apply_phase_output(phase, step, output, doc)
 }
 
@@ -326,4 +351,115 @@ where
     let output = extract(&mut step);
     let pending = take_step_pending_patches(&mut step);
     Ok((output, pending))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::runtime::plugin::phase::state_spec::StateSpec;
+    use crate::contracts::runtime::plugin::phase::AnyStateAction;
+    use crate::contracts::testing::TestFixture;
+    use async_trait::async_trait;
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use std::any::TypeId;
+    use std::collections::HashSet;
+    use tirea_state::{DocCell, PatchSink, Path as TPath, State, TireaResult};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    struct OwnedDebugState {
+        value: bool,
+    }
+
+    struct OwnedDebugStateRef;
+
+    impl State for OwnedDebugState {
+        type Ref<'a> = OwnedDebugStateRef;
+        const PATH: &'static str = "debug.owned";
+
+        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+            OwnedDebugStateRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+    }
+
+    impl StateSpec for OwnedDebugState {
+        type Action = bool;
+
+        fn reduce(&mut self, action: Self::Action) {
+            self.value = action;
+        }
+    }
+
+    struct UnownedActionBehavior;
+
+    #[async_trait]
+    impl AgentBehavior for UnownedActionBehavior {
+        fn id(&self) -> &str {
+            "unowned_action"
+        }
+
+        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().with_state_action(AnyStateAction::new::<OwnedDebugState>(true))
+        }
+    }
+
+    struct OwnedActionBehavior;
+
+    #[async_trait]
+    impl AgentBehavior for OwnedActionBehavior {
+        fn id(&self) -> &str {
+            "owned_action"
+        }
+
+        fn owned_states(&self) -> HashSet<TypeId> {
+            HashSet::from([TypeId::of::<OwnedDebugState>()])
+        }
+
+        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().with_state_action(AnyStateAction::new::<OwnedDebugState>(true))
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_agent_phase_rejects_unowned_typed_state_action() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(serde_json::json!({}));
+
+        let err = emit_agent_phase(Phase::RunStart, &mut step, &UnownedActionBehavior, &doc)
+            .await
+            .expect_err("should reject action for unowned state");
+
+        match err {
+            AgentLoopError::StateError(message) => {
+                assert!(message.contains("unowned state"));
+                assert!(message.contains("OwnedDebugState"));
+            }
+            other => panic!("expected StateError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_agent_phase_accepts_owned_typed_state_action() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(serde_json::json!({}));
+
+        emit_agent_phase(Phase::RunStart, &mut step, &OwnedActionBehavior, &doc)
+            .await
+            .expect("owned action should pass validation");
+
+        assert!(!step.state_effects.is_empty());
+    }
 }

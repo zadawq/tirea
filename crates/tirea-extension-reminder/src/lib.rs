@@ -21,6 +21,8 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
+use std::collections::HashSet;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
@@ -140,6 +142,10 @@ impl ReminderPlugin {
 impl AgentBehavior for ReminderPlugin {
     fn id(&self) -> &str {
         "reminder"
+    }
+
+    fn owned_states(&self) -> HashSet<TypeId> {
+        HashSet::from([TypeId::of::<ReminderState>()])
     }
 
     async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
