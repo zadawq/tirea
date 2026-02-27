@@ -8,13 +8,14 @@ use super::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::runtime::plugin::agent::AgentBehavior;
+use crate::contracts::runtime::plugin::phase::AnyStateAction;
 use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
 };
 use crate::contracts::runtime::{
     DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallStatus, ToolExecution,
-    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
@@ -27,7 +28,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_state::{Patch, PatchExt, TrackedPatch};
+use tirea_state::{apply_patch, Patch, PatchExt, TrackedPatch};
 
 /// Outcome of the public `execute_tools*` family of functions.
 ///
@@ -900,7 +901,7 @@ pub(super) async fn execute_single_tool_with_phases(
     emit_tool_phase(Phase::BeforeToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
 
     // Check if blocked or pending
-    let (execution, outcome, suspended_call) = if step.tool_blocked() {
+    let (execution, outcome, suspended_call, tool_state_actions) = if step.tool_blocked() {
         let reason = step
             .tool
             .as_ref()
@@ -914,6 +915,7 @@ pub(super) async fn execute_single_tool_with_phases(
             },
             ToolCallOutcome::Failed,
             None,
+            Vec::new(),
         )
     } else if let Some(plugin_result) = step.tool_result().cloned() {
         let outcome = ToolCallOutcome::from_tool_result(&plugin_result);
@@ -925,6 +927,7 @@ pub(super) async fn execute_single_tool_with_phases(
             },
             outcome,
             None,
+            Vec::new(),
         )
     } else if tool.is_none() {
         (
@@ -935,6 +938,7 @@ pub(super) async fn execute_single_tool_with_phases(
             },
             ToolCallOutcome::Failed,
             None,
+            Vec::new(),
         )
     } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
         // Argument validation failed — return error to the LLM
@@ -946,6 +950,7 @@ pub(super) async fn execute_single_tool_with_phases(
             },
             ToolCallOutcome::Failed,
             None,
+            Vec::new(),
         )
     } else if step.tool_pending() {
         let Some(suspend_ticket) = step.tool.as_ref().and_then(|t| t.suspend_ticket.clone()) else {
@@ -964,6 +969,7 @@ pub(super) async fn execute_single_tool_with_phases(
             },
             ToolCallOutcome::Suspended,
             Some(SuspendedCall::new(call, suspend_ticket)),
+            Vec::new(),
         )
     } else {
         persist_tool_call_status(&step, call, ToolCallStatus::Running, None)?;
@@ -983,14 +989,15 @@ pub(super) async fn execute_single_tool_with_phases(
         if let Some(token) = phase_ctx.cancellation_token {
             tool_ctx = tool_ctx.with_cancellation_token(token);
         }
-        let result = match tool
+        let effect = match tool
             .unwrap()
-            .execute(call.arguments.clone(), &tool_ctx)
+            .execute_effect(call.arguments.clone(), &tool_ctx)
             .await
         {
-            Ok(r) => r,
-            Err(e) => ToolResult::error(&call.name, e.to_string()),
+            Ok(effect) => effect,
+            Err(e) => ToolExecutionEffect::from(ToolResult::error(&call.name, e.to_string())),
         };
+        let result = effect.result;
 
         let patch = tool_ctx.take_patch();
         let patch = if patch.patch().is_empty() {
@@ -1014,6 +1021,7 @@ pub(super) async fn execute_single_tool_with_phases(
             },
             outcome,
             suspended_call,
+            effect.state_actions,
         )
     };
 
@@ -1046,7 +1054,13 @@ pub(super) async fn execute_single_tool_with_phases(
         step.emit_patch(plugin_patch);
     }
 
-    let mut pending_patches = std::mem::take(&mut step.pending_patches);
+    let mut pending_patches = reduce_tool_state_actions(
+        state,
+        execution.patch.as_ref(),
+        tool_state_actions,
+        &format!("tool:{}", call.name),
+    )?;
+    pending_patches.extend(std::mem::take(&mut step.pending_patches));
     for effect in std::mem::take(&mut step.state_effects) {
         match effect {
             StateEffect::Patch(patch) => pending_patches.push(patch),
@@ -1060,6 +1074,53 @@ pub(super) async fn execute_single_tool_with_phases(
         reminders: step.system_reminders.clone(),
         pending_patches,
     })
+}
+
+fn reduce_tool_state_actions(
+    base_state: &Value,
+    tool_patch: Option<&TrackedPatch>,
+    actions: Vec<AnyStateAction>,
+    source: &str,
+) -> Result<Vec<TrackedPatch>, AgentLoopError> {
+    let mut rolling_snapshot = base_state.clone();
+    if let Some(patch) = tool_patch {
+        rolling_snapshot = apply_patch(&rolling_snapshot, patch.patch()).map_err(|e| {
+            AgentLoopError::StateError(format!("failed to apply tool patch before actions: {e}"))
+        })?;
+    }
+
+    let mut tracked_patches = Vec::new();
+    for action in actions {
+        match action {
+            AnyStateAction::Patch(tracked) => {
+                if tracked.patch().is_empty() {
+                    continue;
+                }
+                rolling_snapshot = apply_patch(&rolling_snapshot, tracked.patch()).map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to apply raw tool state action patch: {e}"
+                    ))
+                })?;
+                tracked_patches.push(tracked);
+            }
+            typed_action => {
+                let patch = typed_action.apply(&rolling_snapshot).map_err(|e| {
+                    AgentLoopError::StateError(format!("failed to reduce tool state action: {e}"))
+                })?;
+                if patch.is_empty() {
+                    continue;
+                }
+                rolling_snapshot = apply_patch(&rolling_snapshot, &patch).map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to apply reduced tool state action patch: {e}"
+                    ))
+                })?;
+                tracked_patches.push(TrackedPatch::new(patch).with_source(source));
+            }
+        }
+    }
+
+    Ok(tracked_patches)
 }
 
 fn cancelled_error(_thread_id: &str) -> AgentLoopError {

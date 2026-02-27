@@ -3,13 +3,13 @@
 pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::thread::ToolCall;
 use crate::contracts::runtime::tool_call::ToolCallContext;
-use crate::contracts::runtime::tool_call::{Tool, ToolResult};
+use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
 use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tirea_contract::RunConfig;
-use tirea_state::{apply_patch, DocCell, TrackedPatch};
+use tirea_state::{apply_patch, DocCell, Patch, TrackedPatch};
 
 /// Execute a single tool call.
 ///
@@ -72,17 +72,91 @@ pub async fn execute_single_tool_with_scope(
     }
 
     // Execute the tool
-    let result = match tool.execute(call.arguments.clone(), &ctx).await {
-        Ok(r) => r,
-        Err(e) => ToolResult::error(&call.name, e.to_string()),
+    let effect = match tool.execute_effect(call.arguments.clone(), &ctx).await {
+        Ok(effect) => effect,
+        Err(e) => ToolExecutionEffect::from(ToolResult::error(&call.name, e.to_string())),
     };
+    let result = effect.result;
 
-    // Extract any state changes
-    let patch = ctx.take_patch();
-    let patch = if patch.patch().is_empty() {
+    // Extract state changes from ToolCallContext + returned state actions.
+    let mut rolling_snapshot = state.clone();
+    let mut merged_patch = Patch::new();
+
+    let context_patch = ctx.take_patch();
+    if !context_patch.patch().is_empty() {
+        rolling_snapshot = match apply_patch(&rolling_snapshot, context_patch.patch()) {
+            Ok(next) => next,
+            Err(err) => {
+                return ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(&call.name, format!("tool patch apply failed: {err}")),
+                    patch: None,
+                };
+            }
+        };
+        merged_patch.extend(context_patch.patch().clone());
+    }
+
+    for action in effect.state_actions {
+        match action {
+            crate::contracts::runtime::AnyStateAction::Patch(tracked) => {
+                if tracked.patch().is_empty() {
+                    continue;
+                }
+                rolling_snapshot = match apply_patch(&rolling_snapshot, tracked.patch()) {
+                    Ok(next) => next,
+                    Err(err) => {
+                        return ToolExecution {
+                            call: call.clone(),
+                            result: ToolResult::error(
+                                &call.name,
+                                format!("raw tool state action patch apply failed: {err}"),
+                            ),
+                            patch: None,
+                        };
+                    }
+                };
+                merged_patch.extend(tracked.patch().clone());
+            }
+            typed_action => {
+                let patch = match typed_action.apply(&rolling_snapshot) {
+                    Ok(patch) => patch,
+                    Err(err) => {
+                        return ToolExecution {
+                            call: call.clone(),
+                            result: ToolResult::error(
+                                &call.name,
+                                format!("tool state action reduce failed: {err}"),
+                            ),
+                            patch: None,
+                        };
+                    }
+                };
+                if patch.is_empty() {
+                    continue;
+                }
+                rolling_snapshot = match apply_patch(&rolling_snapshot, &patch) {
+                    Ok(next) => next,
+                    Err(err) => {
+                        return ToolExecution {
+                            call: call.clone(),
+                            result: ToolResult::error(
+                                &call.name,
+                                format!("tool state action patch apply failed: {err}"),
+                            ),
+                            patch: None,
+                        };
+                    }
+                };
+                merged_patch.extend(patch);
+            }
+        }
+    }
+
+    let patch = if merged_patch.is_empty() {
         None
     } else {
-        Some(patch)
+        Some(TrackedPatch::new(merged_patch).with_source(format!("tool:{}", call.name)))
     };
 
     ToolExecution {
@@ -136,10 +210,14 @@ pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::runtime::plugin::phase::state_spec::StateSpec;
+    use crate::contracts::runtime::plugin::phase::AnyStateAction;
     use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError};
     use crate::contracts::ToolCallContext;
     use async_trait::async_trait;
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
+    use tirea_state::{PatchSink, Path as TPath, State, TireaResult};
 
     struct EchoTool;
 
@@ -155,6 +233,69 @@ mod tests {
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("echo", args))
+        }
+    }
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    struct EffectCounterState {
+        value: i64,
+    }
+
+    struct EffectCounterRef;
+
+    impl State for EffectCounterState {
+        type Ref<'a> = EffectCounterRef;
+        const PATH: &'static str = "counter";
+
+        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+            EffectCounterRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+    }
+
+    impl StateSpec for EffectCounterState {
+        type Action = i64;
+
+        fn reduce(&mut self, action: Self::Action) {
+            self.value += action;
+        }
+    }
+
+    struct EffectTool;
+
+    #[async_trait]
+    impl Tool for EffectTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("effect", "Effect", "Tool returning state actions")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("effect", json!({})))
+        }
+
+        async fn execute_effect(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<crate::contracts::runtime::ToolExecutionEffect, ToolError> {
+            Ok(crate::contracts::runtime::ToolExecutionEffect::new(
+                ToolResult::success("effect", json!({})),
+            )
+            .with_state_action(AnyStateAction::new::<EffectCounterState>(2)))
         }
     }
 
@@ -179,6 +320,19 @@ mod tests {
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["msg"], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_applies_state_actions_from_effect() {
+        let tool = EffectTool;
+        let call = ToolCall::new("call_1", "effect", json!({}));
+        let state = json!({"counter": {"value": 1}});
+
+        let exec = execute_single_tool(Some(&tool), &call, &state).await;
+        let patch = exec.patch.expect("patch should be emitted");
+        let next = apply_patch(&state, patch.patch()).expect("patch should apply");
+
+        assert_eq!(next["counter"]["value"], 3);
     }
 
     #[tokio::test]

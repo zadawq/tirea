@@ -4,7 +4,7 @@ use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{Phase, SuspendTicket};
-use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::contracts::storage::VersionPrecondition;
@@ -1750,6 +1750,66 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
         .expect("tool execution should succeed");
 
     assert!(result.execution.result.is_success());
+}
+
+#[tokio::test]
+async fn test_tool_execute_effect_state_actions_become_pending_patches() {
+    struct ActionEffectTool;
+
+    #[async_trait]
+    impl Tool for ActionEffectTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("action_effect_tool", "ActionEffect", "returns state actions")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("action_effect_tool", json!({"ok": true})))
+        }
+
+        async fn execute_effect(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolExecutionEffect, ToolError> {
+            Ok(ToolExecutionEffect::new(ToolResult::success(
+                "action_effect_tool",
+                json!({"ok": true}),
+            ))
+            .with_state_action(AnyStateAction::new::<DebugFlags>(
+                DebugFlagAction::SetAfterToolEffect,
+            )))
+        }
+    }
+
+    let tool = ActionEffectTool;
+    let call = crate::contracts::thread::ToolCall::new("call_1", "action_effect_tool", json!({}));
+    let state = json!({});
+    let tool_descriptors = vec![tool.descriptor()];
+    let run_config = tirea_contract::RunConfig::default();
+    let phase_ctx = super::tool_exec::ToolPhaseContext {
+        tool_descriptors: &tool_descriptors,
+        agent_behavior: None,
+        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        run_config: &run_config,
+        thread_id: "test",
+        thread_messages: &[],
+        cancellation_token: None,
+    };
+
+    let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
+        .await
+        .expect("tool execution should succeed");
+
+    assert!(result.execution.result.is_success());
+    assert!(!result.pending_patches.is_empty());
+
+    let patch_refs: Vec<&Patch> = result.pending_patches.iter().map(|p| p.patch()).collect();
+    let next_state = tirea_state::apply_patches(&state, patch_refs).expect("apply patches");
+    assert_eq!(next_state["debug"]["after_tool_effect"], json!(true));
 }
 
 #[tokio::test]
