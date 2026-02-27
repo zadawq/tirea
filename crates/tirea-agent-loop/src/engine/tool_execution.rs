@@ -3,6 +3,7 @@
 pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::thread::ToolCall;
 use crate::contracts::runtime::tool_call::ToolCallContext;
+use crate::contracts::reduce_state_actions;
 use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
 use futures::future::join_all;
 use serde_json::Value;
@@ -97,60 +98,24 @@ pub async fn execute_single_tool_with_scope(
         merged_patch.extend(context_patch.patch().clone());
     }
 
-    for action in effect.state_actions {
-        match action {
-            crate::contracts::runtime::AnyStateAction::Patch(tracked) => {
-                if tracked.patch().is_empty() {
-                    continue;
-                }
-                rolling_snapshot = match apply_patch(&rolling_snapshot, tracked.patch()) {
-                    Ok(next) => next,
-                    Err(err) => {
-                        return ToolExecution {
-                            call: call.clone(),
-                            result: ToolResult::error(
-                                &call.name,
-                                format!("raw tool state action patch apply failed: {err}"),
-                            ),
-                            patch: None,
-                        };
-                    }
+    let action_patches =
+        match reduce_state_actions(effect.state_actions, &rolling_snapshot, &format!("tool:{}", call.name))
+        {
+            Ok(patches) => patches,
+            Err(err) => {
+                return ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(
+                        &call.name,
+                        format!("tool state action reduce failed: {err}"),
+                    ),
+                    patch: None,
                 };
-                merged_patch.extend(tracked.patch().clone());
             }
-            typed_action => {
-                let patch = match typed_action.apply(&rolling_snapshot) {
-                    Ok(patch) => patch,
-                    Err(err) => {
-                        return ToolExecution {
-                            call: call.clone(),
-                            result: ToolResult::error(
-                                &call.name,
-                                format!("tool state action reduce failed: {err}"),
-                            ),
-                            patch: None,
-                        };
-                    }
-                };
-                if patch.is_empty() {
-                    continue;
-                }
-                rolling_snapshot = match apply_patch(&rolling_snapshot, &patch) {
-                    Ok(next) => next,
-                    Err(err) => {
-                        return ToolExecution {
-                            call: call.clone(),
-                            result: ToolResult::error(
-                                &call.name,
-                                format!("tool state action patch apply failed: {err}"),
-                            ),
-                            patch: None,
-                        };
-                    }
-                };
-                merged_patch.extend(patch);
-            }
-        }
+        };
+
+    for tracked in action_patches {
+        merged_patch.extend(tracked.patch().clone());
     }
 
     let patch = if merged_patch.is_empty() {

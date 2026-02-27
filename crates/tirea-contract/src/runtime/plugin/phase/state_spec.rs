@@ -1,7 +1,9 @@
 use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
-use tirea_state::{get_at_path, parse_path, Op, Patch, Path, State, TrackedPatch, TireaResult};
+use tirea_state::{
+    apply_patch, get_at_path, parse_path, Op, Patch, Path, State, TrackedPatch, TireaResult,
+};
 
 type ApplyFn = Box<dyn FnOnce(&Value) -> TireaResult<Patch> + Send>;
 
@@ -151,6 +153,42 @@ impl AnyStateAction {
             Self::Typed { .. } => None,
         }
     }
+}
+
+/// Reduce a batch of state actions into tracked patches with rolling snapshot semantics.
+///
+/// Typed actions are reduced against a snapshot that is updated after each action,
+/// so sequential actions in one batch compose deterministically.
+/// Raw patch actions preserve the tracked patch metadata as-is.
+pub fn reduce_state_actions(
+    actions: Vec<AnyStateAction>,
+    base_snapshot: &Value,
+    default_source: &str,
+) -> TireaResult<Vec<TrackedPatch>> {
+    let mut rolling_snapshot = base_snapshot.clone();
+    let mut tracked_patches = Vec::new();
+
+    for action in actions {
+        match action {
+            AnyStateAction::Patch(tracked) => {
+                if tracked.patch().is_empty() {
+                    continue;
+                }
+                rolling_snapshot = apply_patch(&rolling_snapshot, tracked.patch())?;
+                tracked_patches.push(tracked);
+            }
+            typed_action => {
+                let patch = typed_action.apply(&rolling_snapshot)?;
+                if patch.is_empty() {
+                    continue;
+                }
+                rolling_snapshot = apply_patch(&rolling_snapshot, &patch)?;
+                tracked_patches.push(TrackedPatch::new(patch).with_source(default_source));
+            }
+        }
+    }
+
+    Ok(tracked_patches)
 }
 
 impl fmt::Debug for AnyStateAction {
@@ -379,6 +417,38 @@ mod tests {
     fn any_state_action_scope_tool_call() {
         let action = AnyStateAction::new::<ToolScopedCounter>(CounterAction::Increment(1));
         assert_eq!(action.scope(), StateScope::ToolCall);
+    }
+
+    #[test]
+    fn reduce_state_actions_uses_rolling_snapshot() {
+        let base = json!({"counters": {"main": {"value": 1}}});
+        let actions = vec![
+            AnyStateAction::new::<Counter>(CounterAction::Increment(1)),
+            AnyStateAction::new::<Counter>(CounterAction::Increment(1)),
+        ];
+        let tracked = reduce_state_actions(actions, &base, "agent").unwrap();
+        assert_eq!(tracked.len(), 2);
+
+        let mut state = base.clone();
+        for patch in tracked {
+            state = apply_patch(&state, patch.patch()).unwrap();
+        }
+        assert_eq!(state["counters"]["main"]["value"], 3);
+    }
+
+    #[test]
+    fn reduce_state_actions_preserves_raw_patch_source() {
+        let base = json!({});
+        let raw = TrackedPatch::new(Patch::with_ops(vec![Op::set(
+            path_from_str("debug.raw"),
+            json!(true),
+        )]))
+        .with_source("plugin:test");
+
+        let tracked =
+            reduce_state_actions(vec![AnyStateAction::Patch(raw)], &base, "agent").unwrap();
+        assert_eq!(tracked.len(), 1);
+        assert_eq!(tracked[0].source.as_deref(), Some("plugin:test"));
     }
 
     #[test]

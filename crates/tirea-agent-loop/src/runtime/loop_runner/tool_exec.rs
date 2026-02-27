@@ -8,7 +8,7 @@ use super::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::runtime::plugin::agent::AgentBehavior;
-use crate::contracts::runtime::plugin::phase::AnyStateAction;
+use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
@@ -1088,39 +1088,8 @@ fn reduce_tool_state_actions(
             AgentLoopError::StateError(format!("failed to apply tool patch before actions: {e}"))
         })?;
     }
-
-    let mut tracked_patches = Vec::new();
-    for action in actions {
-        match action {
-            AnyStateAction::Patch(tracked) => {
-                if tracked.patch().is_empty() {
-                    continue;
-                }
-                rolling_snapshot = apply_patch(&rolling_snapshot, tracked.patch()).map_err(|e| {
-                    AgentLoopError::StateError(format!(
-                        "failed to apply raw tool state action patch: {e}"
-                    ))
-                })?;
-                tracked_patches.push(tracked);
-            }
-            typed_action => {
-                let patch = typed_action.apply(&rolling_snapshot).map_err(|e| {
-                    AgentLoopError::StateError(format!("failed to reduce tool state action: {e}"))
-                })?;
-                if patch.is_empty() {
-                    continue;
-                }
-                rolling_snapshot = apply_patch(&rolling_snapshot, &patch).map_err(|e| {
-                    AgentLoopError::StateError(format!(
-                        "failed to apply reduced tool state action patch: {e}"
-                    ))
-                })?;
-                tracked_patches.push(TrackedPatch::new(patch).with_source(source));
-            }
-        }
-    }
-
-    Ok(tracked_patches)
+    reduce_state_actions(actions, &rolling_snapshot, source)
+        .map_err(|e| AgentLoopError::StateError(format!("failed to reduce tool state actions: {e}")))
 }
 
 fn cancelled_error(_thread_id: &str) -> AgentLoopError {

@@ -97,7 +97,7 @@ pub use io::{
 
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    validate_effect, ActivityContext, ActivityManager, AfterInferenceContext,
+    reduce_state_actions, validate_effect, ActivityContext, ActivityManager, AfterInferenceContext,
     AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
     BeforeToolExecuteContext, DecisionReplayPolicy, NoOpBehavior, Phase, PhaseContext, PhaseEffect,
     PhaseOutput, PhasePolicy, ReadOnlyContext, RunAction, RunContext, RunDelta, RunEndContext,

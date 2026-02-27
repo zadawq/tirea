@@ -1,8 +1,9 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
-use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
-use crate::contracts::runtime::plugin::phase::{Phase, RunAction, StateEffect, StepContext};
-use tirea_state::{apply_patch, DocCell, TrackedPatch};
+use crate::contracts::runtime::plugin::phase::{
+    reduce_state_actions, Phase, RunAction, StateEffect, StepContext,
+};
+use tirea_state::DocCell;
 
 /// Apply a [`PhaseOutput`] to the mutable [`StepContext`].
 ///
@@ -24,30 +25,10 @@ pub fn apply_phase_output(
     }
 
     // Apply state actions → produce patches.
-    let mut rolling_snapshot = doc.snapshot();
-    for action in output.state_actions {
-        match action {
-            // Preserve raw tracked patch metadata exactly as emitted.
-            AnyStateAction::Patch(tracked) => {
-                if tracked.patch().is_empty() {
-                    continue;
-                }
-                rolling_snapshot = apply_patch(&rolling_snapshot, tracked.patch())
-                    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-                step.emit_state_effect(StateEffect::Patch(tracked));
-            }
-            typed_action => {
-                let patch = typed_action
-                    .apply(&rolling_snapshot)
-                    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-                if !patch.is_empty() {
-                    rolling_snapshot = apply_patch(&rolling_snapshot, &patch)
-                        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-                    let tracked = TrackedPatch::new(patch).with_source("agent");
-                    step.emit_state_effect(StateEffect::Patch(tracked));
-                }
-            }
-        }
+    let tracked_actions = reduce_state_actions(output.state_actions, &doc.snapshot(), "agent")
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    for tracked in tracked_actions {
+        step.emit_state_effect(StateEffect::Patch(tracked));
     }
 
     // Apply pending patches (raw TrackedPatch values from behavior hooks).

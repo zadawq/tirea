@@ -3,7 +3,8 @@ pub mod phase;
 
 pub use agent::{AgentBehavior, NoOpBehavior, ReadOnlyContext};
 pub use phase::{
-    validate_effect, AfterInferenceContext, AfterToolExecuteContext, AnyStateAction,
+    reduce_state_actions, validate_effect, AfterInferenceContext, AfterToolExecuteContext,
+    AnyStateAction,
     BeforeInferenceContext, BeforeToolExecuteContext, Phase, PhaseContext, PhaseEffect,
     PhaseOutput, PhasePolicy, RunAction, RunEndContext, RunStartContext, StateEffect, StateScope,
     StateSpec,
