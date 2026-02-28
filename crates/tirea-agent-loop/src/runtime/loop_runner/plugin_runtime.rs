@@ -2,7 +2,6 @@ use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::effect_applicator::{apply_phase_output, apply_phase_output_with_options};
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{
     reduce_state_actions, AnyPluginAction, AnyStateAction, CommutativeAction, Phase, StepContext,
 };
@@ -69,22 +68,6 @@ async fn dispatch_agent_phase<'a>(
     }
 }
 
-fn ensure_phase_output_has_no_state_actions(
-    agent: &dyn AgentBehavior,
-    phase: Phase,
-    output: &PhaseOutput,
-) -> Result<(), AgentLoopError> {
-    if output.state_actions.is_empty() {
-        return Ok(());
-    }
-    Err(AgentLoopError::StateError(format!(
-        "behavior '{}' emitted legacy PhaseOutput::state_actions in {:?}; \
-         use phase_actions()/reduce_plugin_actions() instead",
-        agent.id(),
-        phase
-    )))
-}
-
 /// Emit a single phase using the [`Agent`] declarative model.
 ///
 /// Builds a [`ReadOnlyContext`], calls the agent hook, and applies the
@@ -108,7 +91,6 @@ async fn emit_agent_phase_with_options(
     let ctx = build_read_only_context(phase, step, doc);
     let output = dispatch_agent_phase(agent, phase, &ctx).await;
     let plugin_actions = agent.phase_actions(phase, &ctx).await;
-    ensure_phase_output_has_no_state_actions(agent, phase, &output)?;
     if defer_commutative_state_actions {
         apply_phase_output_with_options(phase, step, output, doc, true)?
     } else {
@@ -486,19 +468,6 @@ mod tests {
         }
     }
 
-    struct LegacyStateActionBehavior;
-
-    #[async_trait]
-    impl AgentBehavior for LegacyStateActionBehavior {
-        fn id(&self) -> &str {
-            "legacy_state_action"
-        }
-
-        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().with_state_action(AnyStateAction::new::<OwnedDebugState>(true))
-        }
-    }
-
     struct PluginActionBehavior;
 
     #[async_trait]
@@ -536,24 +505,6 @@ mod tests {
             }
             reduce_state_actions(state_actions, base_snapshot, "plugin:plugin_action")
                 .map_err(|e| e.to_string())
-        }
-    }
-
-    #[tokio::test]
-    async fn emit_agent_phase_rejects_legacy_phase_output_state_actions() {
-        let fix = TestFixture::new();
-        let mut step = fix.step(vec![]);
-        let doc = DocCell::new(serde_json::json!({}));
-
-        let err = emit_agent_phase(Phase::RunStart, &mut step, &LegacyStateActionBehavior, &doc)
-            .await
-            .expect_err("legacy state actions must be rejected");
-
-        match err {
-            AgentLoopError::StateError(message) => {
-                assert!(message.contains("legacy PhaseOutput::state_actions"));
-            }
-            other => panic!("expected StateError, got {other:?}"),
         }
     }
 

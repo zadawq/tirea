@@ -2,8 +2,6 @@ use super::{Phase, SuspendTicket};
 use crate::runtime::run::TerminationReason;
 use crate::runtime::tool_call::ToolResult;
 
-use super::state_spec::AnyStateAction;
-
 /// Declarative effect emitted by an Agent phase hook.
 ///
 /// Each variant maps to a specific mutation that the loop engine will apply
@@ -34,12 +32,11 @@ pub enum PhaseEffect {
 
 /// Return type for [`Agent`](crate::runtime::plugin::agent::Agent) phase hooks.
 ///
-/// Carries declarative effects and typed state actions that the loop engine
-/// applies after each hook returns.
+/// Carries declarative effects that the loop engine applies after each hook
+/// returns.
 #[derive(Debug, Default)]
 pub struct PhaseOutput {
     pub effects: Vec<PhaseEffect>,
-    pub state_actions: Vec<AnyStateAction>,
 }
 
 impl PhaseOutput {
@@ -54,14 +51,8 @@ impl PhaseOutput {
         self
     }
 
-    #[must_use]
-    pub fn with_state_action(mut self, action: AnyStateAction) -> Self {
-        self.state_actions.push(action);
-        self
-    }
-
     pub fn is_empty(&self) -> bool {
-        self.effects.is_empty() && self.state_actions.is_empty()
+        self.effects.is_empty()
     }
 
     // -- convenience builders for effects --
@@ -189,7 +180,6 @@ mod tests {
         let output = PhaseOutput::default();
         assert!(output.is_empty());
         assert!(output.effects.is_empty());
-        assert!(output.state_actions.is_empty());
     }
 
     #[test]

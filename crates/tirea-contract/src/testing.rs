@@ -8,8 +8,8 @@ use crate::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseO
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::ToolDescriptor;
 use crate::runtime::{
-    reduce_state_actions, PendingToolCall, Phase, RunAction, StepContext, SuspendTicket,
-    ToolCallContext, ToolCallResumeMode,
+    PendingToolCall, Phase, RunAction, StepContext, SuspendTicket, ToolCallContext,
+    ToolCallResumeMode,
 };
 use crate::thread::Message;
 use crate::RunConfig;
@@ -120,9 +120,7 @@ pub fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
 
 /// Apply a phase output in tests using the same reducer path as runtime.
 ///
-/// This helper validates effects, applies them to `StepContext`, reduces
-/// `state_actions`, applies patch ops to the fixture doc, then queues the
-/// tracked patch on `step.pending_patches`.
+/// This helper validates effects and applies them to `StepContext`.
 pub fn apply_phase_output_for_test(
     phase: Phase,
     step: &mut StepContext<'_>,
@@ -149,18 +147,6 @@ pub fn apply_phase_output_for_test(
                 step.set_run_action(RunAction::Terminate(reason));
             }
         }
-    }
-
-    let tracked = reduce_state_actions(output.state_actions, &step.snapshot(), "agent")
-        .map_err(|e| e.to_string())?;
-    for patch in tracked {
-        {
-            let doc = step.ctx().doc();
-            for op in patch.patch().ops() {
-                doc.apply(op).map_err(|e| e.to_string())?;
-            }
-        }
-        step.emit_patch(patch);
     }
 
     Ok(())
