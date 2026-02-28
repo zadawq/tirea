@@ -1,3 +1,4 @@
+use crate::runtime_plugin::SkillRuntimeAction;
 use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{
@@ -9,7 +10,6 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tirea_contract::runtime::plugin::phase::AnyStateAction;
 use tirea_contract::runtime::tool_call::ToolCallContext;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
@@ -248,7 +248,9 @@ impl Tool for SkillActivateTool {
         let mut effect = self.execute_effect_impl(args, ctx).await?;
         let direct_patch = ctx.take_patch();
         if !direct_patch.patch().is_empty() {
-            effect = effect.with_state_action(AnyStateAction::Patch(direct_patch));
+            effect = effect.with_plugin_action(SkillRuntimeAction::ApplyPatch {
+                patch: direct_patch,
+            });
         }
         Ok(effect)
     }

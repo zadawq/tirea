@@ -1002,7 +1002,7 @@ async fn execute_single_tool_with_phases_impl(
         if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
             effect = ToolExecutionEffect::from(result);
         }
-        let result = effect.result;
+        let (result, state_actions, plugin_actions) = effect.into_parts();
         let outcome = ToolCallOutcome::from_tool_result(&result);
 
         let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
@@ -1019,8 +1019,8 @@ async fn execute_single_tool_with_phases_impl(
             },
             outcome,
             suspended_call,
-            effect.state_actions,
-            effect.plugin_actions,
+            state_actions,
+            plugin_actions,
         )
     };
 

@@ -1,10 +1,14 @@
 #![allow(missing_docs)]
 
-use serde_json::json;
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tirea_agent_loop::contracts::runtime::plugin::agent::AgentBehavior;
+use tirea_agent_loop::contracts::runtime::plugin::phase::AnyPluginAction;
 use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
@@ -12,8 +16,90 @@ use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_scope_and
 use tirea_extension_permission::PermissionPlugin;
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
-    SkillScriptTool,
+    SkillRuntimePlugin, SkillScriptTool,
 };
+use tirea_state::TrackedPatch;
+
+struct TestToolBehavior {
+    permission: PermissionPlugin,
+    skills_runtime: SkillRuntimePlugin,
+}
+
+impl TestToolBehavior {
+    fn new() -> Self {
+        Self {
+            permission: PermissionPlugin,
+            skills_runtime: SkillRuntimePlugin::new(),
+        }
+    }
+
+    fn route_reduce(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        if actions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut grouped: HashMap<String, Vec<AnyPluginAction>> = HashMap::new();
+        for action in actions {
+            grouped
+                .entry(action.plugin_id().to_string())
+                .or_default()
+                .push(action);
+        }
+
+        let mut merged = Vec::new();
+        for behavior in [
+            &self.permission as &dyn AgentBehavior,
+            &self.skills_runtime as &dyn AgentBehavior,
+        ] {
+            let mut routed = Vec::new();
+            for id in behavior.behavior_ids() {
+                if let Some(mut bucket) = grouped.remove(id) {
+                    routed.append(&mut bucket);
+                }
+            }
+            if routed.is_empty() {
+                continue;
+            }
+            merged.extend(behavior.reduce_plugin_actions(routed, base_snapshot)?);
+        }
+
+        if !grouped.is_empty() {
+            let mut ids: Vec<String> = grouped.into_keys().collect();
+            ids.sort();
+            return Err(format!(
+                "test behavior cannot route plugin actions for ids: {:?}",
+                ids
+            ));
+        }
+
+        Ok(merged)
+    }
+}
+
+#[async_trait]
+impl AgentBehavior for TestToolBehavior {
+    fn id(&self) -> &str {
+        "skills_integration_test_router"
+    }
+
+    fn behavior_ids(&self) -> Vec<&str> {
+        let mut ids = self.permission.behavior_ids();
+        ids.extend(self.skills_runtime.behavior_ids());
+        ids
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        self.route_reduce(actions, base_snapshot)
+    }
+}
 
 fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
     let td = TempDir::new().unwrap();
@@ -57,13 +143,13 @@ echo "hello"
 
 async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
-    let permission_plugin = PermissionPlugin;
+    let behavior = TestToolBehavior::new();
     let exec = execute_single_tool_with_scope_and_behavior(
         Some(tool),
         &call,
         &state,
         None,
-        Some(&permission_plugin),
+        Some(&behavior),
     )
     .await;
     let thread = if let Some(patch) = exec.patch.clone() {
@@ -81,13 +167,13 @@ async fn apply_tool_with_scope(
     scope: &tirea_contract::RunConfig,
 ) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
-    let permission_plugin = PermissionPlugin;
+    let behavior = TestToolBehavior::new();
     let exec = execute_single_tool_with_scope_and_behavior(
         Some(tool),
         &call,
         &state,
         Some(scope),
-        Some(&permission_plugin),
+        Some(&behavior),
     )
     .await;
     let thread = if let Some(patch) = exec.patch.clone() {

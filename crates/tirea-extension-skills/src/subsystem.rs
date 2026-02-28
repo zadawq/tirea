@@ -136,7 +136,7 @@ mod tests {
     use tempfile::TempDir;
     use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
     use tirea_contract::runtime::plugin::phase::Phase;
-    use tirea_contract::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult};
+    use tirea_contract::runtime::tool_call::{ToolError, ToolResult};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
     use tirea_contract::thread::{Message, ToolCall};

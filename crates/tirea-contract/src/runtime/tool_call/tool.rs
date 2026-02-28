@@ -198,8 +198,8 @@ impl ToolResult {
 #[derive(Debug)]
 pub struct ToolExecutionEffect {
     pub result: ToolResult,
-    pub state_actions: Vec<AnyStateAction>,
-    pub plugin_actions: Vec<AnyPluginAction>,
+    state_actions: Vec<AnyStateAction>,
+    plugin_actions: Vec<AnyPluginAction>,
 }
 
 impl ToolExecutionEffect {
@@ -212,10 +212,19 @@ impl ToolExecutionEffect {
         }
     }
 
+    /// Add one low-level state action.
+    ///
+    /// This legacy escape hatch is kept only for test-support scenarios.
+    /// Production integrations should emit plugin actions instead.
+    #[cfg(feature = "test-support")]
     #[must_use]
     pub fn with_state_action(mut self, action: AnyStateAction) -> Self {
         self.state_actions.push(action);
         self
+    }
+
+    pub(crate) fn push_state_action(&mut self, action: AnyStateAction) {
+        self.state_actions.push(action);
     }
 
     #[must_use]
@@ -225,6 +234,10 @@ impl ToolExecutionEffect {
     {
         self.plugin_actions.push(action.into());
         self
+    }
+
+    pub fn into_parts(self) -> (ToolResult, Vec<AnyStateAction>, Vec<AnyPluginAction>) {
+        (self.result, self.state_actions, self.plugin_actions)
     }
 }
 
@@ -386,9 +399,7 @@ pub trait Tool: Send + Sync {
         let mut effect = ToolExecutionEffect::from(result);
         let direct_patch = ctx.take_patch();
         if !direct_patch.patch().is_empty() {
-            effect
-                .state_actions
-                .push(AnyStateAction::Patch(direct_patch));
+            effect.push_state_action(AnyStateAction::Patch(direct_patch));
         }
         Ok(effect)
     }
@@ -1291,10 +1302,10 @@ mod tests {
             _args: Value,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolExecutionEffect, ToolError> {
-            Ok(
-                ToolExecutionEffect::new(ToolResult::success("effect_only", json!({"ok": true})))
-                    .with_state_action(AnyStateAction::new::<ToolEffectState>(1)),
-            )
+            let mut effect =
+                ToolExecutionEffect::new(ToolResult::success("effect_only", json!({"ok": true})));
+            effect.push_state_action(AnyStateAction::new::<ToolEffectState>(1));
+            Ok(effect)
         }
     }
 

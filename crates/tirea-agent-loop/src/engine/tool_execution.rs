@@ -29,7 +29,7 @@ pub(crate) fn merge_context_patch_into_effect(
     Err(ToolResult::error_with_code(
         &call.name,
         DIRECT_STATE_WRITE_DENIED_ERROR_CODE,
-        "direct ToolCallContext state writes are disabled; return ToolExecutionEffect::with_state_action(...) instead",
+        "direct ToolCallContext state writes are disabled; emit ToolExecutionEffect actions instead",
     ))
 }
 
@@ -118,11 +118,7 @@ pub async fn execute_single_tool_with_scope_and_behavior(
             patch: None,
         };
     }
-    let plugin_actions = effect.plugin_actions;
-    let result = effect.result;
-
-    // Extract state changes through the unified action/reducer pipeline.
-    let state_actions = effect.state_actions;
+    let (result, state_actions, plugin_actions) = effect.into_parts();
 
     let action_patches =
         match reduce_state_actions(state_actions, state, &format!("tool:{}", call.name)) {

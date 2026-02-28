@@ -7,10 +7,12 @@ use tempfile::TempDir;
 use tirea_agentos::contracts::runtime::tool_call::ToolDescriptor;
 use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
 use tirea_agentos::contracts::AgentEvent;
-use tirea_agentos::engine::tool_execution::execute_single_tool;
+use tirea_agentos::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
+use tirea_agentos::extensions::permission::PermissionPlugin;
 use tirea_agentos::extensions::skills::{
-    FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem,
+    FsSkill, InMemorySkillRegistry, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
 };
+use tirea_agentos::orchestrator::compose_behaviors;
 use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
@@ -47,7 +49,21 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let state = thread.rebuild_state().unwrap();
     let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
 
-    let exec = execute_single_tool(Some(tool.as_ref()), &call, &state).await;
+    let behavior = compose_behaviors(
+        "skills_test_router",
+        vec![
+            Arc::new(PermissionPlugin),
+            Arc::new(SkillRuntimePlugin::new()),
+        ],
+    );
+    let exec = execute_single_tool_with_scope_and_behavior(
+        Some(tool.as_ref()),
+        &call,
+        &state,
+        None,
+        Some(behavior.as_ref()),
+    )
+    .await;
     assert!(exec.result.is_success());
 
     // Simulate tool call lifecycle events being converted to AG-UI.
