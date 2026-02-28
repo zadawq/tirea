@@ -15,11 +15,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
-pub use client_transport::{McpProgressUpdate, McpToolTransport};
+pub use client_transport::{McpProgressUpdate, McpToolTransport, SamplingHandler};
 
 const MCP_META_SERVER: &str = "mcp.server";
 const MCP_META_TOOL: &str = "mcp.tool";
 const MCP_META_TRANSPORT: &str = "mcp.transport";
+const MCP_META_UI_RESOURCE_URI: &str = "mcp.ui.resourceUri";
+const MCP_META_UI_CONTENT: &str = "mcp.ui.content";
+const MCP_META_UI_MIME_TYPE: &str = "mcp.ui.mimeType";
 const MCP_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(100);
 const MCP_PROGRESS_MIN_DELTA: f64 = 0.01;
 
@@ -100,6 +103,7 @@ struct McpTool {
     server_name: String,
     tool_name: String,
     transport: Arc<dyn McpToolTransport>,
+    ui_resource_uri: Option<String>,
 }
 
 impl McpTool {
@@ -127,11 +131,24 @@ impl McpTool {
             d = d.with_category(group);
         }
 
+        let ui_resource_uri = def
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("ui"))
+            .and_then(|ui| ui.get("resourceUri"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        if let Some(ref uri) = ui_resource_uri {
+            d = d.with_metadata(MCP_META_UI_RESOURCE_URI, Value::String(uri.clone()));
+        }
+
         Self {
             descriptor: d,
             server_name,
             tool_name: def.name,
             transport,
+            ui_resource_uri,
         }
     }
 
@@ -175,12 +192,47 @@ impl Tool for McpTool {
             emit_mcp_progress(ctx, &mut gate, update);
         }
 
-        Ok(with_mcp_result_metadata(
+        let mut result = with_mcp_result_metadata(
             ToolResult::success(self.descriptor.id.clone(), res),
             &self.server_name,
             &self.tool_name,
-        ))
+        );
+
+        if let Some(ref uri) = self.ui_resource_uri {
+            if let Some(content) = fetch_ui_resource(&self.transport, uri).await {
+                result = result
+                    .with_metadata(MCP_META_UI_RESOURCE_URI, Value::String(uri.clone()))
+                    .with_metadata(MCP_META_UI_CONTENT, Value::String(content.text))
+                    .with_metadata(
+                        MCP_META_UI_MIME_TYPE,
+                        Value::String(content.mime_type),
+                    );
+            }
+        }
+
+        Ok(result)
     }
+}
+
+struct UiResourceContent {
+    text: String,
+    mime_type: String,
+}
+
+async fn fetch_ui_resource(
+    transport: &Arc<dyn McpToolTransport>,
+    uri: &str,
+) -> Option<UiResourceContent> {
+    let value = transport.read_resource(uri).await.ok()?;
+    let contents = value.get("contents")?.as_array()?;
+    let first = contents.first()?;
+    let text = first.get("text")?.as_str()?.to_string();
+    let mime_type = first
+        .get("mimeType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text/html")
+        .to_string();
+    Some(UiResourceContent { text, mime_type })
 }
 
 fn emit_mcp_progress(
@@ -412,10 +464,22 @@ impl McpToolRegistryManager {
     pub async fn connect(
         configs: impl IntoIterator<Item = McpServerConnectionConfig>,
     ) -> Result<Self, McpToolRegistryError> {
+        Self::connect_with_sampling(configs, None).await
+    }
+
+    /// Connect to MCP servers with an optional sampling handler.
+    ///
+    /// When `sampling_handler` is provided, the client declares sampling
+    /// capability during initialization and routes incoming
+    /// `sampling/createMessage` requests from MCP servers to this handler.
+    pub async fn connect_with_sampling(
+        configs: impl IntoIterator<Item = McpServerConnectionConfig>,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
+    ) -> Result<Self, McpToolRegistryError> {
         let mut entries: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)> = Vec::new();
         for cfg in configs {
             validate_server_name(&cfg.name)?;
-            let transport = connect_transport(&cfg).await?;
+            let transport = connect_transport(&cfg, sampling_handler.clone()).await?;
             entries.push((cfg, transport));
         }
         Self::from_tool_transports(entries).await
@@ -1221,5 +1285,242 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(err, McpToolRegistryError::ToolIdConflict(_)));
+    }
+
+    // ---- UI metadata tests ----
+
+    #[derive(Debug, Clone)]
+    struct FakeUiTransport {
+        tools: Vec<McpToolDefinition>,
+        resources: HashMap<String, (String, String)>, // uri -> (text, mimeType)
+    }
+
+    impl FakeUiTransport {
+        fn new(tools: Vec<McpToolDefinition>) -> Self {
+            Self {
+                tools,
+                resources: HashMap::new(),
+            }
+        }
+
+        fn with_resource(
+            mut self,
+            uri: impl Into<String>,
+            text: impl Into<String>,
+            mime: impl Into<String>,
+        ) -> Self {
+            self.resources
+                .insert(uri.into(), (text.into(), mime.into()));
+            self
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for FakeUiTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<Value, McpTransportError> {
+            Ok(json!({"ok": true}))
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
+            match self.resources.get(uri) {
+                Some((text, mime)) => Ok(json!({
+                    "contents": [{"uri": uri, "text": text, "mimeType": mime}]
+                })),
+                None => Err(McpTransportError::ServerError(format!(
+                    "not found: {}",
+                    uri
+                ))),
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_tool_extracts_ui_resource_uri_from_meta() {
+        let mut def = McpToolDefinition::new("chart");
+        def.meta = Some(json!({"ui": {"resourceUri": "ui://chart/render"}}));
+
+        let tool = McpTool::new(
+            "mcp__s1__chart".to_string(),
+            "s1".to_string(),
+            def,
+            Arc::new(FakeTransport::new(vec![])),
+            TransportTypeId::Stdio,
+        );
+
+        assert_eq!(tool.ui_resource_uri, Some("ui://chart/render".to_string()));
+    }
+
+    #[test]
+    fn mcp_tool_without_meta_has_no_ui_uri() {
+        let def = McpToolDefinition::new("echo");
+
+        let tool = McpTool::new(
+            "mcp__s1__echo".to_string(),
+            "s1".to_string(),
+            def,
+            Arc::new(FakeTransport::new(vec![])),
+            TransportTypeId::Stdio,
+        );
+
+        assert_eq!(tool.ui_resource_uri, None);
+    }
+
+    #[test]
+    fn mcp_tool_descriptor_includes_ui_metadata() {
+        let mut def = McpToolDefinition::new("dashboard");
+        def.meta = Some(json!({"ui": {"resourceUri": "ui://dashboard/view"}}));
+
+        let tool = McpTool::new(
+            "mcp__s1__dashboard".to_string(),
+            "s1".to_string(),
+            def,
+            Arc::new(FakeTransport::new(vec![])),
+            TransportTypeId::Stdio,
+        );
+
+        let desc = tool.descriptor();
+        assert_eq!(
+            desc.metadata.get(MCP_META_UI_RESOURCE_URI),
+            Some(&json!("ui://dashboard/view"))
+        );
+    }
+
+    #[test]
+    fn mcp_tool_descriptor_without_ui_has_no_ui_metadata() {
+        let def = McpToolDefinition::new("echo");
+        let tool = McpTool::new(
+            "mcp__s1__echo".to_string(),
+            "s1".to_string(),
+            def,
+            Arc::new(FakeTransport::new(vec![])),
+            TransportTypeId::Stdio,
+        );
+
+        let desc = tool.descriptor();
+        assert!(desc.metadata.get(MCP_META_UI_RESOURCE_URI).is_none());
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_execute_fetches_ui_resource() {
+        let mut def = McpToolDefinition::new("chart");
+        def.meta = Some(json!({"ui": {"resourceUri": "ui://chart/render"}}));
+
+        let transport = Arc::new(
+            FakeUiTransport::new(vec![def.clone()])
+                .with_resource("ui://chart/render", "<html>chart</html>", "text/html"),
+        );
+
+        let tool = McpTool::new(
+            "mcp__s1__chart".to_string(),
+            "s1".to_string(),
+            def,
+            transport,
+            TransportTypeId::Stdio,
+        );
+
+        let fix = tirea_contract::testing::TestFixture::new();
+        let ctx = fix.ctx_with("ui-fetch", "test");
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+
+        assert!(result.is_success());
+        assert_eq!(
+            result.metadata.get(MCP_META_UI_CONTENT),
+            Some(&json!("<html>chart</html>"))
+        );
+        assert_eq!(
+            result.metadata.get(MCP_META_UI_MIME_TYPE),
+            Some(&json!("text/html"))
+        );
+        assert_eq!(
+            result.metadata.get(MCP_META_UI_RESOURCE_URI),
+            Some(&json!("ui://chart/render"))
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_execute_ui_fetch_failure_non_fatal() {
+        let mut def = McpToolDefinition::new("broken");
+        def.meta = Some(json!({"ui": {"resourceUri": "ui://broken/missing"}}));
+
+        let transport = Arc::new(FakeUiTransport::new(vec![def.clone()]));
+
+        let tool = McpTool::new(
+            "mcp__s1__broken".to_string(),
+            "s1".to_string(),
+            def,
+            transport,
+            TransportTypeId::Stdio,
+        );
+
+        let fix = tirea_contract::testing::TestFixture::new();
+        let ctx = fix.ctx_with("ui-fail", "test");
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+
+        assert!(result.is_success());
+        assert!(result.metadata.get(MCP_META_UI_CONTENT).is_none());
+    }
+
+    #[test]
+    fn extract_resource_text_valid_response() {
+        let transport = Arc::new(
+            FakeUiTransport::new(vec![]).with_resource("ui://t/v", "<div>ok</div>", "text/html"),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let content = rt.block_on(fetch_ui_resource(
+            &(transport as Arc<dyn McpToolTransport>),
+            "ui://t/v",
+        ));
+        let content = content.unwrap();
+        assert_eq!(content.text, "<div>ok</div>");
+        assert_eq!(content.mime_type, "text/html");
+    }
+
+    #[test]
+    fn extract_resource_text_missing_returns_none() {
+        let transport = Arc::new(FakeUiTransport::new(vec![]));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let content = rt.block_on(fetch_ui_resource(
+            &(transport as Arc<dyn McpToolTransport>),
+            "ui://missing",
+        ));
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn extract_resource_text_defaults_mime_to_html() {
+        // Verify the extraction logic defaults mimeType to "text/html"
+        // when the field is absent from the resource response.
+        let value = json!({
+            "contents": [{"uri": "ui://x", "text": "hello"}]
+        });
+        let contents = value.get("contents").unwrap().as_array().unwrap();
+        let first = contents.first().unwrap();
+        let text = first.get("text").unwrap().as_str().unwrap().to_string();
+        let mime_type = first
+            .get("mimeType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("text/html")
+            .to_string();
+        assert_eq!(text, "hello");
+        assert_eq!(mime_type, "text/html");
     }
 }

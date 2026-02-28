@@ -1,9 +1,13 @@
 use async_trait::async_trait;
-use mcp::transport::{McpServerConnectionConfig, McpTransportError, TransportTypeId};
+use mcp::transport::{
+    ClientInfo, InitializeCapabilities, McpServerConnectionConfig, McpTransportError,
+    SamplingCapabilities, TransportTypeId,
+};
 use mcp::{
-    CallToolParams, CallToolResult, InitializeParams, JsonRpcId, JsonRpcMessage,
-    JsonRpcNotification, JsonRpcPayload, JsonRpcRequest, JsonRpcResponse, ListToolsResult,
-    McpToolDefinition, ProgressNotificationParams, ProgressToken,
+    CallToolParams, CallToolResult, CreateMessageParams, CreateMessageResult, JsonRpcId,
+    JsonRpcMessage, JsonRpcNotification, JsonRpcPayload, JsonRpcRequest, JsonRpcResponse,
+    ListToolsResult, McpToolDefinition, ProgressNotificationParams, ProgressToken,
+    MCP_PROTOCOL_VERSION,
 };
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -21,6 +25,18 @@ pub struct McpProgressUpdate {
     pub message: Option<String>,
 }
 
+/// Handler for MCP `sampling/createMessage` requests from the server.
+///
+/// When an MCP server sends a `sampling/createMessage` request during tool
+/// execution, this handler is invoked to route it to an LLM for inference.
+#[async_trait]
+pub trait SamplingHandler: Send + Sync {
+    async fn handle_create_message(
+        &self,
+        params: CreateMessageParams,
+    ) -> Result<CreateMessageResult, McpTransportError>;
+}
+
 #[async_trait]
 pub trait McpToolTransport: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError>;
@@ -31,17 +47,30 @@ pub trait McpToolTransport: Send + Sync {
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
     ) -> Result<Value, McpTransportError>;
     fn transport_type(&self) -> TransportTypeId;
+
+    /// Read a resource by URI (e.g. `ui://...` for MCP Apps).
+    ///
+    /// Returns the raw JSON value from the `resources/read` response.
+    async fn read_resource(&self, _uri: &str) -> Result<Value, McpTransportError> {
+        Err(McpTransportError::TransportError(
+            "read_resource not supported".to_string(),
+        ))
+    }
 }
 
 pub(crate) async fn connect_transport(
     config: &McpServerConnectionConfig,
+    sampling_handler: Option<Arc<dyn SamplingHandler>>,
 ) -> Result<Arc<dyn McpToolTransport>, McpTransportError> {
     match config.transport {
         TransportTypeId::Stdio => {
-            let transport = ProgressAwareStdioTransport::connect(config).await?;
+            let transport =
+                ProgressAwareStdioTransport::connect(config, sampling_handler).await?;
             Ok(Arc::new(transport))
         }
         TransportTypeId::Http => {
+            // HTTP transport is request-response; no persistent bidirectional
+            // channel for server-initiated requests like sampling.
             let transport = ProgressAwareHttpTransport::connect(config)?;
             Ok(Arc::new(transport))
         }
@@ -145,6 +174,7 @@ pub(crate) struct ProgressAwareStdioTransport {
 impl ProgressAwareStdioTransport {
     pub(crate) async fn connect(
         config: &McpServerConnectionConfig,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
     ) -> Result<Self, McpTransportError> {
         let command = config.command.as_ref().ok_or_else(|| {
             McpTransportError::TransportError("Stdio transport requires command".to_string())
@@ -207,6 +237,8 @@ impl ProgressAwareStdioTransport {
         let pending_reader = Arc::clone(&pending);
         let progress_reader = Arc::clone(&progress_subscribers);
         let alive_reader = Arc::clone(&alive);
+        let write_tx_reader = write_tx.clone();
+        let sampling_handler_reader = sampling_handler.clone();
         let mut reader = BufReader::new(stdout);
         tokio::spawn(async move {
             let mut line = String::new();
@@ -230,7 +262,19 @@ impl ProgressAwareStdioTransport {
                         Ok(JsonRpcMessage::Notification(notification)) => {
                             handle_progress_notification(&progress_reader, notification);
                         }
-                        Ok(JsonRpcMessage::Request(_)) => {}
+                        Ok(JsonRpcMessage::Request(request)) => {
+                            let handler = sampling_handler_reader.clone();
+                            let wtx = write_tx_reader.clone();
+                            tokio::spawn(async move {
+                                let response =
+                                    handle_server_request(handler.as_deref(), &request).await;
+                                let line = format!(
+                                    "{}\n",
+                                    serde_json::to_string(&response).unwrap_or_default()
+                                );
+                                let _ = wtx.send(WriteRequest { line }).await;
+                            });
+                        }
                         Err(e) => {
                             eprintln!("Failed to parse MCP message: {} - {}", e, line.trim());
                         }
@@ -258,13 +302,22 @@ impl ProgressAwareStdioTransport {
             timeout: Duration::from_secs(config.timeout_secs),
         };
 
-        let init_params = InitializeParams::new(Some(config.config.clone()));
+        let mut capabilities = InitializeCapabilities::default();
+        if sampling_handler.is_some() {
+            capabilities.sampling = Some(SamplingCapabilities::default());
+        }
+        let init_params = json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": serde_json::to_value(&capabilities)
+                .unwrap_or_else(|_| json!({})),
+            "clientInfo": serde_json::to_value(ClientInfo::new(
+                "tirea-mcp",
+                env!("CARGO_PKG_VERSION"),
+            )).unwrap_or_else(|_| json!({})),
+            "config": config.config,
+        });
         transport
-            .send_request(
-                "initialize",
-                Some(serde_json::to_value(&init_params)?),
-                None,
-            )
+            .send_request("initialize", Some(init_params), None)
             .await?;
         let _ = transport
             .send_notification("notifications/initialized", Some(json!({})))
@@ -451,6 +504,58 @@ fn decode_http_response_payload(
     })
 }
 
+async fn handle_server_request(
+    sampling_handler: Option<&dyn SamplingHandler>,
+    request: &JsonRpcRequest,
+) -> JsonRpcResponse {
+    match request.method.as_str() {
+        "sampling/createMessage" => {
+            let Some(handler) = sampling_handler else {
+                return JsonRpcResponse::error(
+                    request.id.clone(),
+                    -32601,
+                    "Sampling not supported by this client".to_string(),
+                    None,
+                );
+            };
+            let params = match request
+                .params
+                .as_ref()
+                .and_then(|p| serde_json::from_value::<CreateMessageParams>(p.clone()).ok())
+            {
+                Some(p) => p,
+                None => {
+                    return JsonRpcResponse::error(
+                        request.id.clone(),
+                        -32602,
+                        "Invalid sampling/createMessage params".to_string(),
+                        None,
+                    );
+                }
+            };
+            match handler.handle_create_message(params).await {
+                Ok(result) => {
+                    let result_value =
+                        serde_json::to_value(&result).unwrap_or(Value::Null);
+                    JsonRpcResponse::success(request.id.clone(), result_value)
+                }
+                Err(e) => JsonRpcResponse::error(
+                    request.id.clone(),
+                    -32000,
+                    e.to_string(),
+                    None,
+                ),
+            }
+        }
+        _ => JsonRpcResponse::error(
+            request.id.clone(),
+            -32601,
+            format!("Method not supported: {}", request.method),
+            None,
+        ),
+    }
+}
+
 #[async_trait]
 impl McpToolTransport for ProgressAwareStdioTransport {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
@@ -518,6 +623,11 @@ impl McpToolTransport for ProgressAwareStdioTransport {
 
     fn transport_type(&self) -> TransportTypeId {
         TransportTypeId::Stdio
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
+        self.send_request("resources/read", Some(json!({"uri": uri})), None)
+            .await
     }
 }
 
@@ -588,6 +698,11 @@ impl McpToolTransport for ProgressAwareHttpTransport {
 
     fn transport_type(&self) -> TransportTypeId {
         TransportTypeId::Http
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
+        self.send_request("resources/read", Some(json!({"uri": uri})), None)
+            .await
     }
 }
 
@@ -970,5 +1085,147 @@ mod tests {
             .err()
             .expect("error");
         assert!(matches!(err, McpTransportError::ProtocolError(_)));
+    }
+
+    // ---- handle_server_request tests ----
+
+    struct MockSamplingHandler {
+        response_text: String,
+    }
+
+    #[async_trait]
+    impl SamplingHandler for MockSamplingHandler {
+        async fn handle_create_message(
+            &self,
+            _params: CreateMessageParams,
+        ) -> Result<CreateMessageResult, McpTransportError> {
+            use mcp::{Role, SamplingContent};
+            Ok(CreateMessageResult {
+                role: Role::Assistant,
+                content: vec![SamplingContent::Text {
+                    text: self.response_text.clone(),
+                    annotations: None,
+                    meta: None,
+                }],
+                model: "mock-model".to_string(),
+                stop_reason: Some("end_turn".to_string()),
+                meta: None,
+            })
+        }
+    }
+
+    struct FailingSamplingHandler;
+
+    #[async_trait]
+    impl SamplingHandler for FailingSamplingHandler {
+        async fn handle_create_message(
+            &self,
+            _params: CreateMessageParams,
+        ) -> Result<CreateMessageResult, McpTransportError> {
+            Err(McpTransportError::TransportError(
+                "handler failed".to_string(),
+            ))
+        }
+    }
+
+    fn sampling_request(id: i64, params: Value) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            JsonRpcId::Number(id),
+            "sampling/createMessage".to_string(),
+            Some(params),
+        )
+    }
+
+    #[tokio::test]
+    async fn handle_sampling_request_with_handler_succeeds() {
+        let handler = MockSamplingHandler {
+            response_text: "I can help".to_string(),
+        };
+        let request = sampling_request(
+            1,
+            json!({
+                "messages": [],
+                "maxTokens": 100,
+            }),
+        );
+        let response = handle_server_request(Some(&handler), &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Success { result } => {
+                assert_eq!(result["model"], json!("mock-model"));
+                assert_eq!(result["content"][0]["text"], json!("I can help"));
+            }
+            mcp::JsonRpcPayload::Error { error } => {
+                panic!("expected success, got error: {}", error);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_sampling_request_without_handler_returns_error() {
+        let request = sampling_request(
+            2,
+            json!({
+                "messages": [],
+                "maxTokens": 100,
+            }),
+        );
+        let response = handle_server_request(None, &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Error { error } => {
+                assert!(error.to_string().contains("Sampling not supported"));
+            }
+            _ => panic!("expected error response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_sampling_request_with_invalid_params_returns_error() {
+        let handler = MockSamplingHandler {
+            response_text: "unused".to_string(),
+        };
+        let request = sampling_request(3, json!({"invalid": true}));
+        let response = handle_server_request(Some(&handler), &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Error { error } => {
+                assert!(error.to_string().contains("Invalid sampling/createMessage"));
+            }
+            _ => panic!("expected error response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_sampling_request_handler_error_propagates() {
+        let handler = FailingSamplingHandler;
+        let request = sampling_request(
+            4,
+            json!({
+                "messages": [],
+                "maxTokens": 100,
+            }),
+        );
+        let response = handle_server_request(Some(&handler), &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Error { error } => {
+                assert!(error.to_string().contains("handler failed"));
+            }
+            _ => panic!("expected error response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_unknown_method_returns_method_not_found() {
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(5),
+            "unknown/method".to_string(),
+            Some(json!({})),
+        );
+        let response = handle_server_request(None, &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Error { error } => {
+                assert!(error.to_string().contains("Method not supported"));
+                assert!(error.to_string().contains("unknown/method"));
+            }
+            _ => panic!("expected error response"),
+        }
     }
 }

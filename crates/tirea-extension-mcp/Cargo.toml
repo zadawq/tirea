@@ -18,3 +18,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 [dev-dependencies]
 tirea-contract = { version = "0.2.0", path = "../tirea-contract", features = ["test-support"] }
 tirea-state = { version = "0.2.0", path = "../tirea-state" }
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "time", "sync"] }
