@@ -337,7 +337,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
     assert!(merged.contains("<available_skills>"));
     assert!(
         !merged.contains("<skill_instructions skill=\"s1\">"),
-        "runtime skill instructions are delivered via append_user_messages, not system context"
+        "runtime skill instructions are delivered via ToolExecutionEffect user messages, not system context"
     );
 }
 

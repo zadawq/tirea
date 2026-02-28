@@ -9,7 +9,7 @@ use tirea_state::TrackedPatch;
 
 /// Placeholder plugin for activated skill state.
 ///
-/// Skill instructions are injected via `append_user_messages` (single injection path)
+/// Skill instructions are delivered as user messages via `ToolExecutionEffect`
 /// and tool results for references/scripts/assets are already visible in conversation
 /// history. This plugin no longer injects system context to avoid token waste from
 /// duplicate injection.
@@ -39,7 +39,7 @@ impl AgentBehavior for SkillRuntimePlugin {
     }
 
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        // No-op: skill content is delivered via append_user_messages and tool results.
+        // No-op: skill content is delivered via ToolExecutionEffect user messages and tool results.
         PhaseOutput::default()
     }
 
