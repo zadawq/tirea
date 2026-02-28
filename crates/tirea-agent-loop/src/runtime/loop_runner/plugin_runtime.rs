@@ -1,5 +1,5 @@
 use super::core::{clear_agent_inference_error, set_agent_inference_error};
-use super::effect_applicator::apply_phase_output;
+use super::effect_applicator::{apply_phase_output, apply_phase_output_with_options};
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
@@ -118,10 +118,24 @@ pub(super) async fn emit_agent_phase(
     agent: &dyn AgentBehavior,
     doc: &DocCell,
 ) -> Result<(), AgentLoopError> {
+    emit_agent_phase_with_options(phase, step, agent, doc, false).await
+}
+
+async fn emit_agent_phase_with_options(
+    phase: Phase,
+    step: &mut StepContext<'_>,
+    agent: &dyn AgentBehavior,
+    doc: &DocCell,
+    defer_commutative_state_actions: bool,
+) -> Result<(), AgentLoopError> {
     let ctx = build_read_only_context(phase, step, doc);
     let output = dispatch_agent_phase(agent, phase, &ctx).await;
     validate_owned_state_actions(agent, phase, step, &output)?;
-    apply_phase_output(phase, step, output, doc)
+    if defer_commutative_state_actions {
+        apply_phase_output_with_options(phase, step, output, doc, true)
+    } else {
+        apply_phase_output(phase, step, output, doc)
+    }
 }
 
 // =========================================================================
@@ -301,9 +315,11 @@ pub(super) async fn emit_tool_phase(
     step: &mut StepContext<'_>,
     agent: Option<&dyn AgentBehavior>,
     doc: &DocCell,
+    defer_commutative_state_actions: bool,
 ) -> Result<(), AgentLoopError> {
     if let Some(agent) = agent {
-        emit_agent_phase(phase, step, agent, doc).await
+        emit_agent_phase_with_options(phase, step, agent, doc, defer_commutative_state_actions)
+            .await
     } else {
         Ok(())
     }

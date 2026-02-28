@@ -861,6 +861,7 @@ async fn execute_single_tool_with_phases_impl(
         &mut step,
         phase_ctx.agent_behavior,
         &doc,
+        defer_commutative_state_actions,
     )
     .await?;
 
@@ -996,6 +997,7 @@ async fn execute_single_tool_with_phases_impl(
         &mut step,
         phase_ctx.agent_behavior,
         &doc,
+        defer_commutative_state_actions,
     )
     .await?;
 
@@ -1025,9 +1027,11 @@ async fn execute_single_tool_with_phases_impl(
     let phase_patch_actions = std::mem::take(&mut step.pending_patches)
         .into_iter()
         .map(AnyStateAction::Patch);
+    let mut commutative_state_actions = std::mem::take(&mut step.pending_commutative_actions);
 
-    let (commutative_state_actions, reducible_state_actions) =
+    let (tool_commutative_actions, reducible_state_actions) =
         partition_tool_state_actions(tool_state_actions, defer_commutative_state_actions);
+    commutative_state_actions.extend(tool_commutative_actions);
     let tool_patches = reduce_tool_state_actions(
         state,
         reducible_state_actions,

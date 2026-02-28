@@ -1,3 +1,4 @@
+use super::state_spec::CommutativeAction;
 use super::{RunAction, StepOutcome, SuspendTicket, ToolCallAction};
 use crate::runtime::llm::StreamResult;
 use crate::runtime::tool_call::ToolCallContext;
@@ -105,6 +106,8 @@ pub struct StepContext<'a> {
     // === Pending State Changes ===
     /// Patches to apply to session state after this phase completes.
     pub pending_patches: Vec<TrackedPatch>,
+    /// Commutative actions to merge/apply at a later stage.
+    pub pending_commutative_actions: Vec<CommutativeAction>,
 }
 
 impl<'a> StepContext<'a> {
@@ -127,6 +130,7 @@ impl<'a> StepContext<'a> {
             response: None,
             run_action: None,
             pending_patches: Vec::new(),
+            pending_commutative_actions: Vec::new(),
         }
     }
 
@@ -193,6 +197,7 @@ impl<'a> StepContext<'a> {
         self.response = None;
         self.run_action = None;
         self.pending_patches.clear();
+        self.pending_commutative_actions.clear();
     }
 
     // =========================================================================
@@ -320,6 +325,11 @@ impl<'a> StepContext<'a> {
     /// Emit a state patch side effect.
     pub fn emit_patch(&mut self, patch: TrackedPatch) {
         self.pending_patches.push(patch);
+    }
+
+    /// Emit a commutative state action side effect.
+    pub fn emit_commutative_action(&mut self, action: CommutativeAction) {
+        self.pending_commutative_actions.push(action);
     }
 
     /// Effective run-level action for current step.

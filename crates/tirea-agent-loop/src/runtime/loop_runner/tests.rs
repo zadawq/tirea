@@ -8483,6 +8483,46 @@ fn test_parallel_tools_commutative_state_actions_merge_without_conflict() {
 }
 
 #[test]
+fn test_parallel_plugin_commutative_state_actions_merge_without_conflict() {
+    struct ParallelCommutativePlugin;
+
+    #[async_trait]
+    impl AgentBehavior for ParallelCommutativePlugin {
+        fn id(&self) -> &str {
+            "parallel_commutative_plugin"
+        }
+
+        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().with_state_action(AnyStateAction::counter_add("counter", 1))
+        }
+    }
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::with_initial_state("test", json!({"counter": 0}));
+        let result = StreamResult {
+            text: "plugin commutative action calls".to_string(),
+            tool_calls: vec![
+                crate::contracts::thread::ToolCall::new("call_1", "echo", json!({"message": "a"})),
+                crate::contracts::thread::ToolCall::new("call_2", "echo", json!({"message": "b"})),
+            ],
+            usage: None,
+        };
+        let tools = tool_map([EchoTool]);
+        let agent = BaseAgent::default().with_behavior(Arc::new(ParallelCommutativePlugin));
+
+        let thread = execute_tools_with_config(thread, &result, &tools, &agent)
+            .await
+            .expect("parallel plugin commutative actions should merge")
+            .into_thread();
+
+        let state = thread.rebuild_state().expect("state should rebuild");
+        assert_eq!(state["counter"], json!(2));
+        assert_eq!(thread.message_count(), 2);
+    });
+}
+
+#[test]
 fn test_sequential_tools_partial_failure() {
     // Same test but with sequential execution.
     let rt = tokio::runtime::Runtime::new().unwrap();

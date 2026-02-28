@@ -1,7 +1,7 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
 use crate::contracts::runtime::plugin::phase::{
-    reduce_state_actions, Phase, RunAction, StepContext,
+    reduce_state_actions, AnyStateAction, Phase, RunAction, StepContext,
 };
 use tirea_state::DocCell;
 
@@ -15,6 +15,20 @@ pub fn apply_phase_output(
     output: PhaseOutput,
     doc: &DocCell,
 ) -> Result<(), AgentLoopError> {
+    apply_phase_output_with_options(phase, step, output, doc, false)
+}
+
+/// Apply a [`PhaseOutput`] with configurable state-action handling behavior.
+///
+/// When `defer_commutative_state_actions` is true, commutative actions are
+/// buffered on [`StepContext`] instead of being reduced immediately.
+pub fn apply_phase_output_with_options(
+    phase: Phase,
+    step: &mut StepContext<'_>,
+    output: PhaseOutput,
+    doc: &DocCell,
+    defer_commutative_state_actions: bool,
+) -> Result<(), AgentLoopError> {
     // Validate all effects before applying any.
     for effect in &output.effects {
         validate_effect(phase, effect).map_err(AgentLoopError::StateError)?;
@@ -24,7 +38,17 @@ pub fn apply_phase_output(
         apply_effect(step, effect);
     }
 
-    let tracked_actions = reduce_state_actions(output.state_actions, &doc.snapshot(), "agent")
+    let mut reducible_actions = Vec::new();
+    for action in output.state_actions {
+        match action {
+            AnyStateAction::Commutative(commutative) if defer_commutative_state_actions => {
+                step.emit_commutative_action(commutative);
+            }
+            other => reducible_actions.push(other),
+        }
+    }
+
+    let tracked_actions = reduce_state_actions(reducible_actions, &doc.snapshot(), "agent")
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     for tracked in tracked_actions {
         step.emit_patch(tracked);
@@ -310,5 +334,20 @@ mod tests {
             }
             other => panic!("expected pending patch, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn apply_phase_output_with_options_defers_commutative_actions() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(json!({ "counter": 0 }));
+
+        let output =
+            PhaseOutput::default().with_state_action(AnyStateAction::counter_add("counter", 2));
+        apply_phase_output_with_options(Phase::BeforeToolExecute, &mut step, output, &doc, true)
+            .expect("apply should succeed");
+
+        assert!(step.pending_patches.is_empty());
+        assert_eq!(step.pending_commutative_actions.len(), 1);
     }
 }
