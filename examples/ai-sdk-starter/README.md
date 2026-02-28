@@ -1,67 +1,64 @@
 # AI SDK Starter
 
-Next.js frontend using Vercel AI SDK v6 (`@ai-sdk/react`) to chat with `tirea-agentos-server`.
+Vite + React + React Router frontend using Vercel AI SDK v6 (`@ai-sdk/react`) to chat with a tirea agent backend.
 
 ## Architecture
 
 ```
-Browser (useChat) → Next.js API Route → tirea-agentos-server → LLM
-                    (SSE passthrough)
+Browser (useChat) → Rust Agent (axum + CORS) → LLM
+                    (SSE direct)
 ```
 
-The server emits [AI SDK v6 UI Message Stream](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) events as SSE (`data: {"type":"text-delta","id":"txt_0","delta":"..."}`). The Next.js API route at `app/api/chat/route.ts` passes the SSE stream through directly with the `X-Vercel-AI-UI-Message-Stream: v1` header.
+The Rust agent at `agent/` serves AI SDK v6 UI Message Stream events as SSE. The Vite SPA connects directly via CORS — no Node.js proxy layer.
+
+Three demo pages:
+- `/` — Canvas with todo board, shared state panel, theme toggle
+- `/basic` — Backend tools (weather, stock, notes), tool approval, interactive dialogs
+- `/threads` — Backend-persisted thread management with history
 
 ## Prerequisites
 
 - Node.js 18+
-- A running `tirea-agentos-server` instance (default: `http://localhost:8080`)
+- Rust toolchain (for the agent binary)
+- `DEEPSEEK_API_KEY` environment variable
 
 ## Quick Start
 
 ```bash
-# 1. Start the Rust backend with DeepSeek (in project root)
-DEEPSEEK_API_KEY=<key> cargo run --package tirea-agentos-server -- \
-  --http-addr 127.0.0.1:8080 \
-  --config examples/ai-sdk-starter/agent-config.json
-
-# 2. Install dependencies and start the frontend
 cd examples/ai-sdk-starter
+
+# Install frontend dependencies
 npm install
-npm run dev
+
+# Start both frontend (Vite) and backend (Rust agent) concurrently
+DEEPSEEK_API_KEY=<key> npm run dev
+```
+
+Or start them separately:
+
+```bash
+# Terminal 1: Rust agent
+DEEPSEEK_API_KEY=<key> cargo run -p ai-sdk-starter-agent
+
+# Terminal 2: Vite frontend
+cd examples/ai-sdk-starter
+npm run dev:ui
 ```
 
 Open http://localhost:3001 and send a message.
-
-## With TensorZero (E2E)
-
-```bash
-# 1. Start TensorZero + ClickHouse
-DEEPSEEK_API_KEY=<key> docker compose -f e2e/tensorzero/docker-compose.yml up -d --wait
-
-# 2. Start the Rust backend with TensorZero
-cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
-
-# 3. Start the frontend
-cd examples/ai-sdk-starter
-npm install
-npm run dev
-```
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `BACKEND_URL` | `http://localhost:8080` | tirea-agentos-server address |
-
-Set via `.env.local` or environment:
-
-```bash
-BACKEND_URL=http://localhost:9090 npm run dev
-```
+| `VITE_BACKEND_URL` | `http://localhost:38080` | Rust agent address (frontend) |
+| `AGENTOS_HTTP_ADDR` | `127.0.0.1:38080` | Rust agent listen address |
+| `AGENT_MODEL` | `deepseek-chat` | LLM model ID |
+| `AGENT_MAX_ROUNDS` | `8` | Max tool/model loop iterations |
 
 ## Verify
 
 1. Open http://localhost:3001
-2. Type a message (e.g. "What is 2+2?")
-3. Confirm streaming response appears token-by-token
-4. Check browser DevTools Network tab: the `/api/chat` request should return `Content-Type: text/event-stream` with `X-Vercel-AI-UI-Message-Stream: v1` header
+2. Type a message (e.g. "What's the weather in Tokyo?")
+3. Confirm streaming response with weather card appears
+4. Navigate between Canvas / Basic / Threads pages
