@@ -6,7 +6,7 @@ pub mod state;
 pub use context::RunContext;
 pub use delta::RunDelta;
 pub use lifecycle::{
-    run_lifecycle_from_state, RunLifecycleAction, RunState, RunStatus, StoppedReason,
+    run_lifecycle_from_state, RunLifecycleAction, RunLifecycleState, RunStatus, StoppedReason,
     TerminationReason,
 };
 pub use state::{InferenceError, InferenceErrorState};

@@ -8218,7 +8218,7 @@ async fn test_consecutive_errors_resets_on_success() {
 
 #[tokio::test]
 async fn test_run_state_tracks_completed_steps() {
-    let mut state = RunState::new();
+    let mut state = LoopRunState::new();
     assert_eq!(state.completed_steps, 0);
 
     let tool_calls = vec![crate::contracts::thread::ToolCall::new(
@@ -8235,7 +8235,7 @@ async fn test_run_state_tracks_completed_steps() {
 
 #[tokio::test]
 async fn test_run_state_tracks_token_usage() {
-    let mut state = RunState::new();
+    let mut state = LoopRunState::new();
     let result = StreamResult {
         text: "hello".to_string(),
         tool_calls: vec![],
@@ -8257,7 +8257,7 @@ async fn test_run_state_tracks_token_usage() {
 
 #[tokio::test]
 async fn test_run_state_caps_history_at_20() {
-    let mut state = RunState::new();
+    let mut state = LoopRunState::new();
     for i in 0..25 {
         let tool_calls = vec![crate::contracts::thread::ToolCall::new(
             format!("c{i}"),

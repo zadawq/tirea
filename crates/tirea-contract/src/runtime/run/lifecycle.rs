@@ -124,7 +124,7 @@ waiting -------> done
 /// Minimal durable run lifecycle envelope stored at `state["__run"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State, PartialEq, Eq)]
 #[tirea(path = "__run")]
-pub struct RunState {
+pub struct RunLifecycleState {
     /// Current run id associated with this lifecycle record.
     #[serde(default)]
     pub id: String,
@@ -139,7 +139,7 @@ pub struct RunState {
     pub updated_at: u64,
 }
 
-/// Action type for [`RunState`] reducer.
+/// Action type for [`RunLifecycleState`] reducer.
 pub enum RunLifecycleAction {
     /// Set the entire run lifecycle envelope in one reducer step.
     Set {
@@ -150,7 +150,7 @@ pub enum RunLifecycleAction {
     },
 }
 
-impl StateSpec for RunState {
+impl StateSpec for RunLifecycleState {
     type Action = RunLifecycleAction;
 
     fn reduce(&mut self, action: Self::Action) {
@@ -171,7 +171,7 @@ impl StateSpec for RunState {
 }
 
 /// Parse persisted run lifecycle from a rebuilt state snapshot.
-pub fn run_lifecycle_from_state(state: &Value) -> Option<RunState> {
+pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
     state
         .get(RUN_LIFECYCLE_STATE_PATH)
         .cloned()
@@ -265,12 +265,14 @@ mod tests {
     #[test]
     fn run_lifecycle_state_action_reduces_into_run_envelope_patch() {
         let base = serde_json::json!({});
-        let actions = vec![AnyStateAction::new::<RunState>(RunLifecycleAction::Set {
-            id: "run_42".to_string(),
-            status: RunStatus::Waiting,
-            done_reason: None,
-            updated_at: 99,
-        })];
+        let actions = vec![AnyStateAction::new::<RunLifecycleState>(
+            RunLifecycleAction::Set {
+                id: "run_42".to_string(),
+                status: RunStatus::Waiting,
+                done_reason: None,
+                updated_at: 99,
+            },
+        )];
 
         let patches = reduce_state_actions(actions, &base, "agent_loop").expect("reduce");
         assert_eq!(patches.len(), 1);

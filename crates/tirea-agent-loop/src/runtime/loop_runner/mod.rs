@@ -56,9 +56,8 @@ use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAct
 use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    DecisionReplayPolicy, RunLifecycleAction, RunState as RunLifecycleStateRecord, StreamResult,
-    SuspendedCall, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest,
-    ToolExecutionResult,
+    DecisionReplayPolicy, RunLifecycleAction, RunLifecycleState, StreamResult, SuspendedCall,
+    ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -101,7 +100,7 @@ pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 use plugin_runtime::emit_agent_phase;
 #[cfg(test)]
 use plugin_runtime::emit_cleanup_phases;
-use run_state::RunState;
+use run_state::LoopRunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -183,7 +182,7 @@ pub(super) fn sync_run_lifecycle_for_termination(
     let base_state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let actions = vec![AnyStateAction::new::<RunLifecycleStateRecord>(
+    let actions = vec![AnyStateAction::new::<RunLifecycleState>(
         RunLifecycleAction::Set {
             id: run_id.to_string(),
             status,
@@ -341,7 +340,7 @@ pub(super) async fn resolve_step_tool_snapshot(
         .await
 }
 
-fn mark_step_completed(run_state: &mut RunState) {
+fn mark_step_completed(run_state: &mut LoopRunState) {
     run_state.completed_steps += 1;
 }
 
@@ -349,7 +348,7 @@ fn build_loop_outcome(
     run_ctx: RunContext,
     termination: TerminationReason,
     response: Option<String>,
-    run_state: &RunState,
+    run_state: &LoopRunState,
     failure: Option<outcome::LoopFailure>,
 ) -> LoopOutcome {
     LoopOutcome {
@@ -1388,7 +1387,7 @@ pub async fn run_loop(
 ) -> LoopOutcome {
     let executor = llm_executor_for_run(agent);
     let tool_executor = agent.tool_executor();
-    let mut run_state = RunState::new();
+    let mut run_state = LoopRunState::new();
     let mut pending_decisions = VecDeque::new();
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();

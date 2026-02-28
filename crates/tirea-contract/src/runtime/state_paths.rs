@@ -12,5 +12,5 @@ pub const TOOL_CALL_STATES_STATE_PATH: &str = "__tool_call_states";
 /// Durable inference-error envelope (`InferenceErrorState`).
 pub const INFERENCE_ERROR_STATE_PATH: &str = "__inference_error";
 
-/// Durable run lifecycle envelope (`RunState`).
+/// Durable run lifecycle envelope (`RunLifecycleState`).
 pub const RUN_LIFECYCLE_STATE_PATH: &str = "__run";

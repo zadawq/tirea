@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Internal state tracked across run steps for loop stats/cancellation flows.
-pub(super) struct RunState {
+pub(super) struct LoopRunState {
     pub(super) completed_steps: usize,
     pub(super) total_input_tokens: usize,
     pub(super) total_output_tokens: usize,
@@ -19,7 +19,7 @@ pub(super) struct RunState {
     pub(super) tool_call_history: VecDeque<Vec<String>>,
 }
 
-impl RunState {
+impl LoopRunState {
     pub(super) fn new() -> Self {
         Self {
             completed_steps: 0,

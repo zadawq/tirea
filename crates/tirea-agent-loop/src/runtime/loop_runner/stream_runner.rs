@@ -144,7 +144,7 @@ pub(super) fn run_stream(
     let mut decision_rx = decision_rx;
     let mut pending_decisions = std::collections::VecDeque::new();
     let executor = llm_executor_for_run(agent.as_ref());
-    let mut run_state = RunState::new();
+    let mut run_state = LoopRunState::new();
     let mut last_text = String::new();
     let run_cancellation_token = cancellation_token;
     let step_tool_provider = step_tool_provider_for_run(agent.as_ref(), tools);
