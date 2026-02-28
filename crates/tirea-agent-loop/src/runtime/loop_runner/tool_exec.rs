@@ -831,6 +831,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
 }
 
 /// Execute a single tool with phase hooks.
+#[cfg(test)]
 pub(super) async fn execute_single_tool_with_phases(
     tool: Option<&dyn Tool>,
     call: &crate::contracts::thread::ToolCall,
@@ -838,6 +839,15 @@ pub(super) async fn execute_single_tool_with_phases(
     phase_ctx: &ToolPhaseContext<'_>,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     execute_single_tool_with_phases_impl(tool, call, state, phase_ctx, false).await
+}
+
+pub(super) async fn execute_single_tool_with_phases_deferred(
+    tool: Option<&dyn Tool>,
+    call: &crate::contracts::thread::ToolCall,
+    state: &Value,
+    phase_ctx: &ToolPhaseContext<'_>,
+) -> Result<ToolExecutionResult, AgentLoopError> {
+    execute_single_tool_with_phases_impl(tool, call, state, phase_ctx, true).await
 }
 
 async fn execute_single_tool_with_phases_impl(

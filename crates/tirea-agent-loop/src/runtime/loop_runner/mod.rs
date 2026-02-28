@@ -109,11 +109,14 @@ use tirea_state::TrackedPatch;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
+use tool_exec::execute_single_tool_with_phases;
+#[cfg(test)]
 use tool_exec::execute_tools_parallel_with_phases;
 pub use tool_exec::ExecuteToolsOutcome;
 use tool_exec::{
-    apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
-    scope_with_tool_caller_context, step_metadata, ToolPhaseContext,
+    apply_tool_results_impl, apply_tool_results_to_session,
+    execute_single_tool_with_phases_deferred, scope_with_tool_caller_context, step_metadata,
+    ToolPhaseContext,
 };
 pub use tool_exec::{
     execute_tools, execute_tools_with_behaviors, execute_tools_with_config,
@@ -911,7 +914,7 @@ async fn drain_resuming_tool_calls_and_replay(
                     thread_messages: run_ctx.messages(),
                     cancellation_token: None,
                 };
-                let replay_result = execute_single_tool_with_phases(
+                let replay_result = execute_single_tool_with_phases_deferred(
                     tool.as_deref(),
                     &tool_call,
                     &state,
@@ -945,6 +948,30 @@ async fn drain_resuming_tool_calls_and_replay(
                 if !replay_result.pending_patches.is_empty() {
                     state_changed = true;
                     run_ctx.add_thread_patches(replay_result.pending_patches.clone());
+                }
+                if !replay_result.commutative_state_actions.is_empty() {
+                    let state = run_ctx
+                        .snapshot()
+                        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+                    let commutative_patches = reduce_state_actions(
+                        replay_result
+                            .commutative_state_actions
+                            .iter()
+                            .cloned()
+                            .map(AnyStateAction::Commutative)
+                            .collect(),
+                        &state,
+                        "agent_loop",
+                    )
+                    .map_err(|e| {
+                        AgentLoopError::StateError(format!(
+                            "failed to reduce replay commutative state actions: {e}"
+                        ))
+                    })?;
+                    if !commutative_patches.is_empty() {
+                        state_changed = true;
+                        run_ctx.add_thread_patches(commutative_patches);
+                    }
                 }
 
                 events.push(AgentEvent::ToolCallDone {
