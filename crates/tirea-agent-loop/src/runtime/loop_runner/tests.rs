@@ -1827,11 +1827,164 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
         .expect("tool execution should succeed");
 
     assert!(result.execution.result.is_success());
-    assert!(!result.pending_patches.is_empty());
-
-    let patch_refs: Vec<&Patch> = result.pending_patches.iter().map(|p| p.patch()).collect();
-    let next_state = tirea_state::apply_patches(&state, patch_refs).expect("apply patches");
+    let mut next_state = state.clone();
+    if let Some(tool_patch) = result.execution.patch.as_ref() {
+        next_state =
+            tirea_state::apply_patch(&next_state, tool_patch.patch()).expect("apply tool patch");
+    }
+    let pending_refs: Vec<&Patch> = result.pending_patches.iter().map(|p| p.patch()).collect();
+    next_state =
+        tirea_state::apply_patches(&next_state, pending_refs).expect("apply pending patches");
     assert_eq!(next_state["debug"]["after_tool_effect"], json!(true));
+}
+
+#[tokio::test]
+async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy() {
+    struct DirectWriteEffectTool;
+
+    #[async_trait]
+    impl Tool for DirectWriteEffectTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "direct_write_effect_tool",
+                "DirectWrite",
+                "writes via context",
+            )
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                "direct_write_effect_tool",
+                json!({"ok": true}),
+            ))
+        }
+
+        async fn execute_effect(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolExecutionEffect, ToolError> {
+            let err = ctx.state_of::<crate::runtime::control::InferenceErrorState>();
+            err.set_error(Some(crate::runtime::control::InferenceError {
+                error_type: "direct_write".to_string(),
+                message: "written in execute_effect".to_string(),
+            }))
+            .expect("failed to set inference error");
+            Ok(ToolExecutionEffect::new(ToolResult::success(
+                "direct_write_effect_tool",
+                json!({"ok": true}),
+            )))
+        }
+    }
+
+    let tool = DirectWriteEffectTool;
+    let call =
+        crate::contracts::thread::ToolCall::new("call_1", "direct_write_effect_tool", json!({}));
+    let state = json!({});
+    let tool_descriptors = vec![tool.descriptor()];
+    let run_config = tirea_contract::RunConfig::default();
+    let phase_ctx = super::tool_exec::ToolPhaseContext {
+        tool_descriptors: &tool_descriptors,
+        agent_behavior: None,
+        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        run_config: &run_config,
+        thread_id: "test",
+        thread_messages: &[],
+        cancellation_token: None,
+    };
+
+    let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
+        .await
+        .expect("tool execution should complete");
+
+    assert!(result.execution.result.is_error());
+    assert_eq!(
+        result.execution.result.data["error"]["code"],
+        json!("tool_context_state_write_not_allowed")
+    );
+    assert!(result.execution.patch.is_none());
+}
+
+#[tokio::test]
+async fn test_tool_execute_effect_direct_context_writes_promoted_in_compat_policy() {
+    struct DirectWriteEffectTool;
+
+    #[async_trait]
+    impl Tool for DirectWriteEffectTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "direct_write_effect_tool",
+                "DirectWrite",
+                "writes via context",
+            )
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                "direct_write_effect_tool",
+                json!({"ok": true}),
+            ))
+        }
+
+        async fn execute_effect(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolExecutionEffect, ToolError> {
+            let err = ctx.state_of::<crate::runtime::control::InferenceErrorState>();
+            err.set_error(Some(crate::runtime::control::InferenceError {
+                error_type: "direct_write".to_string(),
+                message: "written in execute_effect".to_string(),
+            }))
+            .expect("failed to set inference error");
+            Ok(ToolExecutionEffect::new(ToolResult::success(
+                "direct_write_effect_tool",
+                json!({"ok": true}),
+            )))
+        }
+    }
+
+    let tool = DirectWriteEffectTool;
+    let call =
+        crate::contracts::thread::ToolCall::new("call_1", "direct_write_effect_tool", json!({}));
+    let state = json!({});
+    let tool_descriptors = vec![tool.descriptor()];
+    let mut run_config = tirea_contract::RunConfig::default();
+    run_config
+        .set(
+            crate::contracts::runtime::TOOL_CONTEXT_WRITE_POLICY_KEY,
+            "promote",
+        )
+        .expect("set compat write policy");
+    let phase_ctx = super::tool_exec::ToolPhaseContext {
+        tool_descriptors: &tool_descriptors,
+        agent_behavior: None,
+        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        run_config: &run_config,
+        thread_id: "test",
+        thread_messages: &[],
+        cancellation_token: None,
+    };
+
+    let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
+        .await
+        .expect("tool execution should complete");
+
+    assert!(result.execution.result.is_success());
+    let patch = result.execution.patch.expect("tool patch");
+    let next = tirea_state::apply_patch(&state, patch.patch()).expect("apply patch");
+    assert_eq!(
+        next["__inference_error"]["error"]["type"],
+        json!("direct_write")
+    );
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@
 use super::ToolCallContext;
 use crate::runtime::plugin::phase::AnyStateAction;
 use crate::runtime::plugin::phase::SuspendTicket;
+use crate::RunConfig;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -223,6 +224,55 @@ impl From<ToolResult> for ToolExecutionEffect {
     }
 }
 
+/// Run-scope key controlling how direct ToolCallContext writes are handled
+/// after `execute_effect` returns.
+pub const TOOL_CONTEXT_WRITE_POLICY_KEY: &str = "__tool_context_write_policy";
+
+/// Direct ToolCallContext write policy for tool execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolContextWritePolicy {
+    /// Legacy compatibility mode: promote direct context patch to `state_actions`.
+    Promote,
+    /// Strict mode: reject direct context patch after `execute_effect`.
+    Deny,
+}
+
+impl Default for ToolContextWritePolicy {
+    fn default() -> Self {
+        Self::Deny
+    }
+}
+
+impl ToolContextWritePolicy {
+    /// Resolve policy from run scope.
+    ///
+    /// Accepted values:
+    /// - `"promote"` / `"compat"` => [`ToolContextWritePolicy::Promote`]
+    /// - `"deny"` / `"strict"` => [`ToolContextWritePolicy::Deny`]
+    ///
+    /// Missing/unknown values default to [`ToolContextWritePolicy::Deny`].
+    pub fn from_run_config(scope: &RunConfig) -> Self {
+        match scope
+            .value(TOOL_CONTEXT_WRITE_POLICY_KEY)
+            .and_then(Value::as_str)
+            .map(str::trim)
+        {
+            Some(value)
+                if value.eq_ignore_ascii_case("promote")
+                    || value.eq_ignore_ascii_case("compat") =>
+            {
+                Self::Promote
+            }
+            Some(value)
+                if value.eq_ignore_ascii_case("deny") || value.eq_ignore_ascii_case("strict") =>
+            {
+                Self::Deny
+            }
+            _ => Self::default(),
+        }
+    }
+}
+
 /// Tool execution errors.
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -371,7 +421,15 @@ pub trait Tool: Send + Sync {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolExecutionEffect, ToolError> {
-        self.execute(args, ctx).await.map(ToolExecutionEffect::from)
+        let result = self.execute(args, ctx).await?;
+        let mut effect = ToolExecutionEffect::from(result);
+        let direct_patch = ctx.take_patch();
+        if !direct_patch.patch().is_empty() {
+            effect
+                .state_actions
+                .push(AnyStateAction::Patch(direct_patch));
+        }
+        Ok(effect)
     }
 }
 
@@ -496,6 +554,7 @@ mod tests {
     use crate::runtime::plugin::phase::AnyStateAction;
     use crate::runtime::plugin::phase::SuspendTicket;
     use crate::runtime::Suspension;
+    use crate::runtime::{InferenceError, InferenceErrorState};
     use crate::runtime::{PendingToolCall, ToolCallResumeMode};
     use serde_json::json;
     use tirea_state::{DocCell, PatchSink, Path as TPath, State, TireaResult};
@@ -1164,6 +1223,80 @@ mod tests {
         assert_eq!(effect.result.tool_name, "greet");
         assert!(effect.result.is_success());
         assert!(effect.state_actions.is_empty());
+    }
+
+    struct ContextWriteDefaultTool;
+
+    #[async_trait]
+    impl Tool for ContextWriteDefaultTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "context_write_default",
+                "ContextWriteDefault",
+                "writes state in execute",
+            )
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            ctx.state_of::<InferenceErrorState>()
+                .set_error(Some(InferenceError {
+                    error_type: "default_execute_write".to_string(),
+                    message: "written via execute".to_string(),
+                }))
+                .expect("failed to set inference error");
+            Ok(ToolResult::success(
+                "context_write_default",
+                json!({"ok": true}),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_default_execute_effect_promotes_context_writes_into_state_actions() {
+        let tool = ContextWriteDefaultTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+
+        let effect = Tool::execute_effect(&tool, json!({}), &ctx)
+            .await
+            .expect("execute_effect should succeed");
+
+        assert!(effect.result.is_success());
+        assert_eq!(effect.state_actions.len(), 1);
+        assert!(matches!(
+            effect.state_actions.first(),
+            Some(AnyStateAction::Patch(_))
+        ));
+        assert!(ctx.take_patch().patch().is_empty());
+    }
+
+    #[test]
+    fn test_tool_context_write_policy_defaults_to_deny() {
+        let scope = crate::RunConfig::default();
+        assert_eq!(
+            ToolContextWritePolicy::from_run_config(&scope),
+            ToolContextWritePolicy::Deny
+        );
+    }
+
+    #[test]
+    fn test_tool_context_write_policy_accepts_promote_aliases() {
+        let mut scope = crate::RunConfig::default();
+        scope.set(TOOL_CONTEXT_WRITE_POLICY_KEY, "promote").unwrap();
+        assert_eq!(
+            ToolContextWritePolicy::from_run_config(&scope),
+            ToolContextWritePolicy::Promote
+        );
+        let mut scope = crate::RunConfig::default();
+        scope.set(TOOL_CONTEXT_WRITE_POLICY_KEY, "compat").unwrap();
+        assert_eq!(
+            ToolContextWritePolicy::from_run_config(&scope),
+            ToolContextWritePolicy::Promote
+        );
     }
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]

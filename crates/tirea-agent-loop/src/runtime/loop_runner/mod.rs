@@ -56,8 +56,9 @@ use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAct
 use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    DecisionReplayPolicy, RunLifecycleAction, RunLifecycleState, StreamResult, SuspendedCall,
-    ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
+    DecisionReplayPolicy, RunLifecycleAction, RunState as RunLifecycleStateRecord, StreamResult,
+    SuspendedCall, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest,
+    ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -182,7 +183,7 @@ pub(super) fn sync_run_lifecycle_for_termination(
     let base_state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let actions = vec![AnyStateAction::new::<RunLifecycleState>(
+    let actions = vec![AnyStateAction::new::<RunLifecycleStateRecord>(
         RunLifecycleAction::Set {
             id: run_id.to_string(),
             status,

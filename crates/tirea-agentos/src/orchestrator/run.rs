@@ -1,6 +1,6 @@
 use super::*;
 use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
-use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
+use crate::contracts::runtime::{RunLifecycleAction, RunState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
 use tirea_state::TrackedPatch;
@@ -16,14 +16,12 @@ fn run_lifecycle_running_patch(
     run_id: &str,
 ) -> Result<TrackedPatch, AgentOsRunError> {
     let updated_at = now_unix_millis();
-    let actions = vec![AnyStateAction::new::<RunLifecycleState>(
-        RunLifecycleAction::Set {
-            id: run_id.to_string(),
-            status: RunStatus::Running,
-            done_reason: None,
-            updated_at,
-        },
-    )];
+    let actions = vec![AnyStateAction::new::<RunState>(RunLifecycleAction::Set {
+        id: run_id.to_string(),
+        status: RunStatus::Running,
+        done_reason: None,
+        updated_at,
+    })];
     let mut patches = reduce_state_actions(actions, base_state, "agentos_prepare_run")
         .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
     let Some(patch) = patches.pop() else {

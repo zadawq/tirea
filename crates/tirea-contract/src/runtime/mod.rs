@@ -18,13 +18,14 @@ pub use plugin::{
 };
 pub use run::{
     run_lifecycle_from_state, InferenceError, InferenceErrorState, RunContext, RunDelta,
-    RunLifecycleAction, RunLifecycleState, RunState, RunStatus, StoppedReason, TerminationReason,
+    RunLifecycleAction, RunState, RunStatus, StoppedReason, TerminationReason,
 };
 pub use tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,
     PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState, Suspension,
     SuspensionResponse, ToolCallContext, ToolCallOutcome, ToolCallResume, ToolCallResumeMode,
-    ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus, ToolExecution,
-    ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
-    ToolExecutorError, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
+    ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus, ToolContextWritePolicy,
+    ToolExecution, ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
+    ToolExecutorError, ToolProgressState, TOOL_CONTEXT_WRITE_POLICY_KEY,
+    TOOL_PROGRESS_ACTIVITY_TYPE,
 };

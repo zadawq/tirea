@@ -122,26 +122,9 @@ waiting -------> done
 }
 
 /// Minimal durable run lifecycle envelope stored at `state["__run"]`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunState {
-    /// Current run id associated with this lifecycle record.
-    pub id: String,
-    /// Coarse lifecycle status.
-    pub status: RunStatus,
-    /// Optional terminal reason when `status=done`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub done_reason: Option<String>,
-    /// Last update timestamp (unix millis).
-    pub updated_at: u64,
-}
-
-/// Internal runtime state spec for run lifecycle updates.
-///
-/// This state is reducer-driven and bound to `__run`, while [`RunState`]
-/// remains the durable/public lifecycle envelope parsed from snapshots.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State, PartialEq, Eq)]
 #[tirea(path = "__run")]
-pub struct RunLifecycleState {
+pub struct RunState {
     /// Current run id associated with this lifecycle record.
     #[serde(default)]
     pub id: String,
@@ -156,7 +139,7 @@ pub struct RunLifecycleState {
     pub updated_at: u64,
 }
 
-/// Action type for [`RunLifecycleState`] reducer.
+/// Action type for [`RunState`] reducer.
 pub enum RunLifecycleAction {
     /// Set the entire run lifecycle envelope in one reducer step.
     Set {
@@ -167,7 +150,7 @@ pub enum RunLifecycleAction {
     },
 }
 
-impl StateSpec for RunLifecycleState {
+impl StateSpec for RunState {
     type Action = RunLifecycleAction;
 
     fn reduce(&mut self, action: Self::Action) {
@@ -282,14 +265,12 @@ mod tests {
     #[test]
     fn run_lifecycle_state_action_reduces_into_run_envelope_patch() {
         let base = serde_json::json!({});
-        let actions = vec![AnyStateAction::new::<RunLifecycleState>(
-            RunLifecycleAction::Set {
-                id: "run_42".to_string(),
-                status: RunStatus::Waiting,
-                done_reason: None,
-                updated_at: 99,
-            },
-        )];
+        let actions = vec![AnyStateAction::new::<RunState>(RunLifecycleAction::Set {
+            id: "run_42".to_string(),
+            status: RunStatus::Waiting,
+            done_reason: None,
+            updated_at: 99,
+        })];
 
         let patches = reduce_state_actions(actions, &base, "agent_loop").expect("reduce");
         assert_eq!(patches.len(), 1);
