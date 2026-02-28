@@ -20,6 +20,8 @@ pub use contexts::{
     StepStartContext,
 };
 pub use effect::{validate_effect, PhaseEffect, PhaseOutput};
-pub use state_spec::{reduce_state_actions, AnyStateAction, StateScope, StateSpec};
+pub use state_spec::{
+    reduce_state_actions, AnyStateAction, CommutativeAction, StateScope, StateSpec,
+};
 pub use step::{StepContext, ToolContext};
 pub use types::{Phase, PhasePolicy, RunAction, StepOutcome, SuspendTicket, ToolCallAction};
