@@ -1,0 +1,12 @@
+use serde::{Deserialize, Serialize};
+use tirea_state_derive::State;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
+struct Bad {
+    #[tirea(lattice)]
+    field: Option<GCounter>,
+}
+
+struct GCounter;
+
+fn main() {}
