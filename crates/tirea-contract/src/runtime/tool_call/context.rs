@@ -447,7 +447,7 @@ mod tests {
     use super::*;
     use crate::io::ResumeDecisionAction;
     use crate::runtime::activity::{ActivityManager, NoOpActivityManager};
-    use crate::runtime::run::InferenceErrorState;
+    use crate::testing::TestFixtureState;
     use serde_json::json;
     use std::sync::Arc;
     use tokio::time::{timeout, Duration};
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_state_of_read_write() {
-        let doc = DocCell::new(json!({"__inference_error": {"error": null}}));
+        let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
@@ -506,17 +506,14 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write
-        let ctrl = ctx.state_of::<InferenceErrorState>();
-        ctrl.set_error(Some(crate::runtime::run::InferenceError {
-            error_type: "rate_limit".into(),
-            message: "too many requests".into(),
-        }))
-        .expect("failed to set inference_error");
+        let ctrl = ctx.state_of::<TestFixtureState>();
+        ctrl.set_label(Some("rate_limit".into()))
+            .expect("failed to set label");
 
         // Read back from same ref
-        let err = ctrl.error().unwrap();
-        assert!(err.is_some());
-        assert_eq!(err.unwrap().error_type, "rate_limit");
+        let val = ctrl.label().unwrap();
+        assert!(val.is_some());
+        assert_eq!(val.unwrap(), "rate_limit");
 
         // Ops captured in thread ops
         assert!(!ops.lock().unwrap().is_empty());
@@ -524,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_write_through_read_cross_ref() {
-        let doc = DocCell::new(json!({"__inference_error": {"error": null}}));
+        let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
@@ -532,33 +529,27 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write via first ref
-        ctx.state_of::<InferenceErrorState>()
-            .set_error(Some(crate::runtime::run::InferenceError {
-                error_type: "timeout".into(),
-                message: "timed out".into(),
-            }))
-            .expect("failed to set inference_error");
+        ctx.state_of::<TestFixtureState>()
+            .set_label(Some("timeout".into()))
+            .expect("failed to set label");
 
         // Read via second ref
-        let err = ctx.state_of::<InferenceErrorState>().error().unwrap();
-        assert_eq!(err.unwrap().error_type, "timeout");
+        let val = ctx.state_of::<TestFixtureState>().label().unwrap();
+        assert_eq!(val.unwrap(), "timeout");
     }
 
     #[test]
     fn test_take_patch() {
-        let doc = DocCell::new(json!({"__inference_error": {"error": null}}));
+        let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        ctx.state_of::<InferenceErrorState>()
-            .set_error(Some(crate::runtime::run::InferenceError {
-                error_type: "test".into(),
-                message: "test".into(),
-            }))
-            .expect("failed to set inference_error");
+        ctx.state_of::<TestFixtureState>()
+            .set_label(Some("test".into()))
+            .expect("failed to set label");
 
         assert!(ctx.has_changes());
         assert!(ctx.ops_count() > 0);
@@ -594,12 +585,9 @@ mod tests {
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        let ctrl = ctx.call_state::<InferenceErrorState>();
-        ctrl.set_error(Some(crate::runtime::run::InferenceError {
-            error_type: "call_scoped".into(),
-            message: "test".into(),
-        }))
-        .expect("failed to set inference_error");
+        let ctrl = ctx.call_state::<TestFixtureState>();
+        ctrl.set_label(Some("call_scoped".into()))
+            .expect("failed to set label");
 
         assert!(ctx.has_changes());
     }

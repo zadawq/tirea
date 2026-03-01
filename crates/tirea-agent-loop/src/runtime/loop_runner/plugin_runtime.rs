@@ -1,9 +1,9 @@
-use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
 use crate::contracts::runtime::behavior::{
     build_read_only_context_from_step, AgentBehavior, ReadOnlyContext,
 };
 use crate::contracts::runtime::action::Action;
+use crate::contracts::runtime::inference::{InferenceError, LLMResponse};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::state::{
     reduce_state_actions, AnyStateAction, CommutativeAction,
@@ -11,7 +11,6 @@ use crate::contracts::runtime::state::{
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
-use crate::runtime::control::InferenceError;
 use serde_json::Value;
 use std::sync::Mutex;
 use tirea_state::{DocCell, Patch, PatchExt, TrackedPatch};
@@ -235,33 +234,22 @@ pub(super) async fn emit_cleanup_phases(
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let set_error_patch = set_agent_inference_error(
-        &state,
-        InferenceError {
-            error_type: error_type.to_string(),
-            message,
-        },
-    )?;
-    run_ctx.add_thread_patch(set_error_patch);
+    let error = InferenceError {
+        error_type: error_type.to_string(),
+        message,
+    };
 
     let pending = emit_phase_block(
         Phase::AfterInference,
         run_ctx,
         tool_descriptors,
         agent,
-        |_| {},
+        |step| {
+            step.extensions.insert(LLMResponse::error(error));
+        },
     )
     .await?;
     run_ctx.add_thread_patches(pending);
-
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let clear_error_patch = clear_agent_inference_error(&state)?;
-    run_ctx.add_thread_patch(clear_error_patch);
 
     let pending =
         emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, agent, |_| {}).await?;

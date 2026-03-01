@@ -1,4 +1,6 @@
-use crate::runtime::inference::{InferenceContext, LLMResponse, MessagingContext, StreamResult};
+use crate::runtime::inference::{
+    InferenceContext, InferenceError, LLMResponse, MessagingContext, StreamResult,
+};
 use crate::runtime::run::{FlowControl, RunAction, TerminationReason};
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction, ToolGate};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
@@ -140,16 +142,24 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
         self.step
             .extensions
             .get::<LLMResponse>()
-            .map(|r| &r.result)
+            .and_then(|r| r.outcome.as_ref().ok())
     }
 
     pub fn response(&self) -> &StreamResult {
-        &self
-            .step
+        self.step
             .extensions
             .get::<LLMResponse>()
-            .expect("AfterInferenceContext.response() requires response to be set")
-            .result
+            .expect("AfterInferenceContext.response() requires LLMResponse to be set")
+            .outcome
+            .as_ref()
+            .expect("AfterInferenceContext.response() requires a successful outcome")
+    }
+
+    pub fn inference_error(&self) -> Option<&InferenceError> {
+        self.step
+            .extensions
+            .get::<LLMResponse>()
+            .and_then(|r| r.outcome.as_ref().err())
     }
 
     /// Request run termination with a specific reason after inference has completed.

@@ -547,7 +547,7 @@ fn test_step_result_complete() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.extensions.insert(LLMResponse::new(StreamResult {
+    ctx.extensions.insert(LLMResponse::success(StreamResult {
         text: "Done!".to_string(),
         tool_calls: vec![],
         usage: None,
@@ -808,7 +808,7 @@ fn test_step_result_with_tool_calls() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.extensions.insert(LLMResponse::new(StreamResult {
+    ctx.extensions.insert(LLMResponse::success(StreamResult {
         text: "Calling tools".to_string(),
         tool_calls: vec![ToolCall::new("call_1", "test", json!({}))],
         usage: None,
@@ -822,7 +822,7 @@ fn test_step_result_empty_text_no_tools() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.extensions.insert(LLMResponse::new(StreamResult {
+    ctx.extensions.insert(LLMResponse::success(StreamResult {
         text: String::new(),
         tool_calls: vec![],
         usage: None,

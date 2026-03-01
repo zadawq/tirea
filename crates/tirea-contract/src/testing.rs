@@ -18,9 +18,18 @@ use crate::runtime::{
 };
 use crate::thread::Message;
 use crate::RunConfig;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
-use tirea_state::{DocCell, Op};
+use tirea_state::{DocCell, Op, State};
+
+/// Minimal State fixture for tests that exercise the `state_of` / `snapshot_of` APIs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "__test_fixture")]
+pub struct TestFixtureState {
+    #[tirea(default = "None")]
+    pub label: Option<String>,
+}
 
 pub struct TestFixture {
     pub doc: DocCell,

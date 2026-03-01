@@ -519,7 +519,7 @@ mod tests {
     use crate::runtime::state::AnyStateAction;
     use crate::runtime::phase::SuspendTicket;
     use crate::runtime::Suspension;
-    use crate::runtime::{InferenceError, InferenceErrorState};
+    use crate::testing::TestFixtureState;
     use crate::runtime::{PendingToolCall, ToolCallResumeMode};
     use serde_json::json;
     use tirea_state::{DocCell, PatchSink, Path as TPath, State, TireaResult};
@@ -1207,12 +1207,9 @@ mod tests {
             _args: Value,
             ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
-            ctx.state_of::<InferenceErrorState>()
-                .set_error(Some(InferenceError {
-                    error_type: "default_execute_write".to_string(),
-                    message: "written via execute".to_string(),
-                }))
-                .expect("failed to set inference error");
+            ctx.state_of::<TestFixtureState>()
+                .set_label(Some("default_execute_write".to_string()))
+                .expect("failed to set label");
             Ok(ToolResult::success(
                 "context_write_default",
                 json!({"ok": true}),

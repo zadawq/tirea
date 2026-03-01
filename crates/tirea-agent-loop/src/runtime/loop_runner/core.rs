@@ -7,10 +7,10 @@ use crate::contracts::thread::{Message, Role};
 use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::runtime::control::{
-    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallResume, ToolCallState,
+    SuspendedToolCallsState, ToolCallResume, ToolCallState,
     ToolCallStatesMap, ToolCallStatus,
 };
-use tirea_state::{DocCell, Op, Patch, Path, State, StateContext, TireaError, TrackedPatch};
+use tirea_state::{DocCell, Op, Patch, Path, State, StateContext, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -177,20 +177,6 @@ pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, 
     run_ctx.suspended_calls()
 }
 
-pub(super) fn set_agent_inference_error(
-    state: &Value,
-    error: InferenceError,
-) -> Result<TrackedPatch, AgentLoopError> {
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let inference = ctx.state_of::<InferenceErrorState>();
-    inference.set_error(Some(error)).map_err(|e| {
-        let path = InferenceErrorState::PATH;
-        AgentLoopError::StateError(format!("failed to set {path}.error: {e}"))
-    })?;
-    Ok(ctx.take_tracked_patch("agent_loop"))
-}
-
 pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
     run_ctx
         .snapshot_of::<ToolCallStatesMap>()
@@ -273,23 +259,6 @@ pub(super) fn upsert_tool_call_state(
         None => Ok(TrackedPatch::new(Patch::new()).with_source("agent_loop")),
     }
 }
-
-pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let inference = ctx.state_of::<InferenceErrorState>();
-    match inference.error_none() {
-        Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
-        Err(e) => {
-            let path = InferenceErrorState::PATH;
-            return Err(AgentLoopError::StateError(format!(
-                "failed to clear {path}.error: {e}"
-            )))
-        }
-    }
-    Ok(ctx.take_tracked_patch("agent_loop"))
-}
-
 
 #[cfg(test)]
 mod tests {

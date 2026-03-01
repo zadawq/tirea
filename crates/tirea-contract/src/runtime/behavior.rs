@@ -1,5 +1,5 @@
 use crate::runtime::action::Action;
-use crate::runtime::inference::response::{LLMResponse, StreamResult};
+use crate::runtime::inference::response::{InferenceError, LLMResponse, StreamResult};
 use crate::runtime::phase::step::StepContext;
 use crate::runtime::phase::Phase;
 use crate::runtime::tool_call::gate::ToolGate;
@@ -22,7 +22,7 @@ pub struct ReadOnlyContext<'a> {
     messages: &'a [Arc<Message>],
     run_config: &'a RunConfig,
     doc: &'a DocCell,
-    response: Option<&'a StreamResult>,
+    llm_response: Option<&'a LLMResponse>,
     tool_name: Option<&'a str>,
     tool_call_id: Option<&'a str>,
     tool_args: Option<&'a Value>,
@@ -44,7 +44,7 @@ impl<'a> ReadOnlyContext<'a> {
             messages,
             run_config,
             doc,
-            response: None,
+            llm_response: None,
             tool_name: None,
             tool_call_id: None,
             tool_args: None,
@@ -54,8 +54,8 @@ impl<'a> ReadOnlyContext<'a> {
     }
 
     #[must_use]
-    pub fn with_response(mut self, response: &'a StreamResult) -> Self {
-        self.response = Some(response);
+    pub fn with_llm_response(mut self, response: &'a LLMResponse) -> Self {
+        self.llm_response = Some(response);
         self
     }
 
@@ -109,7 +109,11 @@ impl<'a> ReadOnlyContext<'a> {
     }
 
     pub fn response(&self) -> Option<&StreamResult> {
-        self.response
+        self.llm_response.and_then(|r| r.outcome.as_ref().ok())
+    }
+
+    pub fn inference_error(&self) -> Option<&InferenceError> {
+        self.llm_response.and_then(|r| r.outcome.as_ref().err())
     }
 
     pub fn tool_name(&self) -> Option<&str> {
@@ -215,7 +219,7 @@ pub fn build_read_only_context_from_step<'a>(
         doc,
     );
     if let Some(llm) = step.extensions.get::<LLMResponse>() {
-        ctx = ctx.with_response(&llm.result);
+        ctx = ctx.with_llm_response(llm);
     }
     if let Some(gate) = step.extensions.get::<ToolGate>() {
         ctx = ctx.with_tool_info(&gate.name, &gate.id, Some(&gate.args));

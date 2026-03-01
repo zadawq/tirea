@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::action::Action;
-use tirea_contract::runtime::run::{InferenceError, InferenceErrorState};
 use tirea_contract::TokenUsage;
 
 fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -454,7 +453,7 @@ impl AgentBehavior for LLMMetryPlugin {
         let usage = ctx.response().and_then(|r| r.usage.as_ref());
         let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
         let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
-        let error = inference_error_from_snapshot(ctx);
+        let error = ctx.inference_error().cloned();
 
         let model = lock_unpoison(&self.model).clone();
         let provider = lock_unpoison(&self.provider).clone();
@@ -629,12 +628,6 @@ fn extract_cache_tokens(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>
     }
 }
 
-fn inference_error_from_snapshot(ctx: &ReadOnlyContext<'_>) -> Option<InferenceError> {
-    ctx.snapshot_of::<InferenceErrorState>()
-        .ok()
-        .and_then(|s| s.error)
-}
-
 // =============================================================================
 // Tests
 // =============================================================================
@@ -645,7 +638,7 @@ mod tests {
     use futures::future::join_all;
     use serde_json::json;
     use std::sync::Arc;
-    use tirea_contract::runtime::inference::LLMResponse;
+    use tirea_contract::runtime::inference::{InferenceError, LLMResponse};
     use tirea_contract::runtime::phase::{Phase, StepContext};
     use tirea_contract::runtime::tool_call::ToolGate;
     use tirea_contract::runtime::tool_call::ToolResult;
@@ -668,8 +661,8 @@ mod tests {
 
         let mut ctx = ReadOnlyContext::new(phase, thread_id, messages, config, doc);
 
-        if let Some(ref response) = step.extensions.get::<LLMResponse>() {
-            ctx = ctx.with_response(&response.result);
+        if let Some(response) = step.extensions.get::<LLMResponse>() {
+            ctx = ctx.with_llm_response(response);
         }
 
         if let Some(ref gate) = step.extensions.get::<ToolGate>() {
@@ -854,7 +847,7 @@ mod tests {
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
-        step.extensions.insert(LLMResponse::new(StreamResult {
+        step.extensions.insert(LLMResponse::success(StreamResult {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage(100, 50, 150)),
@@ -884,7 +877,7 @@ mod tests {
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
-        step.extensions.insert(LLMResponse::new(StreamResult {
+        step.extensions.insert(LLMResponse::success(StreamResult {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage_with_cache(100, 50, 150, 30)),
@@ -974,7 +967,7 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-        step.extensions.insert(LLMResponse::new(StreamResult {
+        step.extensions.insert(LLMResponse::success(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: None,
@@ -997,7 +990,7 @@ mod tests {
 
         for i in 0..3 {
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: format!("r{i}"),
                 tool_calls: vec![],
                 usage: Some(usage(10 * (i + 1), 5 * (i + 1), 15 * (i + 1))),
@@ -1013,14 +1006,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference_error() {
-        let fix = TestFixture::new_with_state(json!({
-            "__inference_error": {
-                "error": {
-                    "type": "rate_limited",
-                    "message": "429"
-                }
-            }
-        }));
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
@@ -1029,6 +1015,10 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
+        step.extensions.insert(LLMResponse::error(InferenceError {
+            error_type: "rate_limited".to_string(),
+            message: "429".to_string(),
+        }));
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let m = sink.metrics();
@@ -1386,7 +1376,7 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-        step.extensions.insert(LLMResponse::new(StreamResult {
+        step.extensions.insert(LLMResponse::success(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: Some(usage(10, 20, 30)),
@@ -1480,7 +1470,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
@@ -1529,15 +1519,9 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
-            let fix = TestFixture::new_with_state(json!({
-                "__inference_error": {
-                    "error": {
-                        "type": "rate_limited",
-                        "message": "429"
-                    }
-                }
-            }));
+            let fix = TestFixture::new();
             use opentelemetry::trace::Status;
+            use tirea_contract::runtime::inference::{InferenceError, LLMResponse};
 
             let (_guard, exporter, provider) = setup_otel_test();
 
@@ -1549,6 +1533,10 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
+            step.extensions.insert(LLMResponse::error(InferenceError {
+                error_type: "rate_limited".to_string(),
+                message: "429".to_string(),
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1587,7 +1575,7 @@ mod tests {
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
@@ -1684,7 +1672,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
@@ -1719,7 +1707,7 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-                step.extensions.insert(LLMResponse::new(StreamResult {
+                step.extensions.insert(LLMResponse::success(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: None,
@@ -1764,7 +1752,7 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-                step.extensions.insert(LLMResponse::new(StreamResult {
+                step.extensions.insert(LLMResponse::success(StreamResult {
                     text: "calling tool".into(),
                     tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
                     usage: Some(usage(10, 5, 15)),
@@ -1891,7 +1879,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
@@ -1958,7 +1946,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
@@ -2102,7 +2090,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "ok".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
@@ -2140,7 +2128,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
@@ -2198,7 +2186,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
@@ -2236,7 +2224,7 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-                step.extensions.insert(LLMResponse::new(StreamResult {
+                step.extensions.insert(LLMResponse::success(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: Some(usage_with_cache(100, 50, 150, 30)),
@@ -2285,7 +2273,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
@@ -2318,7 +2306,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
@@ -2359,7 +2347,7 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.extensions.insert(LLMResponse::new(StreamResult {
+            step.extensions.insert(LLMResponse::success(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,

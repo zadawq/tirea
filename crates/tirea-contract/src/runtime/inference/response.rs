@@ -35,15 +35,33 @@ impl StreamResult {
     }
 }
 
-/// LLM response extension: set after inference completes.
+/// Inference error emitted by the loop and consumed by telemetry plugins.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InferenceError {
+    /// Stable error class used for metrics/telemetry dimensions.
+    #[serde(rename = "type")]
+    pub error_type: String,
+    /// Human-readable error message.
+    pub message: String,
+}
+
+/// LLM response extension: set after inference completes (success or error).
 #[derive(Debug, Clone)]
 pub struct LLMResponse {
-    /// LLM inference result.
-    pub result: StreamResult,
+    /// Inference outcome: success with a [`StreamResult`] or failure with an [`InferenceError`].
+    pub outcome: Result<StreamResult, InferenceError>,
 }
 
 impl LLMResponse {
-    pub fn new(result: StreamResult) -> Self {
-        Self { result }
+    pub fn success(result: StreamResult) -> Self {
+        Self {
+            outcome: Ok(result),
+        }
+    }
+
+    pub fn error(error: InferenceError) -> Self {
+        Self {
+            outcome: Err(error),
+        }
     }
 }

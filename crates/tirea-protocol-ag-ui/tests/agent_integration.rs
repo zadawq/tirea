@@ -12465,7 +12465,7 @@ mod llmmetry_tracing {
 
         plugin.run_phase(Phase::BeforeInference, &mut step).await;
 
-        step.extensions.insert(LLMResponse::new(StreamResult {
+        step.extensions.insert(LLMResponse::success(StreamResult {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage(100, 50, 150)),
@@ -12556,7 +12556,7 @@ mod llmmetry_tracing {
 
         // Inference
         plugin.run_phase(Phase::BeforeInference, &mut step).await;
-        step.extensions.insert(LLMResponse::new(StreamResult {
+        step.extensions.insert(LLMResponse::success(StreamResult {
             text: "use search tool".into(),
             tool_calls: vec![],
             usage: Some(usage(50, 25, 75)),

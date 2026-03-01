@@ -24,8 +24,8 @@ pub use phase::{
     ToolCallAction,
 };
 pub use run::{
-    run_lifecycle_from_state, FlowControl, InferenceError, InferenceErrorState, RunContext,
-    RunDelta, RunLifecycleAction, RunLifecycleState, RunStatus, StoppedReason, TerminationReason,
+    run_lifecycle_from_state, FlowControl, InferenceError, RunContext, RunDelta,
+    RunLifecycleAction, RunLifecycleState, RunStatus, StoppedReason, TerminationReason,
 };
 pub use state::{reduce_state_actions, AnyStateAction, CommutativeAction, StateScope, StateSpec};
 pub use tool_call::{

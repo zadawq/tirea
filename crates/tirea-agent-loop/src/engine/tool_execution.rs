@@ -199,7 +199,7 @@ mod tests {
     use crate::contracts::runtime::state::StateSpec;
     use crate::contracts::runtime::state::AnyStateAction;
     use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError};
-    use crate::contracts::runtime::{InferenceError, InferenceErrorState};
+    use tirea_contract::testing::TestFixtureState;
     use crate::contracts::ToolCallContext;
     use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
@@ -317,12 +317,10 @@ mod tests {
             _args: Value,
             ctx: &ToolCallContext<'_>,
         ) -> Result<crate::contracts::runtime::ToolExecutionEffect, ToolError> {
-            let err = ctx.state_of::<InferenceErrorState>();
-            err.set_error(Some(InferenceError {
-                error_type: "direct_write".to_string(),
-                message: "written via execute_effect context".to_string(),
-            }))
-            .expect("failed to set inference error");
+            let state = ctx.state_of::<TestFixtureState>();
+            state
+                .set_label(Some("direct_write".to_string()))
+                .expect("failed to set label");
             Ok(crate::contracts::runtime::ToolExecutionEffect::new(
                 ToolResult::success("direct_write_effect", json!({"ok": true})),
             ))

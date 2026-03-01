@@ -11,4 +11,4 @@ pub use lifecycle::{
     run_lifecycle_from_state, RunLifecycleAction, RunLifecycleState, RunStatus, StoppedReason,
     TerminationReason,
 };
-pub use state::{InferenceError, InferenceErrorState};
+pub use state::InferenceError;

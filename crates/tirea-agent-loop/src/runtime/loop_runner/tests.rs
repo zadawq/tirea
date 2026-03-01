@@ -1903,12 +1903,10 @@ async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy
             _args: Value,
             ctx: &ToolCallContext<'_>,
         ) -> Result<ToolExecutionEffect, ToolError> {
-            let err = ctx.state_of::<crate::runtime::control::InferenceErrorState>();
-            err.set_error(Some(crate::runtime::control::InferenceError {
-                error_type: "direct_write".to_string(),
-                message: "written in execute_effect".to_string(),
-            }))
-            .expect("failed to set inference error");
+            let state = ctx.state_of::<tirea_contract::testing::TestFixtureState>();
+            state
+                .set_label(Some("direct_write".to_string()))
+                .expect("failed to set label");
             Ok(ToolExecutionEffect::new(ToolResult::success(
                 "direct_write_effect_tool",
                 json!({"ok": true}),
@@ -2362,17 +2360,8 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
 
         async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
             self.phases.lock().unwrap().push(Phase::AfterInference);
-            let err = ctx
-                .snapshot_of::<crate::runtime::control::InferenceErrorState>()
-                .ok()
-                .and_then(|s| s.error)
-                .map(|v| json!({"type": v.error_type, "message": v.message}));
-            assert_eq!(
-                err.as_ref()
-                    .and_then(|v| v.get("type"))
-                    .and_then(|v| v.as_str()),
-                Some("llm_stream_start_error")
-            );
+            let err = ctx.inference_error();
+            assert_eq!(err.map(|e| e.error_type.as_str()), Some("llm_stream_start_error"));
             vec![]
         }
 
@@ -5644,12 +5633,8 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::AfterInference);
-            let err_type = ctx
-                .snapshot_of::<crate::runtime::control::InferenceErrorState>()
-                .ok()
-                .and_then(|s| s.error)
-                .map(|e| e.error_type);
-            assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
+            let err_type = ctx.inference_error().map(|e| e.error_type.as_str());
+            assert_eq!(err_type, Some("llm_exec_error"));
             vec![]
         }
 
@@ -9479,12 +9464,8 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::AfterInference);
-            let err_type = ctx
-                .snapshot_of::<crate::runtime::control::InferenceErrorState>()
-                .ok()
-                .and_then(|s| s.error)
-                .map(|e| e.error_type);
-            assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));
+            let err_type = ctx.inference_error().map(|e| e.error_type.as_str());
+            assert_eq!(err_type, Some("llm_stream_start_error"));
             vec![]
         }
         async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {

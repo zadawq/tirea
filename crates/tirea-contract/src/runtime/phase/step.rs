@@ -227,8 +227,10 @@ impl<'a> StepContext<'a> {
         }
 
         if let Some(llm) = self.extensions.get::<LLMResponse>() {
-            if llm.result.tool_calls.is_empty() && !llm.result.text.is_empty() {
-                return StepOutcome::Complete;
+            if let Ok(result) = &llm.outcome {
+                if result.tool_calls.is_empty() && !result.text.is_empty() {
+                    return StepOutcome::Complete;
+                }
             }
         }
 

@@ -390,38 +390,38 @@ mod tests {
 
     #[test]
     fn snapshot_of_deserializes_at_canonical_path() {
-        use crate::runtime::run::InferenceErrorState;
+        use crate::testing::TestFixtureState;
 
         let ctx = RunContext::new(
             "t-1",
-            json!({"__inference_error": {"error": null}}),
+            json!({"__test_fixture": {"label": null}}),
             vec![],
             RunConfig::default(),
         );
-        let ctrl: InferenceErrorState = ctx.snapshot_of().unwrap();
-        assert!(ctrl.error.is_none());
+        let ctrl: TestFixtureState = ctx.snapshot_of().unwrap();
+        assert!(ctrl.label.is_none());
     }
 
     #[test]
     fn snapshot_at_deserializes_at_explicit_path() {
-        use crate::runtime::run::InferenceErrorState;
+        use crate::testing::TestFixtureState;
 
         let ctx = RunContext::new(
             "t-1",
-            json!({"custom": {"error": null}}),
+            json!({"custom": {"label": null}}),
             vec![],
             RunConfig::default(),
         );
-        let ctrl: InferenceErrorState = ctx.snapshot_at("custom").unwrap();
-        assert!(ctrl.error.is_none());
+        let ctrl: TestFixtureState = ctx.snapshot_at("custom").unwrap();
+        assert!(ctrl.label.is_none());
     }
 
     #[test]
     fn snapshot_of_returns_error_for_missing_path() {
-        use crate::runtime::run::InferenceErrorState;
+        use crate::testing::TestFixtureState;
 
         let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
-        assert!(ctx.snapshot_of::<InferenceErrorState>().is_err());
+        assert!(ctx.snapshot_of::<TestFixtureState>().is_err());
     }
 
     // =========================================================================

@@ -35,30 +35,26 @@ impl NoOpActivityManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::run::InferenceErrorState;
-    use crate::testing::TestFixture;
+    use crate::testing::{TestFixture, TestFixtureState};
     use serde_json::json;
 
     // Write-through same-ref and cross-ref covered by tool_call::context::tests.
 
     #[test]
     fn test_rebuild_state_reflects_write_through() {
-        let doc = json!({"__inference_error": {"error": null}});
+        let doc = json!({"__test_fixture": {"label": null}});
         let fix = TestFixture::new_with_state(doc);
         let ctx = fix.ctx_with("call-1", "test");
 
         // Write via state_of
-        let ctrl = ctx.state_of::<InferenceErrorState>();
-        ctrl.set_error(Some(crate::runtime::run::InferenceError {
-            error_type: "test_error".into(),
-            message: "test".into(),
-        }))
-        .expect("failed to set inference_error");
+        let ctrl = ctx.state_of::<TestFixtureState>();
+        ctrl.set_label(Some("test_value".into()))
+            .expect("failed to set label");
 
         // updated_state should return the run_doc snapshot which includes the write
         let rebuilt = fix.updated_state();
         assert_eq!(
-            rebuilt["__inference_error"]["error"]["type"], "test_error",
+            rebuilt["__test_fixture"]["label"], "test_value",
             "updated_state must reflect write-through updates"
         );
     }

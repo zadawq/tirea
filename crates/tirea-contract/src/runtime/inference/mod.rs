@@ -4,4 +4,4 @@ pub mod response;
 
 pub use context::InferenceContext;
 pub use messaging::MessagingContext;
-pub use response::{LLMResponse, StreamResult, TokenUsage};
+pub use response::{InferenceError, LLMResponse, StreamResult, TokenUsage};
