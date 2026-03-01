@@ -1,5 +1,5 @@
-use crate::runtime::plugin::phase::step::StepContext;
-use crate::runtime::plugin::phase::Phase;
+use crate::runtime::phase::step::StepContext;
+use crate::runtime::phase::Phase;
 
 /// Unified action trait for all phase effects.
 ///

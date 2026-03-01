@@ -1,7 +1,7 @@
 use crate::runtime::action::Action;
 use crate::runtime::inference::response::{LLMResponse, StreamResult};
-use crate::runtime::plugin::phase::step::StepContext;
-use crate::runtime::plugin::phase::Phase;
+use crate::runtime::phase::step::StepContext;
+use crate::runtime::phase::Phase;
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;

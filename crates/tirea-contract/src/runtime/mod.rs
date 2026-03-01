@@ -6,6 +6,7 @@ pub mod behavior;
 pub mod extensions;
 pub mod inference;
 pub mod llm;
+pub mod phase;
 pub mod plugin;
 pub mod run;
 pub mod state;
