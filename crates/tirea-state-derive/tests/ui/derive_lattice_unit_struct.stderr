@@ -1,0 +1,5 @@
+error: #[derive(Lattice)] does not support unit structs
+ --> tests/ui/derive_lattice_unit_struct.rs:4:1
+  |
+4 | struct Bad;
+  | ^^^^^^^^^^^

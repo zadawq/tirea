@@ -127,9 +127,9 @@ pub use manager::{ApplyResult, StateError, StateManager};
 pub use runtime::{SealedState, SealedStateError};
 pub use state::{parse_path, PatchSink, State, StateContext, StateExt};
 
-// Re-export derive macro when feature is enabled
+// Re-export derive macros when feature is enabled
 #[cfg(feature = "derive")]
-pub use tirea_state_derive::State;
+pub use tirea_state_derive::{Lattice, State};
 
 // Re-export serde_json::Value for convenience
 pub use serde_json::Value;

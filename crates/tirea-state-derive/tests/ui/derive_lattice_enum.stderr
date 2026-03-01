@@ -1,0 +1,8 @@
+error: #[derive(Lattice)] does not support enums
+ --> tests/ui/derive_lattice_enum.rs:4:1
+  |
+4 | / enum Bad {
+5 | |     A,
+6 | |     B,
+7 | | }
+  | |_^
