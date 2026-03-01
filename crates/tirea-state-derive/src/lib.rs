@@ -77,3 +77,31 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
         Err(err) => err.to_compile_error().into(),
     }
 }
+
+/// Derive the `Lattice` trait for a struct with named fields.
+///
+/// Each field must implement `Lattice`. The generated `merge` delegates to
+/// `Lattice::merge` on each field independently:
+///
+/// ```ignore
+/// use tirea_state::Lattice;
+/// use tirea_state_derive::Lattice;
+///
+/// #[derive(Clone, PartialEq, Lattice)]
+/// struct Composite {
+///     counter: GCounter,
+///     flag: Flag,
+/// }
+/// ```
+///
+/// Generic type parameters automatically get a `Lattice` bound.
+/// Errors on tuple structs, unit structs, and enums.
+#[proc_macro_derive(Lattice)]
+pub fn derive_lattice(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::lattice_impl::expand(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}

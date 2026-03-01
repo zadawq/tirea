@@ -1,5 +1,6 @@
 //! Code generation for State derive macro.
 
+pub mod lattice_impl;
 mod state_ref;
 mod utils;
 
