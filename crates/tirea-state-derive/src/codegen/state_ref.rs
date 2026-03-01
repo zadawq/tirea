@@ -175,69 +175,8 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 }
             }
         }
-        FieldKind::Vec(_) | FieldKind::Map { .. } => {
-            if let Some(default) = &field.default {
-                let expr: syn::Expr = syn::parse_str(default).map_err(|e| {
-                    syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e))
-                })?;
-                quote! {
-                    /// Read the field value.
-                    pub fn #field_name(&self) -> ::tirea_state::TireaResult<#field_ty> {
-                        let path = self.base.clone().key(#json_key);
-                        match { let __guard = self.doc.get(); ::tirea_state::get_at_path(&__guard, &path).cloned() } {
-                            None => Ok(#expr),
-                            Some(value) => {
-                                ::serde_json::from_value(value)
-                                    .map_err(::tirea_state::TireaError::from)
-                            }
-                        }
-                    }
-                }
-            } else {
-                quote! {
-                    /// Read the field value.
-                    pub fn #field_name(&self) -> ::tirea_state::TireaResult<#field_ty> {
-                        let path = self.base.clone().key(#json_key);
-                        let value = { let __guard = self.doc.get(); ::tirea_state::get_at_path(&__guard, &path).cloned() }
-                            .ok_or_else(|| ::tirea_state::TireaError::path_not_found(path.clone()))?;
-                        ::serde_json::from_value(value)
-                            .map_err(::tirea_state::TireaError::from)
-                    }
-                }
-            }
-        }
-        FieldKind::Lattice => {
-            if let Some(default) = &field.default {
-                let expr: syn::Expr = syn::parse_str(default).map_err(|e| {
-                    syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e))
-                })?;
-                quote! {
-                    /// Read the lattice field value.
-                    pub fn #field_name(&self) -> ::tirea_state::TireaResult<#field_ty> {
-                        let path = self.base.clone().key(#json_key);
-                        match { let __guard = self.doc.get(); ::tirea_state::get_at_path(&__guard, &path).cloned() } {
-                            None => Ok(#expr),
-                            Some(value) => {
-                                ::serde_json::from_value(value)
-                                    .map_err(::tirea_state::TireaError::from)
-                            }
-                        }
-                    }
-                }
-            } else {
-                quote! {
-                    /// Read the lattice field value.
-                    pub fn #field_name(&self) -> ::tirea_state::TireaResult<#field_ty> {
-                        let path = self.base.clone().key(#json_key);
-                        let value = { let __guard = self.doc.get(); ::tirea_state::get_at_path(&__guard, &path).cloned() }
-                            .ok_or_else(|| ::tirea_state::TireaError::path_not_found(path.clone()))?;
-                        ::serde_json::from_value(value)
-                            .map_err(::tirea_state::TireaError::from)
-                    }
-                }
-            }
-        }
-        FieldKind::Primitive => {
+        // Primitive, Lattice, Vec, and Map all use serde-based read with optional default
+        FieldKind::Vec(_) | FieldKind::Map { .. } | FieldKind::Lattice | FieldKind::Primitive => {
             if let Some(default) = &field.default {
                 let expr: syn::Expr = syn::parse_str(default).map_err(|e| {
                     syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e))

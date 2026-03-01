@@ -134,6 +134,7 @@ impl FieldKind {
     }
 
     /// Check if this is a lattice CRDT type.
+    #[allow(dead_code)]
     pub fn is_lattice(&self) -> bool {
         matches!(self, FieldKind::Lattice)
     }
