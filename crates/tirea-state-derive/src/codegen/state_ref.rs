@@ -28,6 +28,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let delete_methods = generate_delete_methods(&fields)?;
     let increment_methods = generate_increment_methods(&fields)?;
     let register_lattice_body = generate_register_lattice(path_value, &fields);
+    let lattice_keys_body = generate_lattice_keys(&fields);
 
     Ok(quote! {
         /// Typed state reference for reading and writing state.
@@ -83,6 +84,8 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
             }
 
             #register_lattice_body
+
+            #lattice_keys_body
         }
     })
 }
@@ -568,6 +571,25 @@ fn generate_register_lattice(base_path: &str, fields: &[&FieldInput]) -> TokenSt
     quote! {
         fn register_lattice(registry: &mut ::tirea_state::LatticeRegistry) {
             #(#registrations)*
+        }
+    }
+}
+
+/// Generate `lattice_keys` override for lattice fields.
+///
+/// Returns empty tokens if there are no lattice fields (inherits the default `&[]`).
+fn generate_lattice_keys(fields: &[&FieldInput]) -> TokenStream {
+    let lattice_fields: Vec<_> = fields.iter().filter(|f| f.lattice).collect();
+
+    if lattice_fields.is_empty() {
+        return TokenStream::new();
+    }
+
+    let keys: Vec<String> = lattice_fields.iter().map(|f| f.json_key()).collect();
+
+    quote! {
+        fn lattice_keys() -> &'static [&'static str] {
+            &[#(#keys),*]
         }
     }
 }

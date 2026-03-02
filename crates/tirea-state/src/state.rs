@@ -218,6 +218,15 @@ pub trait State: Sized {
     /// fields. The default implementation is a no-op (no lattice fields).
     fn register_lattice(_registry: &mut LatticeRegistry) {}
 
+    /// Return the JSON keys of fields annotated with `#[tirea(lattice)]`.
+    ///
+    /// Used by the reducer pipeline to emit `Op::LatticeMerge` (instead of
+    /// `Op::set`) for CRDT fields, enabling proper conflict suppression.
+    /// The default implementation returns an empty slice (no lattice fields).
+    fn lattice_keys() -> &'static [&'static str] {
+        &[]
+    }
+
     /// Create a patch that sets this value at the root.
     fn to_patch(&self) -> TireaResult<Patch> {
         Ok(Patch::with_ops(vec![Op::set(

@@ -133,12 +133,26 @@ impl AnyStateAction {
                     Err(first_err)
                 }
             })?;
+
+            let lattice_keys = S::lattice_keys();
+            if lattice_keys.is_empty() {
+                // No lattice fields: single Op::set (fast path, no extra serialization)
+                state.reduce(action);
+                let new_value = state.to_value()?;
+                return Ok(Patch::with_ops(vec![Op::set(
+                    path_from_str(actual_path),
+                    new_value,
+                )]));
+            }
+
+            // Has lattice fields: diff before/after and emit per-field ops
+            let old_value = state.to_value()?;
             state.reduce(action);
             let new_value = state.to_value()?;
-            Ok(Patch::with_ops(vec![Op::set(
-                path_from_str(actual_path),
-                new_value,
-            )]))
+
+            let base_path = path_from_str(actual_path);
+            let ops = diff_state_fields(&old_value, &new_value, &base_path, lattice_keys);
+            Ok(Patch::with_ops(ops))
         })
     }
 
@@ -257,6 +271,42 @@ impl fmt::Debug for AnyStateAction {
     }
 }
 
+/// Diff two JSON objects and emit per-field ops, using `Op::LatticeMerge` for
+/// lattice-annotated fields and `Op::set` / `Op::delete` for the rest.
+fn diff_state_fields(
+    old_value: &Value,
+    new_value: &Value,
+    base_path: &Path,
+    lattice_keys: &[&str],
+) -> Vec<Op> {
+    let empty_obj = serde_json::Map::new();
+    let old_obj = old_value.as_object().unwrap_or(&empty_obj);
+    let new_obj = new_value.as_object().unwrap_or(&empty_obj);
+
+    let mut ops = Vec::new();
+
+    for (key, new_val) in new_obj {
+        let old_val = old_obj.get(key);
+        if old_val == Some(new_val) {
+            continue; // unchanged
+        }
+        let field_path = base_path.clone().key(key);
+        if lattice_keys.contains(&key.as_str()) {
+            ops.push(Op::lattice_merge(field_path, new_val.clone()));
+        } else {
+            ops.push(Op::set(field_path, new_val.clone()));
+        }
+    }
+
+    for key in old_obj.keys() {
+        if !new_obj.contains_key(key) {
+            ops.push(Op::delete(base_path.clone().key(key)));
+        }
+    }
+
+    ops
+}
+
 /// Convert a dot-separated path string to a `Path` for use in `Op::set`.
 fn path_from_str(s: &str) -> Path {
     let mut path = Path::root();
@@ -273,7 +323,10 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use tirea_state::{apply_patch, DocCell, PatchSink, Path as TPath};
+    use tirea_state::{
+        apply_patch, conflicts_with_registry, DocCell, GCounter, LatticeRegistry, PatchSink,
+        Path as TPath,
+    };
 
     // -- Manual State + StateSpec impl for testing --
 
@@ -575,5 +628,204 @@ mod tests {
     #[should_panic(expected = "no bound path")]
     fn new_for_call_panics_on_empty_path() {
         let _ = AnyStateAction::new_for_call::<Unbound>((), "call_1");
+    }
+
+    // -- CRDT (lattice) field test types --
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+    struct TokenStats {
+        #[serde(default)]
+        total_input: GCounter,
+        #[serde(default)]
+        total_output: GCounter,
+        #[serde(default)]
+        label: String,
+    }
+
+    struct TokenStatsRef;
+
+    impl State for TokenStats {
+        type Ref<'a> = TokenStatsRef;
+        const PATH: &'static str = "token_stats";
+
+        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+            TokenStatsRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn lattice_keys() -> &'static [&'static str] {
+            &["total_input", "total_output"]
+        }
+    }
+
+    #[allow(dead_code)]
+    enum TokenStatsAction {
+        AddInput(u64),
+        AddOutput(u64),
+    }
+
+    impl StateSpec for TokenStats {
+        type Action = TokenStatsAction;
+
+        fn reduce(&mut self, action: TokenStatsAction) {
+            match action {
+                TokenStatsAction::AddInput(n) => self.total_input.increment("_", n),
+                TokenStatsAction::AddOutput(n) => self.total_output.increment("_", n),
+            }
+        }
+    }
+
+    #[test]
+    fn reducer_emits_op_set_for_crdt_fields_causing_false_conflict() {
+        // Two plugins independently record tokens → parallel patches
+        let base = json!({});
+
+        let patches_a = reduce_state_actions(
+            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(100))],
+            &base,
+            "plugin_a",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+        let patches_b = reduce_state_actions(
+            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(200))],
+            &base,
+            "plugin_b",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+
+        // Register GCounter at field paths
+        let mut registry = LatticeRegistry::new();
+        registry.register::<GCounter>(parse_path("token_stats.total_input"));
+        registry.register::<GCounter>(parse_path("token_stats.total_output"));
+
+        let conflicts = conflicts_with_registry(
+            patches_a[0].patch(),
+            patches_b[0].patch(),
+            &registry,
+        );
+
+        // After fix: CRDT fields should use Op::LatticeMerge → no conflict
+        assert!(
+            conflicts.is_empty(),
+            "CRDT fields should not conflict; reducer should emit Op::LatticeMerge for lattice fields"
+        );
+    }
+
+    #[test]
+    fn reducer_emits_lattice_merge_ops_for_crdt_fields() {
+        let base = json!({});
+        let patches = reduce_state_actions(
+            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(100))],
+            &base,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+
+        let ops = patches[0].patch().ops();
+        // Should have per-field ops, not a single whole-state Op::set
+        let has_lattice_merge = ops.iter().any(|op| matches!(op, Op::LatticeMerge { .. }));
+        assert!(
+            has_lattice_merge,
+            "reducer should emit Op::LatticeMerge for CRDT fields, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn reducer_mixed_fields_emits_correct_op_types() {
+        // Custom action that modifies both CRDT and non-CRDT fields
+        #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+        struct MixedState {
+            #[serde(default)]
+            counter: GCounter,
+            #[serde(default)]
+            name: String,
+        }
+
+        struct MixedStateRef;
+
+        impl State for MixedState {
+            type Ref<'a> = MixedStateRef;
+            const PATH: &'static str = "mixed";
+
+            fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+                MixedStateRef
+            }
+
+            fn from_value(value: &Value) -> TireaResult<Self> {
+                if value.is_null() {
+                    return Ok(Self::default());
+                }
+                serde_json::from_value(value.clone())
+                    .map_err(tirea_state::TireaError::Serialization)
+            }
+
+            fn to_value(&self) -> TireaResult<Value> {
+                serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+            }
+
+            fn lattice_keys() -> &'static [&'static str] {
+                &["counter"]
+            }
+        }
+
+        enum MixedAction {
+            IncrementAndRename(u64, String),
+        }
+
+        impl StateSpec for MixedState {
+            type Action = MixedAction;
+
+            fn reduce(&mut self, action: MixedAction) {
+                match action {
+                    MixedAction::IncrementAndRename(n, name) => {
+                        self.counter.increment("_", n);
+                        self.name = name;
+                    }
+                }
+            }
+        }
+
+        let base = json!({});
+        let patches = reduce_state_actions(
+            vec![AnyStateAction::new::<MixedState>(
+                MixedAction::IncrementAndRename(5, "new".to_string()),
+            )],
+            &base,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+
+        let ops = patches[0].patch().ops();
+        let lattice_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, Op::LatticeMerge { .. }))
+            .collect();
+        let set_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, Op::Set { .. }))
+            .collect();
+
+        assert!(
+            !lattice_ops.is_empty(),
+            "should have LatticeMerge for CRDT field 'counter'"
+        );
+        assert!(
+            !set_ops.is_empty(),
+            "should have Op::set for non-CRDT field 'name'"
+        );
     }
 }
