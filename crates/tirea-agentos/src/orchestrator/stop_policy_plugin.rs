@@ -14,7 +14,7 @@ use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{RunContext, StoppedReason, TerminationReason};
-use tirea_state::State;
+use tirea_state::{GCounter, LatticeRegistry, State};
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
 
@@ -44,9 +44,11 @@ struct StopPolicyRuntimeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
     #[serde(default)]
-    pub total_input_tokens: usize,
+    #[tirea(lattice)]
+    pub total_input_tokens: GCounter,
     #[serde(default)]
-    pub total_output_tokens: usize,
+    #[tirea(lattice)]
+    pub total_output_tokens: GCounter,
 }
 
 /// Action type for `StopPolicyRuntimeState` reducer.
@@ -75,9 +77,8 @@ impl StateSpec for StopPolicyRuntimeState {
                         self.started_at_ms = Some(ms);
                     }
                 }
-                self.total_input_tokens = self.total_input_tokens.saturating_add(prompt_tokens);
-                self.total_output_tokens =
-                    self.total_output_tokens.saturating_add(completion_tokens);
+                self.total_input_tokens.increment("_", prompt_tokens as u64);
+                self.total_output_tokens.increment("_", completion_tokens as u64);
             }
         }
     }
@@ -371,6 +372,10 @@ impl AgentBehavior for StopPolicyPlugin {
         STOP_POLICY_PLUGIN_ID
     }
 
+    fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
+        StopPolicyRuntimeState::register_lattice(registry);
+    }
+
     async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         if self.conditions.is_empty() {
             return vec![];
@@ -395,9 +400,8 @@ impl AgentBehavior for StopPolicyPlugin {
             .snapshot_of::<StopPolicyRuntimeState>()
             .unwrap_or_default();
         let started_at_ms = runtime.started_at_ms.unwrap_or(now_ms);
-        let total_input_tokens = runtime.total_input_tokens.saturating_add(prompt_tokens);
-        let total_output_tokens = runtime
-            .total_output_tokens
+        let total_input_tokens = (runtime.total_input_tokens.value() as usize).saturating_add(prompt_tokens);
+        let total_output_tokens = (runtime.total_output_tokens.value() as usize)
             .saturating_add(completion_tokens);
 
         let mut actions: Vec<Box<dyn Action>> = Vec::new();
@@ -642,6 +646,54 @@ mod tests {
             let restored: StopConditionSpec = serde_json::from_str(&encoded).unwrap();
             assert_eq!(restored, spec);
         }
+    }
+
+    #[test]
+    fn stop_policy_registers_lattice_paths() {
+        let mut registry = LatticeRegistry::new();
+        let plugin = StopPolicyPlugin::new(vec![], vec![]);
+        plugin.register_lattice_paths(&mut registry);
+        assert!(
+            registry
+                .get(&tirea_state::parse_path(
+                    "__kernel.stop_policy_runtime.total_input_tokens"
+                ))
+                .is_some(),
+            "total_input_tokens should be registered"
+        );
+        assert!(
+            registry
+                .get(&tirea_state::parse_path(
+                    "__kernel.stop_policy_runtime.total_output_tokens"
+                ))
+                .is_some(),
+            "total_output_tokens should be registered"
+        );
+    }
+
+    #[test]
+    fn record_tokens_increments_gcounters() {
+        let mut state = StopPolicyRuntimeState::default();
+        assert_eq!(state.total_input_tokens.value(), 0);
+        assert_eq!(state.total_output_tokens.value(), 0);
+
+        state.reduce(StopPolicyRuntimeAction::RecordTokens {
+            started_at_ms: Some(1000),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+        });
+        assert_eq!(state.total_input_tokens.value(), 100);
+        assert_eq!(state.total_output_tokens.value(), 50);
+        assert_eq!(state.started_at_ms, Some(1000));
+
+        state.reduce(StopPolicyRuntimeAction::RecordTokens {
+            started_at_ms: Some(2000),
+            prompt_tokens: 200,
+            completion_tokens: 150,
+        });
+        assert_eq!(state.total_input_tokens.value(), 300);
+        assert_eq!(state.total_output_tokens.value(), 200);
+        assert_eq!(state.started_at_ms, Some(1000), "started_at_ms should not change once set");
     }
 
     #[test]

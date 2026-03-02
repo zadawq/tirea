@@ -346,8 +346,7 @@ impl AgentBehavior for PermissionPlugin {
     }
 
     fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
-        registry.register::<GSet<String>>(tirea_state::parse_path("permission_policy.allowed_tools"));
-        registry.register::<GSet<String>>(tirea_state::parse_path("permission_policy.denied_tools"));
+        PermissionPolicy::register_lattice(registry);
     }
 
     async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {

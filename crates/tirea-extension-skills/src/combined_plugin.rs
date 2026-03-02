@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tirea_contract::runtime::action::Action;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use tirea_state::{GSet, LatticeRegistry};
+use crate::types::SkillState;
+use tirea_state::{LatticeRegistry, State};
 
 /// Single plugin wrapper that injects both:
 /// - the skills catalog (discovery)
@@ -45,7 +46,7 @@ impl AgentBehavior for SkillPlugin {
     }
 
     fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
-        registry.register::<GSet<String>>(tirea_state::parse_path("skills.active"));
+        SkillState::register_lattice(registry);
     }
 
     async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
