@@ -58,6 +58,14 @@ pub struct ToolExecutionRequest<'a> {
     pub thread_messages: &'a [Arc<Message>],
     pub state_version: u64,
     pub cancellation_token: Option<&'a CancellationToken>,
+    /// Optional pending-write store for crash recovery.
+    ///
+    /// When set, each tool's state actions are persisted immediately after
+    /// execution, before the batch commit. On recovery, pending writes are
+    /// replayed to rebuild state for completed tools.
+    pub pending_write_store: Option<Arc<dyn crate::runtime::state::PendingWriteStore>>,
+    /// Run ID for pending-write entries.
+    pub run_id: Option<String>,
 }
 
 /// Output item produced by tool execution strategies.

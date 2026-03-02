@@ -928,6 +928,8 @@ async fn drain_resuming_tool_calls_and_replay(
                     thread_id: run_ctx.thread_id(),
                     thread_messages: run_ctx.messages(),
                     cancellation_token: None,
+                    pending_write_store: None,
+                    run_id: None,
                 };
                 let replay_result = execute_single_tool_with_phases_deferred(
                     tool.as_deref(),
@@ -1711,6 +1713,8 @@ pub async fn run_loop(
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,
             cancellation_token: run_cancellation_token.as_ref(),
+            pending_write_store: None,
+            run_id: None,
         });
         let results = tool_exec_future.await.map_err(AgentLoopError::from);
 
@@ -1812,6 +1816,7 @@ pub fn run_loop_stream(
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+    pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     stream_runner::run_stream(
         agent,
@@ -1820,6 +1825,7 @@ pub fn run_loop_stream(
         cancellation_token,
         state_committer,
         decision_rx,
+        pending_write_store,
     )
 }
 

@@ -1064,6 +1064,8 @@ async fn test_activity_event_emitted_before_tool_completion() {
         thread_id: "test",
         thread_messages: &[],
         cancellation_token: None,
+        pending_write_store: None,
+        run_id: None,
     };
 
     let mut tool_future = Box::pin(execute_single_tool_with_phases(
@@ -1147,6 +1149,8 @@ async fn test_parallel_tools_emit_activity_before_completion() {
             thread_id: "test",
             thread_messages: &[],
             cancellation_token: None,
+            pending_write_store: None,
+            run_id: None,
         };
         execute_tools_parallel_with_phases(
             &tools_for_task,
@@ -1223,6 +1227,8 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
             thread_id: "cancel-test",
             thread_messages: &[],
             cancellation_token: Some(&token_for_task),
+            pending_write_store: None,
+            run_id: None,
         };
         let result =
             execute_tools_parallel_with_phases(&tools, &calls, &json!({}), phase_ctx).await;
@@ -1764,6 +1770,8 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
         thread_id: "test",
         thread_messages: &[],
         cancellation_token: None,
+        pending_write_store: None,
+        run_id: None,
     };
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
@@ -1826,6 +1834,8 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
         thread_id: "test",
         thread_messages: &[],
         cancellation_token: None,
+        pending_write_store: None,
+        run_id: None,
     };
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
@@ -1899,6 +1909,8 @@ async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy
         thread_id: "test",
         thread_messages: &[],
         cancellation_token: None,
+        pending_write_store: None,
+        run_id: None,
     };
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
@@ -1979,6 +1991,8 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
         thread_id: "test",
         thread_messages: &[],
         cancellation_token: Some(&token),
+        pending_write_store: None,
+        run_id: None,
     };
 
     let result = tokio::time::timeout(
@@ -2036,6 +2050,8 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
         thread_id: "real-thread-42",
         thread_messages: &[],
         cancellation_token: None,
+        pending_write_store: None,
+        run_id: None,
     };
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
@@ -3343,7 +3359,7 @@ async fn test_stream_terminate_behavior_requested_emits_run_end_phase() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Verify events include RunStart and RunFinish
@@ -3388,7 +3404,7 @@ async fn test_stream_terminate_behavior_requested_emits_run_start_and_finish() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     let events = collect_stream_events(stream).await;
 
     let event_names: Vec<&str> = events
@@ -3451,6 +3467,7 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
         None,
         None,
         None,
+        None,
     ))
     .await;
 
@@ -3501,6 +3518,7 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
         Arc::new(config),
         tools,
         run_ctx,
+        None,
         None,
         None,
         None,
@@ -3563,6 +3581,7 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
         Arc::new(config),
         tools,
         run_ctx,
+        None,
         None,
         None,
         None,
@@ -3629,6 +3648,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         Arc::new(config),
         tools,
         run_ctx,
+        None,
         None,
         None,
         None,
@@ -3910,6 +3930,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
         None,
     ))
     .await;
@@ -5026,7 +5047,7 @@ async fn test_stream_run_finish_has_matching_thread_id() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Extract thread_id from RunStart and RunFinish
@@ -6602,7 +6623,7 @@ async fn run_mock_stream(
 ) -> Vec<AgentEvent> {
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     collect_stream_events(stream).await
 }
 
@@ -6672,7 +6693,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -6699,7 +6720,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -6752,6 +6773,7 @@ async fn run_mock_stream_with_final_thread_with_context(
         run_ctx,
         cancellation_token,
         Some(committer),
+        None,
         None,
     );
     let events = collect_stream_events(stream).await;
@@ -7060,6 +7082,7 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
         None,
+        None,
     );
     let events = collect_stream_events(stream).await;
 
@@ -7166,6 +7189,7 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
         None,
+        None,
     );
     let events = collect_stream_events(stream).await;
 
@@ -7211,6 +7235,7 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
         None,
     );
     let events = collect_stream_events(stream).await;
@@ -7319,6 +7344,7 @@ async fn test_stream_terminate_behavior_requested_force_commits_run_finished_del
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
         None,
+        None,
     );
     let events = collect_stream_events(stream).await;
 
@@ -7351,7 +7377,7 @@ async fn test_stream_replay_state_failure_emits_error() {
 
     let provider = MockStreamProvider::new(vec![MockResponse::text("should not run")]);
     let config = config.with_llm_executor(Arc::new(provider));
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -7812,7 +7838,7 @@ async fn test_stop_cancellation_token() {
 
     let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, Some(token), None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, Some(token), None, None, None);
     let events = collect_stream_events(stream).await;
     assert_eq!(
         extract_termination(&events),
@@ -7873,6 +7899,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
         run_ctx,
         Some(token.clone()),
         Some(state_committer),
+        None,
         None,
     );
 
@@ -9057,6 +9084,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
         None,
         Some(state_committer),
         None,
+        None,
     ))
     .await;
 
@@ -9140,6 +9168,7 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
         run_ctx,
         Some(token.clone()),
         Some(state_committer),
+        None,
         None,
     );
 
@@ -10652,7 +10681,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     let provider = MockStreamProvider::new(responses);
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Run should terminate with Suspended.
@@ -11505,6 +11534,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
         None,
         Some(state_committer),
         Some(decision_rx),
+        None,
     );
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
@@ -11606,6 +11636,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
         None,
         Some(state_committer),
         Some(decision_rx),
+        None,
     );
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
@@ -12019,6 +12050,7 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
         None,
         None,
         Some(decision_rx),
+        None,
     );
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
 
@@ -12295,6 +12327,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
         None,
         None,
         Some(decision_rx),
+        None,
     );
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
 
@@ -12396,6 +12429,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
         Some(token.clone()),
         None,
         Some(decision_rx),
+        None,
     );
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
 

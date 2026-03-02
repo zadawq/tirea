@@ -408,6 +408,7 @@ for raw in sys.stdin:
         None,
         None,
         None,
+        None,
     ))
     .await;
 
@@ -512,6 +513,7 @@ async fn real_http_mcp_progress_notifications_flow_to_ui_data_events() {
         Arc::new(config) as Arc<dyn Agent>,
         registry.snapshot(),
         run_ctx,
+        None,
         None,
         None,
         None,

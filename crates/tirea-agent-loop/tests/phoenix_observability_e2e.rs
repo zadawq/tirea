@@ -298,6 +298,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         None,
         None,
         None,
+        None,
     )
     .collect()
     .await;

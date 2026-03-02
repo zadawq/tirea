@@ -138,6 +138,7 @@ pub(super) fn run_stream(
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+    pending_write_store: Option<Arc<dyn tirea_contract::runtime::state::PendingWriteStore>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut run_ctx = run_ctx;
@@ -677,6 +678,8 @@ pub(super) fn run_stream(
                         thread_messages: &thread_messages_for_tools,
                         state_version: thread_version_for_tools,
                         cancellation_token: run_cancellation_token.as_ref(),
+                        pending_write_store: pending_write_store.clone(),
+                        run_id: Some(run_id.clone()),
                     })
                     .await
                     .map_err(AgentLoopError::from)
@@ -793,6 +796,16 @@ pub(super) fn run_stream(
             {
                 let message = e.to_string();
                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+            }
+
+            // Acknowledge pending writes after successful batch commit.
+            if let Some(ref store) = pending_write_store {
+                if let Err(e) = store.acknowledge(run_ctx.thread_id(), &run_id).await {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to acknowledge pending writes; stale entries may remain"
+                    );
+                }
             }
 
             let decision_events = match apply_decisions_and_replay(
