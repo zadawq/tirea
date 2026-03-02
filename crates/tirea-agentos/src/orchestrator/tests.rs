@@ -1973,9 +1973,9 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
     let os = make_decision_test_os(storage.clone());
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": {
@@ -2051,9 +2051,9 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
     let os = make_decision_test_os(storage.clone());
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": {
@@ -2161,9 +2161,9 @@ async fn run_stream_persists_run_lifecycle_waiting_status_for_suspension() {
     let thread_id = "t-run-lifecycle-waiting";
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": {
@@ -2222,6 +2222,7 @@ async fn run_stream_persists_run_lifecycle_waiting_status_for_suspension() {
 async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspended() {
     use futures::StreamExt;
     use tirea_store_adapters::MemoryStore;
+    use tirea_contract::runtime::suspended_calls_from_state;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
@@ -2229,9 +2230,9 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
     let run_id = "run-initial-denied";
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": {
@@ -2293,11 +2294,7 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
-        rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
-            .and_then(|calls| calls.as_object())
-            .map_or(true, |calls| !calls.contains_key("call_pending")),
+        !suspended_calls_from_state(&rebuilt).contains_key("call_pending"),
         "resolved denied call must be removed from suspended map: {rebuilt:?}"
     );
 }
@@ -2306,15 +2303,16 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
 async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_suspended() {
     use futures::StreamExt;
     use tirea_store_adapters::MemoryStore;
+    use tirea_contract::runtime::suspended_calls_from_state;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
     let thread_id = "t-initial-cancelled";
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": {
@@ -2380,11 +2378,7 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
-        rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
-            .and_then(|calls| calls.as_object())
-            .map_or(true, |calls| !calls.contains_key("call_pending")),
+        !suspended_calls_from_state(&rebuilt).contains_key("call_pending"),
         "resolved cancelled call must be removed from suspended map: {rebuilt:?}"
     );
 }
@@ -2393,15 +2387,16 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
 async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_call() {
     use futures::StreamExt;
     use tirea_store_adapters::MemoryStore;
+    use tirea_contract::runtime::suspended_calls_from_state;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
     let thread_id = "t-initial-partial";
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_approved": {
+        "__tool_call_scope": {
+            "call_approved": {
+                "suspended_call": {
                     "call_id": "call_approved",
                     "tool_name": "echo",
                     "suspension": {
@@ -2416,8 +2411,10 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
                         "arguments": { "message": "approve me" }
                     },
                     "resume_mode": "replay_tool_call"
-                },
-                "call_waiting": {
+                }
+            },
+            "call_waiting": {
+                "suspended_call": {
                     "call_id": "call_waiting",
                     "tool_name": "echo",
                     "suspension": {
@@ -2479,12 +2476,7 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
 
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
-    let suspended_calls = rebuilt
-        .get("__suspended_tool_calls")
-        .and_then(|rt| rt.get("calls"))
-        .and_then(|calls| calls.as_object())
-        .cloned()
-        .unwrap_or_default();
+    let suspended_calls = suspended_calls_from_state(&rebuilt);
     assert!(
         !suspended_calls.contains_key("call_approved"),
         "resolved call should be removed: {suspended_calls:?}"
@@ -2499,6 +2491,7 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
 async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before_replay() {
     use futures::StreamExt;
     use tirea_store_adapters::MemoryStore;
+    use tirea_contract::runtime::suspended_calls_from_state;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os_with_mode(
@@ -2508,9 +2501,9 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
     let thread_id = "t-initial-batch";
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_approved": {
+        "__tool_call_scope": {
+            "call_approved": {
+                "suspended_call": {
                     "call_id": "call_approved",
                     "tool_name": "echo",
                     "suspension": {
@@ -2525,8 +2518,10 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
                         "arguments": { "message": "approve me" }
                     },
                     "resume_mode": "replay_tool_call"
-                },
-                "call_waiting": {
+                }
+            },
+            "call_waiting": {
+                "suspended_call": {
                     "call_id": "call_waiting",
                     "tool_name": "echo",
                     "suspension": {
@@ -2589,12 +2584,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
     let saved_after_first = storage.load(thread_id).await.unwrap().unwrap();
     let state_after_first = saved_after_first.thread.rebuild_state().unwrap();
     assert_run_lifecycle_state(&state_after_first, "run-initial-batch-1", "waiting", None);
-    let calls_after_first = state_after_first
-        .get("__suspended_tool_calls")
-        .and_then(|rt| rt.get("calls"))
-        .and_then(|calls| calls.as_object())
-        .cloned()
-        .unwrap_or_default();
+    let calls_after_first = suspended_calls_from_state(&state_after_first);
     assert!(
         calls_after_first.contains_key("call_approved")
             && calls_after_first.contains_key("call_waiting"),
@@ -2644,11 +2634,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
         Some("behavior_requested"),
     );
     assert!(
-        state_after_second
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
-            .and_then(|calls| calls.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+        suspended_calls_from_state(&state_after_second).is_empty(),
         "all suspended calls should be cleared after full batch approval replay"
     );
 }
@@ -2657,15 +2643,16 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
 async fn run_stream_initial_decisions_ignore_unknown_target() {
     use futures::StreamExt;
     use tirea_store_adapters::MemoryStore;
+    use tirea_contract::runtime::suspended_calls_from_state;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
     let thread_id = "t-initial-unknown";
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": {
@@ -2727,11 +2714,7 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
-        rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
-            .and_then(|calls| calls.get("call_pending"))
-            .is_some(),
+        suspended_calls_from_state(&rebuilt).contains_key("call_pending"),
         "unknown target must not clear suspended call: {rebuilt:?}"
     );
 }
@@ -2740,15 +2723,16 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
 async fn run_stream_duplicate_initial_decisions_are_idempotent() {
     use futures::StreamExt;
     use tirea_store_adapters::MemoryStore;
+    use tirea_contract::runtime::suspended_calls_from_state;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
     let thread_id = "t-initial-duplicate";
 
     let pending_state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": {
@@ -2812,11 +2796,7 @@ async fn run_stream_duplicate_initial_decisions_are_idempotent() {
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
-        rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
-            .and_then(|calls| calls.as_object())
-            .map_or(true, |calls| !calls.contains_key("call_pending")),
+        !suspended_calls_from_state(&rebuilt).contains_key("call_pending"),
         "idempotent replay should clear suspended call once: {rebuilt:?}"
     );
 }

@@ -1780,13 +1780,15 @@ impl SuspendedCallFixture {
 }
 
 fn suspended_thread(id: &str, calls: Vec<SuspendedCallFixture>) -> Thread {
-    let mut calls_map = serde_json::Map::new();
+    let mut scope_map = serde_json::Map::new();
     let mut messages = Vec::new();
     // Collect all tool calls for a single assistant message.
     let mut tool_calls = Vec::new();
     for call in &calls {
-        let (key, value) = call.to_state_entry();
-        calls_map.insert(key, value);
+        let (call_id, suspended_call_value) = call.to_state_entry();
+        let mut scope_entry = serde_json::Map::new();
+        scope_entry.insert("suspended_call".to_string(), suspended_call_value);
+        scope_map.insert(call_id, Value::Object(scope_entry));
         tool_calls.push(tirea_agentos::contracts::thread::ToolCall::new(
             &call.call_id,
             &call.tool_name,
@@ -1816,7 +1818,7 @@ fn suspended_thread(id: &str, calls: Vec<SuspendedCallFixture>) -> Thread {
         ));
     }
 
-    let state = json!({ "__suspended_tool_calls": { "calls": Value::Object(calls_map) } });
+    let state = json!({ "__tool_call_scope": Value::Object(scope_map) });
     let mut thread = Thread::with_initial_state(id, state);
     for msg in messages {
         thread = thread.with_message(msg);
@@ -1902,10 +1904,11 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
+            .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+            .map_or(true, |scopes| scopes
+                .values()
+                .all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after approval replay"
     );
 }
@@ -1955,10 +1958,11 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
+            .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+            .map_or(true, |scopes| scopes
+                .values()
+                .all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after denial"
     );
 }
@@ -2024,10 +2028,11 @@ async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
+            .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+            .map_or(true, |scopes| scopes
+                .values()
+                .all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after approval replay"
     );
 }
@@ -2090,10 +2095,11 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
+            .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+            .map_or(true, |scopes| scopes
+                .values()
+                .all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after denial"
     );
 }
@@ -2266,14 +2272,19 @@ async fn test_ai_sdk_batch_approval_mode_replays_only_after_all_pending_decision
         "partial approval should not append replayed result for call_1"
     );
     let first_state = first_saved.rebuild_state().unwrap();
-    let first_pending_calls = first_state
-        .get("__suspended_tool_calls")
-        .and_then(|v| v.get("calls"))
+    let first_scopes = first_state
+        .get("__tool_call_scope")
         .and_then(Value::as_object)
-        .expect("suspended calls should still exist after partial approval");
+        .expect("tool_call_scope should still exist after partial approval");
+    let has_suspended = |id: &str| {
+        first_scopes
+            .get(id)
+            .and_then(|s| s.get("suspended_call"))
+            .is_some()
+    };
     assert!(
-        first_pending_calls.contains_key("call_1") && first_pending_calls.contains_key("call_2"),
-        "both calls should remain suspended until batch approvals are complete: {first_pending_calls:?}"
+        has_suspended("call_1") && has_suspended("call_2"),
+        "both calls should remain suspended until batch approvals are complete: {first_scopes:?}"
     );
 
     // Second decision approves fc_perm_2. Now both suspended calls are decided,
@@ -2323,10 +2334,11 @@ async fn test_ai_sdk_batch_approval_mode_replays_only_after_all_pending_decision
     let second_state = second_saved.rebuild_state().unwrap();
     assert!(
         second_state
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
+            .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+            .map_or(true, |scopes| scopes
+                .values()
+                .all(|s| s.get("suspended_call").is_none())),
         "suspended calls must be cleared after full batch approval replay"
     );
 }
@@ -2389,10 +2401,11 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("__suspended_tool_calls")
-            .and_then(|rt| rt.get("calls"))
+            .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+            .map_or(true, |scopes| scopes
+                .values()
+                .all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after ask replay"
     );
 }
@@ -3357,14 +3370,13 @@ async fn test_ai_sdk_user_input_with_pending_approval_is_accepted_without_auto_c
     );
 
     let rebuilt = saved.rebuild_state().unwrap();
-    let suspended_calls = rebuilt
-        .get("__suspended_tool_calls")
-        .and_then(|rt| rt.get("calls"))
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
+    let has_suspended_call = rebuilt
+        .get("__tool_call_scope")
+        .and_then(|v| v.get("call_1"))
+        .and_then(|s| s.get("suspended_call"))
+        .is_some();
     assert!(
-        suspended_calls.contains_key("call_1"),
+        has_suspended_call,
         "pending approval should remain unresolved until explicit decision"
     );
 }
@@ -3420,14 +3432,13 @@ async fn test_ag_ui_user_input_with_pending_approval_is_accepted_even_with_polic
     );
 
     let rebuilt = saved.rebuild_state().unwrap();
-    let suspended_calls = rebuilt
-        .get("__suspended_tool_calls")
-        .and_then(|rt| rt.get("calls"))
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
+    let has_suspended_call = rebuilt
+        .get("__tool_call_scope")
+        .and_then(|v| v.get("call_1"))
+        .and_then(|s| s.get("suspended_call"))
+        .is_some();
     assert!(
-        suspended_calls.contains_key("call_1"),
+        has_suspended_call,
         "pending approval should remain unresolved until explicit decision"
     );
 }

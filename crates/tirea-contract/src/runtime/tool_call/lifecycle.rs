@@ -53,13 +53,16 @@ impl PendingToolCall {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SuspendedCall {
     /// Original backend call identity.
+    #[serde(default)]
     pub call_id: String,
     /// Original backend tool name.
+    #[serde(default)]
     pub tool_name: String,
     /// Original backend tool arguments.
+    #[serde(default)]
     pub arguments: Value,
     /// Suspension ticket carrying interaction payload, pending projection, and resume strategy.
     #[serde(flatten)]
@@ -94,16 +97,7 @@ pub struct SuspendedCallState {
 impl Default for SuspendedCallState {
     fn default() -> Self {
         Self {
-            call: SuspendedCall {
-                call_id: String::new(),
-                tool_name: String::new(),
-                arguments: serde_json::Value::Null,
-                ticket: crate::runtime::phase::SuspendTicket::new(
-                    crate::Suspension::new("", ""),
-                    PendingToolCall::new("", "", serde_json::Value::Null),
-                    ToolCallResumeMode::ReplayToolCall,
-                ),
-            },
+            call: SuspendedCall::default(),
         }
     }
 }

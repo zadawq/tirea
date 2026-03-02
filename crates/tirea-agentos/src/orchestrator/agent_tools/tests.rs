@@ -1144,11 +1144,11 @@ async fn recovery_plugin_reconciles_orphan_running_and_records_confirmation() {
         json!("stopped")
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]["action"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]
             ["parameters"]["run_id"],
         json!("run-1")
     );
@@ -1170,19 +1170,19 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "existing_1": {
+            "__tool_call_scope": {
+                "existing_1": {
+                    "suspended_call": {
                         "call_id": "existing_1",
-                        "tool_name": "confirm",
+                        "tool_name": "agent_run",
                         "suspension": {
                             "id": "existing_1",
-                            "action": "confirm",
+                            "action": AGENT_RECOVERY_INTERACTION_ACTION
                         },
                         "arguments": {},
                         "pending": {
                             "id": "existing_1",
-                            "name": "confirm",
+                            "name": AGENT_RECOVERY_INTERACTION_ACTION,
                             "arguments": {}
                         },
                         "resume_mode": "pass_decision_to_tool"
@@ -1213,7 +1213,7 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
 
     let updated = fixture.updated_state();
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["existing_1"]["suspension"]["id"],
+        updated["__tool_call_scope"]["existing_1"]["suspended_call"]["suspension"]["id"],
         json!("existing_1")
     );
 }
@@ -1259,11 +1259,11 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         json!("resume")
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["tool_name"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["tool_name"],
         json!("agent_run")
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]
             ["parameters"]["run_id"],
         json!("run-1")
     );
@@ -1363,7 +1363,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         json!("resume")
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["tool_name"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["tool_name"],
         json!("agent_run")
     );
 }
@@ -1454,7 +1454,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         "tool-level ask should not set recovery tool-call resume state"
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]["action"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
 }

@@ -64,13 +64,16 @@ impl ToolGate {
 }
 
 /// Suspension payload for `ToolCallAction::Suspend`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SuspendTicket {
     /// External suspension payload.
+    #[serde(default)]
     pub suspension: Suspension,
     /// Pending call projection emitted to event stream.
+    #[serde(default)]
     pub pending: PendingToolCall,
     /// Resume mapping strategy.
+    #[serde(default)]
     pub resume_mode: ToolCallResumeMode,
 }
 

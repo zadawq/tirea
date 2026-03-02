@@ -2,11 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Generic suspension request for client-side actions.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Suspension {
     /// Unique suspension ID.
+    #[serde(default)]
     pub id: String,
     /// Action identifier (freeform string, meaning defined by caller).
+    #[serde(default)]
     pub action: String,
     /// Human-readable message/description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
