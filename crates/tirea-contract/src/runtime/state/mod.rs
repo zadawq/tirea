@@ -4,8 +4,8 @@ pub mod scope_registry;
 pub mod spec;
 
 pub use pending_write::{
-    ActionDeserializerRegistry, InMemoryPendingWriteStore, PendingWriteEntry, PendingWriteError,
-    PendingWriteStore, SerializedAction,
+    recover_pending_writes, ActionDeserializerRegistry, InMemoryPendingWriteStore,
+    PendingWriteEntry, PendingWriteError, PendingWriteStore, SerializedAction,
 };
 pub use scope_context::ScopeContext;
 pub use scope_registry::StateScopeRegistry;

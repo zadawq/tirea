@@ -1,10 +1,11 @@
-use super::spec::{AnyStateAction, StateScope};
+use super::scope_context::ScopeContext;
+use super::spec::{reduce_state_actions, AnyStateAction, StateScope};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use tirea_state::StateSpec;
+use tirea_state::{StateSpec, TrackedPatch};
 
 /// Serialized state action, sufficient to reconstruct an [`AnyStateAction::Typed`].
 ///
@@ -50,6 +51,8 @@ pub enum PendingWriteError {
         state_type: String,
         source: serde_json::Error,
     },
+    #[error("state reduce failed during recovery: {0}")]
+    Reduce(String),
     #[error("store I/O error: {0}")]
     Store(String),
 }
@@ -248,6 +251,50 @@ impl PendingWriteStore for InMemoryPendingWriteStore {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Recovery
+// ---------------------------------------------------------------------------
+
+/// Recover state from pending writes after a crash.
+///
+/// Reads all pending-write entries for the given run, deserializes their
+/// actions through the [`ActionDeserializerRegistry`], and reduces them
+/// against `base_state` using rolling-snapshot semantics.
+///
+/// Returns:
+/// - `Vec<TrackedPatch>` — patches to apply to the base state to catch up
+/// - `HashSet<String>` — call IDs of tools that completed before the crash
+///
+/// The caller should apply the patches, then skip re-execution of any tool
+/// whose `call_id` is in the returned set.
+pub async fn recover_pending_writes(
+    thread_id: &str,
+    run_id: &str,
+    store: &dyn PendingWriteStore,
+    registry: &ActionDeserializerRegistry,
+    base_state: &Value,
+) -> Result<(Vec<TrackedPatch>, HashSet<String>), PendingWriteError> {
+    let entries = store.read(thread_id, run_id).await?;
+    if entries.is_empty() {
+        return Ok((Vec::new(), HashSet::new()));
+    }
+
+    let completed_call_ids: HashSet<String> = entries.iter().map(|e| e.call_id.clone()).collect();
+
+    let mut all_actions = Vec::new();
+    for entry in &entries {
+        for sa in &entry.actions {
+            all_actions.push(registry.deserialize(sa)?);
+        }
+    }
+
+    let patches =
+        reduce_state_actions(all_actions, base_state, "recovery", &ScopeContext::run())
+            .map_err(|e| PendingWriteError::Reduce(e.to_string()))?;
+
+    Ok((patches, completed_call_ids))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,9 +303,6 @@ mod tests {
     use tirea_state::{
         apply_patch, DocCell, PatchSink, Path, State, TireaResult,
     };
-
-    use super::super::scope_context::ScopeContext;
-    use super::super::spec::reduce_state_actions;
 
     // -- Test state type --
 
@@ -476,5 +520,174 @@ mod tests {
 
         let entries = store.read("t1", "run_1").await.unwrap();
         assert_eq!(entries.len(), 3);
+    }
+
+    // -- Recovery tests --
+
+    #[tokio::test]
+    async fn recover_empty_store_returns_empty() {
+        let store = InMemoryPendingWriteStore::new();
+        let registry = ActionDeserializerRegistry::new();
+        let base = json!({});
+
+        let (patches, completed) =
+            recover_pending_writes("t1", "run_1", &store, &registry, &base)
+                .await
+                .unwrap();
+
+        assert!(patches.is_empty());
+        assert!(completed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recover_single_tool_produces_correct_state() {
+        let store = InMemoryPendingWriteStore::new();
+        let mut registry = ActionDeserializerRegistry::new();
+        registry.register::<TestCounter>();
+
+        // Simulate a tool that emitted Increment(10)
+        let action = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(10));
+        let serialized = action.to_serialized_action().unwrap();
+
+        store
+            .write(PendingWriteEntry {
+                run_id: "run_1".into(),
+                thread_id: "t1".into(),
+                call_id: "call_a".into(),
+                tool_name: "my_tool".into(),
+                actions: vec![serialized],
+                created_at: 100,
+            })
+            .await
+            .unwrap();
+
+        let base = json!({});
+        let (patches, completed) =
+            recover_pending_writes("t1", "run_1", &store, &registry, &base)
+                .await
+                .unwrap();
+
+        assert_eq!(completed.len(), 1);
+        assert!(completed.contains("call_a"));
+        assert_eq!(patches.len(), 1);
+
+        let result = apply_patch(&base, patches[0].patch()).unwrap();
+        assert_eq!(result["test_counter"]["value"], 10);
+    }
+
+    #[tokio::test]
+    async fn recover_multiple_tools_with_rolling_snapshot() {
+        let store = InMemoryPendingWriteStore::new();
+        let mut registry = ActionDeserializerRegistry::new();
+        registry.register::<TestCounter>();
+
+        // Two tools each incremented the counter
+        for (call_id, amount) in [("call_a", 7), ("call_b", 3)] {
+            let action = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(amount));
+            store
+                .write(PendingWriteEntry {
+                    run_id: "run_1".into(),
+                    thread_id: "t1".into(),
+                    call_id: call_id.into(),
+                    tool_name: "tool".into(),
+                    actions: vec![action.to_serialized_action().unwrap()],
+                    created_at: 100,
+                })
+                .await
+                .unwrap();
+        }
+
+        let base = json!({});
+        let (patches, completed) =
+            recover_pending_writes("t1", "run_1", &store, &registry, &base)
+                .await
+                .unwrap();
+
+        assert_eq!(completed.len(), 2);
+        assert!(completed.contains("call_a"));
+        assert!(completed.contains("call_b"));
+
+        // Apply all patches to get final state
+        let mut state = base;
+        for p in &patches {
+            state = apply_patch(&state, p.patch()).unwrap();
+        }
+        assert_eq!(state["test_counter"]["value"], 10); // 7 + 3
+    }
+
+    #[tokio::test]
+    async fn recover_unknown_type_returns_error() {
+        let store = InMemoryPendingWriteStore::new();
+        let registry = ActionDeserializerRegistry::new(); // empty — no types registered
+
+        store
+            .write(PendingWriteEntry {
+                run_id: "run_1".into(),
+                thread_id: "t1".into(),
+                call_id: "call_a".into(),
+                tool_name: "tool".into(),
+                actions: vec![SerializedAction {
+                    state_type_name: "unknown::Type".into(),
+                    base_path: "x".into(),
+                    scope: StateScope::Run,
+                    call_id_override: None,
+                    payload: json!(null),
+                }],
+                created_at: 100,
+            })
+            .await
+            .unwrap();
+
+        let err = recover_pending_writes("t1", "run_1", &store, &registry, &json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PendingWriteError::UnknownStateType(_)));
+    }
+
+    #[tokio::test]
+    async fn recover_matches_original_reduce() {
+        // End-to-end: original reduce vs recovery produce identical state.
+        let store = InMemoryPendingWriteStore::new();
+        let mut registry = ActionDeserializerRegistry::new();
+        registry.register::<TestCounter>();
+
+        let base = json!({"test_counter": {"value": 5}});
+
+        // Original reduce path
+        let original_action =
+            AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(20));
+        let serialized = original_action.to_serialized_action().unwrap();
+        let original_patches = reduce_state_actions(
+            vec![AnyStateAction::new::<TestCounter>(
+                TestCounterAction::Increment(20),
+            )],
+            &base,
+            "original",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+        let original_result = apply_patch(&base, original_patches[0].patch()).unwrap();
+
+        // Simulate crash: persist serialized action, then recover
+        store
+            .write(PendingWriteEntry {
+                run_id: "run_1".into(),
+                thread_id: "t1".into(),
+                call_id: "call_a".into(),
+                tool_name: "tool".into(),
+                actions: vec![serialized],
+                created_at: 100,
+            })
+            .await
+            .unwrap();
+
+        let (recovered_patches, _) =
+            recover_pending_writes("t1", "run_1", &store, &registry, &base)
+                .await
+                .unwrap();
+        let recovered_result = apply_patch(&base, recovered_patches[0].patch()).unwrap();
+
+        assert_eq!(original_result, recovered_result);
+        assert_eq!(recovered_result["test_counter"]["value"], 25);
     }
 }

@@ -135,15 +135,15 @@ pub use io::{
 
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    build_read_only_context_from_step, reduce_state_actions, Action, ActionDeserializerRegistry,
-    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext,
-    AgentBehavior, AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
-    DecisionReplayPolicy, Extensions, InMemoryPendingWriteStore, NoOpBehavior, PendingWriteEntry,
-    PendingWriteError, PendingWriteStore, Phase, PhaseContext, PhasePolicy, ReadOnlyContext,
-    RunAction, RunContext, RunDelta, RunEndContext, RunStartContext, ScopeContext,
-    SerializedAction, StateScope, StateScopeRegistry, StateSpec, StepContext, StepEndContext,
-    StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension,
-    SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
+    build_read_only_context_from_step, recover_pending_writes, reduce_state_actions, Action,
+    ActionDeserializerRegistry, ActivityContext, ActivityManager, AfterInferenceContext,
+    AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
+    BeforeToolExecuteContext, DecisionReplayPolicy, Extensions, InMemoryPendingWriteStore,
+    NoOpBehavior, PendingWriteEntry, PendingWriteError, PendingWriteStore, Phase, PhaseContext,
+    PhasePolicy, ReadOnlyContext, RunAction, RunContext, RunDelta, RunEndContext, RunStartContext,
+    ScopeContext, SerializedAction, StateScope, StateScopeRegistry, StateSpec, StepContext,
+    StepEndContext, StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket,
+    Suspension, SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
     ToolCallOutcome, ToolExecution, ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult,
     ToolExecutor, ToolExecutorError, ToolGate, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };
