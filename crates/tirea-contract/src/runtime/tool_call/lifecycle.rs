@@ -79,6 +79,18 @@ impl SuspendedCall {
             ticket,
         }
     }
+
+    /// Convert into a type-erased state action targeting this call's scope.
+    ///
+    /// Equivalent to `AnyStateAction::new_for_call::<SuspendedCallState>(Set(self), call_id)`
+    /// but hides the internal `SuspendedCallState` / `SuspendedCallAction` types.
+    pub fn into_state_action(self) -> crate::runtime::state::AnyStateAction {
+        let call_id = self.call_id.clone();
+        crate::runtime::state::AnyStateAction::new_for_call::<SuspendedCallState>(
+            SuspendedCallAction::Set(self),
+            call_id,
+        )
+    }
 }
 
 /// Per-tool-call suspended state stored at `__tool_call_scope.<call_id>.suspended_call`.
@@ -249,6 +261,20 @@ pub struct ToolCallState {
     /// Last update timestamp (unix millis).
     #[serde(default)]
     pub updated_at: u64,
+}
+
+impl ToolCallState {
+    /// Convert into a type-erased state action targeting this call's scope.
+    ///
+    /// Equivalent to `AnyStateAction::new_for_call::<ToolCallState>(Set(self), call_id)`
+    /// but hides the internal `ToolCallStateAction` type.
+    pub fn into_state_action(self) -> crate::runtime::state::AnyStateAction {
+        let call_id = self.call_id.clone();
+        crate::runtime::state::AnyStateAction::new_for_call::<ToolCallState>(
+            ToolCallStateAction::Set(self),
+            call_id,
+        )
+    }
 }
 
 impl StateSpec for ToolCallState {

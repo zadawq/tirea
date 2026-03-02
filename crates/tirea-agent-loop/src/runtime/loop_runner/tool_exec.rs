@@ -12,8 +12,7 @@ use crate::contracts::runtime::tool_call::ToolGate;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::{
-    ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, SuspendedCallAction,
-    SuspendedCallState, ToolCallResumeMode,
+    ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
 };
 use crate::contracts::runtime::{
     DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallStatus, ToolExecution,
@@ -410,12 +409,7 @@ pub(super) fn apply_tool_results_impl(
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
         let actions: Vec<AnyStateAction> = suspended
             .iter()
-            .map(|call| {
-                AnyStateAction::new_for_call::<SuspendedCallState>(
-                    SuspendedCallAction::Set(call.clone()),
-                    &call.call_id,
-                )
-            })
+            .map(|call| call.clone().into_state_action())
             .collect();
         let patches = reduce_state_actions(actions, &state, "agent_loop", &ScopeContext::run())
             .map_err(|e| {

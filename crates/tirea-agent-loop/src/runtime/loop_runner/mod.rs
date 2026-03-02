@@ -57,8 +57,7 @@ use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
     DecisionReplayPolicy, RunLifecycleAction, RunLifecycleState, StreamResult, SuspendedCall,
-    SuspendedCallAction, SuspendedCallState, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
-    ToolExecutionRequest, ToolExecutionResult,
+    ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -976,10 +975,7 @@ async fn drain_resuming_tool_calls_and_replay(
                     let state = run_ctx
                         .snapshot()
                         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-                    let action = AnyStateAction::new_for_call::<SuspendedCallState>(
-                        SuspendedCallAction::Set(next_suspended_call.clone()),
-                        &next_suspended_call.call_id,
-                    );
+                    let action = next_suspended_call.clone().into_state_action();
                     let patches = reduce_state_actions(
                         vec![action],
                         &state,

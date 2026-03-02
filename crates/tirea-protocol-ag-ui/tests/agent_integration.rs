@@ -4586,8 +4586,7 @@ use tirea_agentos::contracts::runtime::phase::{Phase, StepContext};
 use tirea_agentos::contracts::runtime::tool_call::ToolGate;
 use tirea_agentos::contracts::runtime::AgentBehavior;
 use tirea_agentos::contracts::runtime::{
-    AnyStateAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume,
-    ToolCallState, ToolCallStateAction, ToolCallStatus,
+    SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallState, ToolCallStatus,
 };
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4839,12 +4838,7 @@ impl AgentBehavior for InteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            actions.push(Box::new(EmitStatePatch(
-                AnyStateAction::new_for_call::<ToolCallState>(
-                    ToolCallStateAction::Set(state),
-                    call_id.clone(),
-                ),
-            )));
+            actions.push(Box::new(EmitStatePatch(state.into_state_action())));
         }
         actions
     }

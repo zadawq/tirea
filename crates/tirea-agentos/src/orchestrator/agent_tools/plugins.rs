@@ -95,8 +95,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
 
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         use crate::contracts::runtime::{
-            PendingToolCall, SuspendedCall, SuspendedCallAction, SuspendedCallState,
-            ToolCallResumeMode, ToolCallState, ToolCallStateAction,
+            PendingToolCall, SuspendedCall, ToolCallResumeMode, ToolCallState,
         };
 
         let state = ctx.snapshot();
@@ -159,51 +158,35 @@ impl AgentBehavior for AgentRecoveryPlugin {
                 let resume_token = suspended_call.ticket.pending.id.clone();
                 let arguments = suspended_call.arguments.clone();
 
-                let suspended_call_for_action = SuspendedCall {
-                    call_id: suspended_call.call_id.clone(),
-                    tool_name: suspended_call.tool_name.clone(),
-                    arguments: suspended_call.arguments.clone(),
-                    ticket: suspended_call.ticket.clone(),
-                };
-                let call_id_for_action = suspended_call_for_action.call_id.clone();
                 actions.push(Box::new(EmitRecoveryPatch(
-                    AnyStateAction::new_for_call::<SuspendedCallState>(
-                        SuspendedCallAction::Set(suspended_call_for_action),
-                        call_id_for_action,
-                    ),
+                    suspended_call.clone().into_state_action(),
                 )));
                 actions.push(Box::new(EmitRecoveryPatch(
-                    AnyStateAction::new_for_call::<ToolCallState>(
-                        ToolCallStateAction::Set(ToolCallState {
-                            call_id: call_id.clone(),
-                            tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                            arguments,
-                            status: crate::contracts::runtime::ToolCallStatus::Resuming,
-                            resume_token: Some(resume_token),
-                            resume: Some(crate::contracts::runtime::ToolCallResume {
-                                decision_id: recovery_target_id(&run_id),
-                                action: crate::contracts::io::ResumeDecisionAction::Resume,
-                                result: serde_json::Value::Bool(true),
-                                reason: None,
-                                updated_at: current_unix_millis(),
-                            }),
-                            scratch: serde_json::Value::Null,
+                    ToolCallState {
+                        call_id: call_id.clone(),
+                        tool_name: AGENT_RUN_TOOL_ID.to_string(),
+                        arguments,
+                        status: crate::contracts::runtime::ToolCallStatus::Resuming,
+                        resume_token: Some(resume_token),
+                        resume: Some(crate::contracts::runtime::ToolCallResume {
+                            decision_id: recovery_target_id(&run_id),
+                            action: crate::contracts::io::ResumeDecisionAction::Resume,
+                            result: serde_json::Value::Bool(true),
+                            reason: None,
                             updated_at: current_unix_millis(),
                         }),
-                        call_id,
-                    ),
+                        scratch: serde_json::Value::Null,
+                        updated_at: current_unix_millis(),
+                    }
+                    .into_state_action(),
                 )));
             }
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
                 let suspended_call = make_suspended_call(&interaction);
-                let call_id_for_ask = suspended_call.call_id.clone();
                 actions.push(Box::new(EmitRecoveryPatch(
-                    AnyStateAction::new_for_call::<SuspendedCallState>(
-                        SuspendedCallAction::Set(suspended_call),
-                        call_id_for_ask,
-                    ),
+                    suspended_call.into_state_action(),
                 )));
             }
         }

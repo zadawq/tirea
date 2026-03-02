@@ -373,11 +373,8 @@ fn set_single_suspended_call(
     let invocation = invocation.unwrap_or_else(|| test_frontend_invocation(&suspension));
     let call_id = invocation.call_id.clone();
     let tool_name = invocation.tool_name.clone();
-    let suspended_call = build_suspended_call(call_id.clone(), tool_name, suspension, invocation);
-    let action = AnyStateAction::new_for_call::<crate::contracts::runtime::SuspendedCallState>(
-        crate::contracts::runtime::SuspendedCallAction::Set(suspended_call),
-        call_id,
-    );
+    let suspended_call = build_suspended_call(call_id, tool_name, suspension, invocation);
+    let action = suspended_call.into_state_action();
     let patches = crate::contracts::runtime::state::reduce_state_actions(
         vec![action],
         state,
@@ -561,12 +558,7 @@ impl AgentBehavior for TestInteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            actions.push(Box::new(EmitStatePatch(
-                AnyStateAction::new_for_call::<crate::contracts::runtime::ToolCallState>(
-                    crate::contracts::runtime::ToolCallStateAction::Set(state),
-                    call_id.clone(),
-                ),
-            )));
+            actions.push(Box::new(EmitStatePatch(state.into_state_action())));
         }
         actions
     }
@@ -3187,11 +3179,7 @@ fn test_suspended_call_action_persists_all_entries() {
     let actions: Vec<AnyStateAction> = calls
         .into_iter()
         .map(|call| {
-            let call_id = call.call_id.clone();
-            AnyStateAction::new_for_call::<crate::contracts::runtime::SuspendedCallState>(
-                crate::contracts::runtime::SuspendedCallAction::Set(call),
-                call_id,
-            )
+            call.into_state_action()
         })
         .collect();
     let patches = crate::contracts::runtime::state::reduce_state_actions(
@@ -12502,10 +12490,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
         suspension,
         invocation,
     );
-    let action = AnyStateAction::new_for_call::<crate::contracts::runtime::SuspendedCallState>(
-        crate::contracts::runtime::SuspendedCallAction::Set(suspended_call),
-        "call_write",
-    );
+    let action = suspended_call.into_state_action();
     let pending_patch = crate::contracts::runtime::state::reduce_state_actions(
         vec![action],
         &base_state,
