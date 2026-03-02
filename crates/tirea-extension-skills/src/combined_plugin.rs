@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tirea_contract::runtime::action::Action;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use crate::types::SkillState;
-use tirea_state::{LatticeRegistry, State};
 
 /// Single plugin wrapper that injects both:
 /// - the skills catalog (discovery)
@@ -45,9 +44,7 @@ impl AgentBehavior for SkillPlugin {
         SKILLS_PLUGIN_ID
     }
 
-    fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
-        SkillState::register_lattice(registry);
-    }
+    tirea_contract::declare_plugin_states!(SkillState);
 
     async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let mut merged = AgentBehavior::before_inference(&self.discovery, ctx).await;

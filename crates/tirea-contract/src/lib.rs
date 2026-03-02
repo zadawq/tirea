@@ -69,6 +69,37 @@ macro_rules! impl_shared_agent_builder_methods {
     };
 }
 
+/// Declares the [`StateSpec`] types managed by a plugin behavior.
+///
+/// Generates `register_lattice_paths` and `register_state_scopes`
+/// implementations for [`AgentBehavior`], so plugin authors only need to
+/// list their state types once instead of implementing two methods.
+///
+/// # Example
+///
+/// ```ignore
+/// #[async_trait]
+/// impl AgentBehavior for MyPlugin {
+///     fn id(&self) -> &str { "my_plugin" }
+///     tirea_contract::declare_plugin_states!(MyState, MyOtherState);
+/// }
+/// ```
+#[macro_export]
+macro_rules! declare_plugin_states {
+    ($($state:ty),+ $(,)?) => {
+        fn register_lattice_paths(&self, registry: &mut ::tirea_state::LatticeRegistry) {
+            $(<$state as ::tirea_state::State>::register_lattice(registry);)+
+        }
+
+        fn register_state_scopes(
+            &self,
+            registry: &mut $crate::runtime::state::StateScopeRegistry,
+        ) {
+            $(registry.register::<$state>();)+
+        }
+    };
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 

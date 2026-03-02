@@ -14,7 +14,7 @@ use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{RunContext, StoppedReason, TerminationReason};
-use tirea_state::{GCounter, LatticeRegistry, State};
+use tirea_state::{GCounter, State};
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
 
@@ -372,9 +372,7 @@ impl AgentBehavior for StopPolicyPlugin {
         STOP_POLICY_PLUGIN_ID
     }
 
-    fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
-        StopPolicyRuntimeState::register_lattice(registry);
-    }
+    tirea_contract::declare_plugin_states!(StopPolicyRuntimeState);
 
     async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         if self.conditions.is_empty() {
@@ -574,6 +572,7 @@ mod tests {
     use crate::contracts::thread::Message;
     use crate::contracts::StreamResult;
     use serde_json::json;
+    use tirea_state::LatticeRegistry;
 
     #[test]
     fn derives_round_stats_from_messages() {

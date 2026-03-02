@@ -19,7 +19,7 @@ use tirea_contract::runtime::phase::{Phase, SuspendTicket};
 use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
 use tirea_contract::runtime::tool_call::ToolGate;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
-use tirea_state::{GSet, LatticeRegistry, State};
+use tirea_state::{GSet, State};
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -345,9 +345,7 @@ impl AgentBehavior for PermissionPlugin {
         PERMISSION_PLUGIN_ID
     }
 
-    fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
-        PermissionPolicy::register_lattice(registry);
-    }
+    tirea_contract::declare_plugin_states!(PermissionPolicy);
 
     async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let Some(tool_id) = ctx.tool_name() else {
@@ -451,7 +449,7 @@ mod tests {
     use tirea_contract::io::ResumeDecisionAction;
     use tirea_contract::runtime::tool_call::ToolCallResume;
     use tirea_contract::RunConfig;
-    use tirea_state::DocCell;
+    use tirea_state::{DocCell, LatticeRegistry};
 
     fn has_block(actions: &[Box<dyn Action>]) -> bool {
         actions.iter().any(|a| a.label() == "block_tool")
