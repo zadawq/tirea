@@ -3334,4 +3334,153 @@ async fn resolve_wires_stop_conditions_from_registry() {
     );
 }
 
+#[tokio::test]
+async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
 
+    #[derive(Debug)]
+    struct AlwaysStopPolicy;
+
+    impl crate::orchestrator::StopPolicy for AlwaysStopPolicy {
+        fn id(&self) -> &str {
+            "always_stop"
+        }
+        fn evaluate(
+            &self,
+            _input: &crate::orchestrator::StopPolicyInput<'_>,
+        ) -> Option<crate::contracts::StoppedReason> {
+            Some(crate::contracts::StoppedReason::with_detail(
+                "custom", "always",
+            ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct OneShotLlm;
+
+    #[async_trait]
+    impl crate::runtime::loop_runner::LlmExecutor for OneShotLlm {
+        async fn exec_chat_response(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<genai::chat::ChatResponse> {
+            let model_iden =
+                genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock-model");
+            Ok(genai::chat::ChatResponse {
+                content: genai::chat::MessageContent::from_text("ok".to_string()),
+                reasoning_content: None,
+                model_iden: model_iden.clone(),
+                provider_model_iden: model_iden,
+                usage: genai::chat::Usage::default(),
+                captured_raw_body: None,
+            })
+        }
+
+        async fn exec_chat_stream_events(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
+        fn name(&self) -> &'static str {
+            "one_shot_llm"
+        }
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_stop_policy("always", Arc::new(AlwaysStopPolicy))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("always"),
+        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .build()
+        .unwrap();
+
+    let thread_id = "t-run-scope-cleanup";
+
+    // --- Run 1: creates StopPolicyRuntimeState via after_inference ---
+    let mut resolved = os.resolve("a1").unwrap();
+    resolved.agent = resolved.agent.with_llm_executor(
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
+    );
+    let prepared = os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some(thread_id.to_string()),
+                run_id: Some("run-1".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("go")],
+                initial_decisions: vec![],
+            },
+            resolved,
+        )
+        .await
+        .unwrap();
+    let run = AgentOs::execute_prepared(prepared).unwrap();
+    let _events: Vec<_> = run.events.collect().await;
+
+    // Verify run-1 persisted StopPolicyRuntimeState
+    let head = storage.load(thread_id).await.unwrap().unwrap();
+    let state_after_run1 = head.thread.rebuild_state().unwrap();
+    assert!(
+        !state_after_run1["__kernel"]["stop_policy_runtime"].is_null(),
+        "run-1 should have persisted stop_policy_runtime state: {state_after_run1}",
+    );
+
+    // --- Run 2: prepare_run should clean up run-scoped state ---
+    let mut resolved2 = os.resolve("a1").unwrap();
+    resolved2.agent = resolved2.agent.with_llm_executor(
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
+    );
+    let prepared2 = os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some(thread_id.to_string()),
+                run_id: Some("run-2".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("go again")],
+                initial_decisions: vec![],
+            },
+            resolved2,
+        )
+        .await
+        .unwrap();
+
+    // After prepare_run, the persisted state should have cleaned up
+    // __kernel.stop_policy_runtime from run-1. Verify via storage.
+    let head = storage.load(thread_id).await.unwrap().unwrap();
+    let state_after_prepare = head.thread.rebuild_state().unwrap();
+    assert!(
+        state_after_prepare["__kernel"]["stop_policy_runtime"].is_null(),
+        "prepare_run should have cleaned run-scoped stop_policy_runtime from previous run: {state_after_prepare}",
+    );
+    // The new __run lifecycle should be set to "running" for run-2.
+    assert_run_lifecycle_state(&state_after_prepare, "run-2", "running", None);
+
+    // Complete run-2 to verify it works end-to-end.
+    let run2 = AgentOs::execute_prepared(prepared2).unwrap();
+    let _events2: Vec<_> = run2.events.collect().await;
+
+    let head = storage.load(thread_id).await.unwrap().unwrap();
+    let state_after_run2 = head.thread.rebuild_state().unwrap();
+    // run-2 should have re-created its own stop_policy_runtime state
+    assert!(
+        !state_after_run2["__kernel"]["stop_policy_runtime"].is_null(),
+        "run-2 should have its own stop_policy_runtime state: {state_after_run2}",
+    );
+    assert_run_lifecycle_state(&state_after_run2, "run-2", "done", Some("stopped:custom"));
+}

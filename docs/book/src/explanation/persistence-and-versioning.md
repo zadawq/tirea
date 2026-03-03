@@ -70,6 +70,27 @@ During `run_loop` / `run_loop_stream` execution:
 `AgentOs::run_stream` uses `run_loop_stream`, so production persistence follows
 the same checkpoint schedule shown above.
 
+## State Scope Lifecycle
+
+Each `StateSpec` declares a `StateScope` that controls its cleanup lifecycle:
+
+| Scope | Lifetime | Cleanup |
+|-------|----------|---------|
+| `Thread` | Persists across runs | Never cleaned automatically |
+| `Run` | Per-run | Deleted by `prepare_run` before each new run |
+| `ToolCall` | Per-call | Scoped under `__tool_call_scope.<call_id>`, cleaned after call completes |
+
+### Run-scoped cleanup
+
+At run preparation (`prepare_run`), the framework:
+
+1. Queries `StateScopeRegistry::run_scoped_paths()` for all `Run`-scoped state paths
+2. Emits `Op::delete` patches for any paths present in the current thread state
+3. Applies deletions to in-memory state before the lifecycle `Running` patch
+
+This guarantees `Run`-scoped state (e.g., `__run`, `__kernel.stop_policy_runtime`)
+starts from defaults on every new run, preventing cross-run leakage.
+
 ## Why It Matters
 
 - Prevents silent lost updates under concurrent writers.
