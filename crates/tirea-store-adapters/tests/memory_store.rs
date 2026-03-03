@@ -7,7 +7,7 @@ use tirea_contract::storage::{
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{
     CheckpointReason, Message, MessageMetadata, MessageQuery, Role, StateScope, Thread,
-    ThreadListQuery,
+    ThreadListQuery, ToolCall,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::MemoryStore;
@@ -617,6 +617,173 @@ async fn test_parent_thread_id_none_omitted() {
     let thread = Thread::new("t1");
     let json_str = serde_json::to_string(&thread).unwrap();
     assert!(!json_str.contains("parent_thread_id"));
+}
+
+// ========================================================================
+// End-to-end: ThreadChangeSet append flow (full agent lifecycle)
+// ========================================================================
+
+// ========================================================================
+// Tool call message round-trip tests
+// ========================================================================
+
+/// Verify that assistant messages with tool_calls and tool response messages
+/// with tool_call_id survive a save/load round-trip through MemoryStore.
+#[tokio::test]
+async fn test_tool_call_message_roundtrip_via_save() {
+    let store = MemoryStore::new();
+
+    let tool_call = ToolCall::new("call_1", "search", json!({"query": "rust"}));
+    let thread = Thread::new("tool-rt")
+        .with_message(Message::user("Find info about Rust"))
+        .with_message(Message::assistant_with_tool_calls(
+            "Let me search for that.",
+            vec![tool_call],
+        ))
+        .with_message(Message::tool("call_1", r#"{"result": "Rust is a language"}"#))
+        .with_message(Message::assistant("Rust is a systems programming language."));
+
+    store.save(&thread).await.unwrap();
+    let loaded = store.load_thread("tool-rt").await.unwrap().unwrap();
+
+    assert_eq!(loaded.message_count(), 4);
+
+    // Assistant message with tool_calls
+    let assistant_msg = &loaded.messages[1];
+    assert_eq!(assistant_msg.role, Role::Assistant);
+    let calls = assistant_msg.tool_calls.as_ref().expect("tool_calls lost");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "call_1");
+    assert_eq!(calls[0].name, "search");
+    assert_eq!(calls[0].arguments, json!({"query": "rust"}));
+
+    // Tool response message with tool_call_id
+    let tool_msg = &loaded.messages[2];
+    assert_eq!(tool_msg.role, Role::Tool);
+    assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(tool_msg.content, r#"{"result": "Rust is a language"}"#);
+}
+
+/// Verify tool_calls survive an append → load round-trip.
+#[tokio::test]
+async fn test_tool_call_message_roundtrip_via_append() {
+    let store = MemoryStore::new();
+    store.create(&Thread::new("tool-append")).await.unwrap();
+
+    let tool_call = ToolCall::new("call_42", "calculator", json!({"expr": "6*7"}));
+    let delta = ThreadChangeSet {
+        run_id: "run-1".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![
+            Arc::new(Message::assistant_with_tool_calls(
+                "Calculating...",
+                vec![tool_call],
+            )),
+            Arc::new(Message::tool("call_42", r#"{"answer": 42}"#)),
+        ],
+        patches: vec![],
+        actions: vec![],
+        snapshot: None,
+    };
+    store
+        .append("tool-append", &delta, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let head = ThreadReader::load(&store, "tool-append")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.thread.message_count(), 2);
+
+    let calls = head.thread.messages[0]
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls lost after append");
+    assert_eq!(calls[0].id, "call_42");
+    assert_eq!(calls[0].name, "calculator");
+    assert_eq!(calls[0].arguments, json!({"expr": "6*7"}));
+
+    assert_eq!(
+        head.thread.messages[1].tool_call_id.as_deref(),
+        Some("call_42")
+    );
+}
+
+/// Verify tool_calls survive append → load_deltas round-trip via ThreadSync.
+#[tokio::test]
+async fn test_tool_call_message_roundtrip_via_load_deltas() {
+    let store = MemoryStore::new();
+    store.create(&Thread::new("tool-sync")).await.unwrap();
+
+    let calls = vec![
+        ToolCall::new("call_a", "search", json!({"q": "hello"})),
+        ToolCall::new("call_b", "fetch", json!({"url": "https://example.com"})),
+    ];
+    let delta = ThreadChangeSet {
+        run_id: "run-1".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![
+            Arc::new(Message::assistant_with_tool_calls("multi-tool", calls)),
+            Arc::new(Message::tool("call_a", "search result")),
+            Arc::new(Message::tool("call_b", "fetch result")),
+        ],
+        patches: vec![],
+        actions: vec![],
+        snapshot: None,
+    };
+    store
+        .append("tool-sync", &delta, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let deltas = store.load_deltas("tool-sync", 0).await.unwrap();
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(deltas[0].messages.len(), 3);
+
+    let assistant = &deltas[0].messages[0];
+    let tool_calls = assistant.tool_calls.as_ref().expect("tool_calls lost in delta");
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0].id, "call_a");
+    assert_eq!(tool_calls[1].id, "call_b");
+
+    assert_eq!(deltas[0].messages[1].tool_call_id.as_deref(), Some("call_a"));
+    assert_eq!(deltas[0].messages[2].tool_call_id.as_deref(), Some("call_b"));
+}
+
+/// Verify tool call messages survive load_messages pagination.
+#[tokio::test]
+async fn test_tool_call_message_roundtrip_via_load_messages() {
+    let store = MemoryStore::new();
+    let tool_call = ToolCall::new("call_pg", "search", json!({"q": "test"}));
+    let thread = Thread::new("tool-paged")
+        .with_message(Message::user("search"))
+        .with_message(Message::assistant_with_tool_calls("searching", vec![tool_call]))
+        .with_message(Message::tool("call_pg", "found it"));
+
+    store.save(&thread).await.unwrap();
+
+    let page = ThreadReader::load_messages(
+        &store,
+        "tool-paged",
+        &MessageQuery {
+            visibility: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(page.messages.len(), 3);
+
+    let assistant = &page.messages[1].message;
+    let calls = assistant.tool_calls.as_ref().expect("tool_calls lost in pagination");
+    assert_eq!(calls[0].id, "call_pg");
+
+    let tool = &page.messages[2].message;
+    assert_eq!(tool.tool_call_id.as_deref(), Some("call_pg"));
 }
 
 // ========================================================================

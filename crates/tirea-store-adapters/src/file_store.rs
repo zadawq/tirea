@@ -406,6 +406,86 @@ mod tests {
         assert_eq!(head.thread.state, json!({"greeted": true}));
     }
 
+    #[tokio::test]
+    async fn file_storage_tool_call_message_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStore::new(temp_dir.path());
+
+        let tool_call = tirea_contract::ToolCall::new("call_1", "search", json!({"query": "rust"}));
+        let thread = Thread::new("tool-rt")
+            .with_message(Message::user("Find info about Rust"))
+            .with_message(Message::assistant_with_tool_calls(
+                "Let me search for that.",
+                vec![tool_call],
+            ))
+            .with_message(Message::tool("call_1", r#"{"result": "Rust is a language"}"#))
+            .with_message(Message::assistant("Rust is a systems programming language."));
+
+        storage.save(&thread).await.unwrap();
+        let loaded = storage.load_thread("tool-rt").await.unwrap().unwrap();
+
+        assert_eq!(loaded.message_count(), 4);
+
+        // Assistant message with tool_calls
+        let assistant_msg = &loaded.messages[1];
+        assert_eq!(assistant_msg.role, tirea_contract::Role::Assistant);
+        let calls = assistant_msg.tool_calls.as_ref().expect("tool_calls lost");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].name, "search");
+        assert_eq!(calls[0].arguments, json!({"query": "rust"}));
+
+        // Tool response message with tool_call_id
+        let tool_msg = &loaded.messages[2];
+        assert_eq!(tool_msg.role, tirea_contract::Role::Tool);
+        assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(tool_msg.content, r#"{"result": "Rust is a language"}"#);
+    }
+
+    #[tokio::test]
+    async fn file_storage_tool_call_message_roundtrip_via_append() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStore::new(temp_dir.path());
+        store.create(&Thread::new("tool-append")).await.unwrap();
+
+        let tool_call =
+            tirea_contract::ToolCall::new("call_42", "calculator", json!({"expr": "6*7"}));
+        let delta = ThreadChangeSet {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: vec![
+                Arc::new(Message::assistant_with_tool_calls(
+                    "Calculating...",
+                    vec![tool_call],
+                )),
+                Arc::new(Message::tool("call_42", r#"{"answer": 42}"#)),
+            ],
+            patches: vec![],
+            actions: vec![],
+            snapshot: None,
+        };
+        store
+            .append("tool-append", &delta, VersionPrecondition::Exact(0))
+            .await
+            .unwrap();
+
+        let head = store.load("tool-append").await.unwrap().unwrap();
+        assert_eq!(head.thread.message_count(), 2);
+
+        let calls = head.thread.messages[0]
+            .tool_calls
+            .as_ref()
+            .expect("tool_calls lost after append");
+        assert_eq!(calls[0].id, "call_42");
+        assert_eq!(calls[0].name, "calculator");
+
+        assert_eq!(
+            head.thread.messages[1].tool_call_id.as_deref(),
+            Some("call_42")
+        );
+    }
+
     #[test]
     fn file_storage_rejects_path_traversal() {
         let storage = FileStore::new("/base/path");
