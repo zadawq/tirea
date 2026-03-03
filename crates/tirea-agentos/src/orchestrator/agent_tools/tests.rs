@@ -1504,3 +1504,1476 @@ async fn handle_table_contains_returns_true_for_existing() {
     assert!(handles.contains("run-1").await);
     assert!(!handles.contains("run-2").await);
 }
+
+// ── Ownership isolation tests ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn handle_table_different_owners_cannot_see_each_others_runs() {
+    let handles = SubAgentHandleTable::new();
+    handles
+        .put_running(
+            "run-a",
+            "owner-1".to_string(),
+            "sub-agent-run-a".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .put_running(
+            "run-b",
+            "owner-2".to_string(),
+            "sub-agent-run-b".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    // Owner-1 can see run-a but not run-b.
+    assert!(handles.get_owned_summary("owner-1", "run-a").await.is_some());
+    assert!(handles.get_owned_summary("owner-1", "run-b").await.is_none());
+
+    // Owner-2 can see run-b but not run-a.
+    assert!(handles.get_owned_summary("owner-2", "run-b").await.is_some());
+    assert!(handles.get_owned_summary("owner-2", "run-a").await.is_none());
+
+    // running_or_stopped_for_owner returns only own runs.
+    let owner1_runs = handles.running_or_stopped_for_owner("owner-1").await;
+    assert_eq!(owner1_runs.len(), 1);
+    assert_eq!(owner1_runs[0].run_id, "run-a");
+
+    let owner2_runs = handles.running_or_stopped_for_owner("owner-2").await;
+    assert_eq!(owner2_runs.len(), 1);
+    assert_eq!(owner2_runs[0].run_id, "run-b");
+}
+
+#[tokio::test]
+async fn handle_table_cross_owner_stop_is_denied() {
+    let handles = SubAgentHandleTable::new();
+    handles
+        .put_running(
+            "run-a",
+            "owner-1".to_string(),
+            "sub-agent-run-a".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    // Owner-2 cannot stop owner-1's run.
+    let err = handles.stop_owned_tree("owner-2", "run-a").await;
+    assert!(err.is_err());
+    assert!(err.unwrap_err().contains("Unknown run_id"));
+
+    // Verify run is still running.
+    let summary = handles.get_owned_summary("owner-1", "run-a").await.unwrap();
+    assert_eq!(summary.status, SubAgentStatus::Running);
+}
+
+#[tokio::test]
+async fn handle_for_resume_rejects_wrong_owner() {
+    let handles = SubAgentHandleTable::new();
+    handles
+        .put_running(
+            "run-1",
+            "owner-1".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let err = handles.handle_for_resume("owner-2", "run-1").await;
+    assert!(err.is_err());
+    assert!(err.unwrap_err().contains("Unknown run_id"));
+}
+
+// ── Handle table status filter tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn running_or_stopped_for_owner_excludes_completed_and_failed() {
+    let handles = SubAgentHandleTable::new();
+
+    let epoch1 = handles
+        .put_running(
+            "run-running",
+            "owner".to_string(),
+            "sub-agent-run-running".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let epoch2 = handles
+        .put_running(
+            "run-completed",
+            "owner".to_string(),
+            "sub-agent-run-completed".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let epoch3 = handles
+        .put_running(
+            "run-failed",
+            "owner".to_string(),
+            "sub-agent-run-failed".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .put_running(
+            "run-stopped",
+            "owner".to_string(),
+            "sub-agent-run-stopped".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    // Transition run-completed and run-failed.
+    handles
+        .update_after_completion(
+            "run-completed",
+            epoch2,
+            SubAgentCompletion {
+                status: SubAgentStatus::Completed,
+                error: None,
+            },
+        )
+        .await;
+    handles
+        .update_after_completion(
+            "run-failed",
+            epoch3,
+            SubAgentCompletion {
+                status: SubAgentStatus::Failed,
+                error: Some("boom".to_string()),
+            },
+        )
+        .await;
+    handles.stop_owned_tree("owner", "run-stopped").await.unwrap();
+
+    // Verify: only Running and Stopped returned.
+    let visible = handles.running_or_stopped_for_owner("owner").await;
+    let visible_ids: Vec<&str> = visible.iter().map(|s| s.run_id.as_str()).collect();
+    assert!(visible_ids.contains(&"run-running"));
+    assert!(visible_ids.contains(&"run-stopped"));
+    assert!(!visible_ids.contains(&"run-completed"));
+    assert!(!visible_ids.contains(&"run-failed"));
+    // Verify sort order.
+    assert_eq!(visible_ids, {
+        let mut sorted = visible_ids.clone();
+        sorted.sort();
+        sorted
+    });
+
+    // Verify epoch1 is untouched.
+    let s = handles.get_owned_summary("owner", "run-running").await.unwrap();
+    assert_eq!(s.status, SubAgentStatus::Running);
+    let _ = epoch1;
+}
+
+// ── Stop edge cases ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn stop_already_stopped_run_returns_error() {
+    let handles = SubAgentHandleTable::new();
+    handles
+        .put_running(
+            "run-1",
+            "owner".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles.stop_owned_tree("owner", "run-1").await.unwrap();
+
+    // Second stop should fail.
+    let result = handles.stop_owned_tree("owner", "run-1").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not running"));
+}
+
+#[tokio::test]
+async fn stop_completed_run_returns_error() {
+    let handles = SubAgentHandleTable::new();
+    let epoch = handles
+        .put_running(
+            "run-1",
+            "owner".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .update_after_completion(
+            "run-1",
+            epoch,
+            SubAgentCompletion {
+                status: SubAgentStatus::Completed,
+                error: None,
+            },
+        )
+        .await;
+
+    let result = handles.stop_owned_tree("owner", "run-1").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not running"));
+}
+
+#[tokio::test]
+async fn stop_unknown_run_returns_error() {
+    let handles = SubAgentHandleTable::new();
+    let result = handles.stop_owned_tree("owner", "nonexistent").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Unknown run_id"));
+}
+
+// ── Concurrent handle table operations ───────────────────────────────────────
+
+#[tokio::test]
+async fn concurrent_put_running_same_run_id_increments_epoch() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let h1 = handles.clone();
+    let h2 = handles.clone();
+
+    // Launch two registrations concurrently for the same run_id.
+    let (e1, e2) = tokio::join!(
+        h1.put_running(
+            "run-race",
+            "owner".to_string(),
+            "sub-agent-run-race".to_string(),
+            "worker-a".to_string(),
+            None,
+            None,
+        ),
+        h2.put_running(
+            "run-race",
+            "owner".to_string(),
+            "sub-agent-run-race".to_string(),
+            "worker-b".to_string(),
+            None,
+            None,
+        ),
+    );
+
+    // Epochs should be different (one is 1, the other is 2, depending on ordering).
+    assert_ne!(e1, e2);
+    let max_epoch = e1.max(e2);
+    assert_eq!(max_epoch, 2);
+
+    // The final state should reflect the last writer.
+    let summary = handles.get_owned_summary("owner", "run-race").await.unwrap();
+    assert_eq!(summary.status, SubAgentStatus::Running);
+}
+
+#[tokio::test]
+async fn concurrent_launches_different_run_ids() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let num_runs = 10;
+    let mut tasks = Vec::new();
+
+    for i in 0..num_runs {
+        let h = handles.clone();
+        tasks.push(tokio::spawn(async move {
+            h.put_running(
+                &format!("run-{i}"),
+                "owner".to_string(),
+                format!("sub-agent-run-{i}"),
+                "worker".to_string(),
+                None,
+                None,
+            )
+            .await
+        }));
+    }
+
+    let epochs: Vec<u64> = futures::future::join_all(tasks)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    // All should be epoch 1 (first registration).
+    for epoch in &epochs {
+        assert_eq!(*epoch, 1);
+    }
+
+    // All 10 should be visible.
+    let running = handles.running_or_stopped_for_owner("owner").await;
+    assert_eq!(running.len(), num_runs);
+    for summary in &running {
+        assert_eq!(summary.status, SubAgentStatus::Running);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_stop_multiple_independent_runs() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+
+    // Register 5 independent runs.
+    for i in 0..5 {
+        handles
+            .put_running(
+                &format!("run-{i}"),
+                "owner".to_string(),
+                format!("sub-agent-run-{i}"),
+                "worker".to_string(),
+                None,
+                None,
+            )
+            .await;
+    }
+
+    // Stop them all concurrently.
+    let mut tasks = Vec::new();
+    for i in 0..5 {
+        let h = handles.clone();
+        tasks.push(tokio::spawn(async move {
+            h.stop_owned_tree("owner", &format!("run-{i}")).await
+        }));
+    }
+
+    let results: Vec<_> = futures::future::join_all(tasks)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    for result in results {
+        assert!(result.is_ok());
+    }
+
+    let all = handles.running_or_stopped_for_owner("owner").await;
+    assert_eq!(all.len(), 5);
+    for summary in &all {
+        assert_eq!(summary.status, SubAgentStatus::Stopped);
+    }
+}
+
+// ── Interleaved launch/stop/re-launch ────────────────────────────────────────
+
+#[tokio::test]
+async fn launch_stop_relaunch_increments_epoch_and_resumes() {
+    let handles = SubAgentHandleTable::new();
+
+    // Launch.
+    let epoch1 = handles
+        .put_running(
+            "run-1",
+            "owner".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(epoch1, 1);
+
+    // Stop.
+    handles.stop_owned_tree("owner", "run-1").await.unwrap();
+    let summary = handles.get_owned_summary("owner", "run-1").await.unwrap();
+    assert_eq!(summary.status, SubAgentStatus::Stopped);
+
+    // Re-launch (simulates resume).
+    let epoch2 = handles
+        .put_running(
+            "run-1",
+            "owner".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(epoch2, 2);
+
+    let summary = handles.get_owned_summary("owner", "run-1").await.unwrap();
+    assert_eq!(summary.status, SubAgentStatus::Running);
+
+    // Stale epoch1 completion is ignored.
+    let stale = handles
+        .update_after_completion(
+            "run-1",
+            epoch1,
+            SubAgentCompletion {
+                status: SubAgentStatus::Completed,
+                error: None,
+            },
+        )
+        .await;
+    assert!(stale.is_none());
+
+    // Run is still running.
+    let summary = handles.get_owned_summary("owner", "run-1").await.unwrap();
+    assert_eq!(summary.status, SubAgentStatus::Running);
+
+    // Correct epoch2 completion applies.
+    let applied = handles
+        .update_after_completion(
+            "run-1",
+            epoch2,
+            SubAgentCompletion {
+                status: SubAgentStatus::Completed,
+                error: None,
+            },
+        )
+        .await
+        .expect("epoch2 completion should apply");
+    assert_eq!(applied.status, SubAgentStatus::Completed);
+}
+
+// ── AgentRunTool: resume completed/failed returns status ─────────────────────
+
+#[tokio::test]
+async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let epoch = handles
+        .put_running(
+            "run-1",
+            "owner-thread".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .update_after_completion(
+            "run-1",
+            epoch,
+            SubAgentCompletion {
+                status: SubAgentStatus::Completed,
+                error: None,
+            },
+        )
+        .await;
+
+    let run_tool = AgentRunTool::new(os, handles);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = run_tool
+        .execute(
+            json!({ "run_id": "run-1", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    assert_eq!(result.data["status"], json!("completed"));
+}
+
+#[tokio::test]
+async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let epoch = handles
+        .put_running(
+            "run-1",
+            "owner-thread".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .update_after_completion(
+            "run-1",
+            epoch,
+            SubAgentCompletion {
+                status: SubAgentStatus::Failed,
+                error: Some("agent failed".to_string()),
+            },
+        )
+        .await;
+
+    let run_tool = AgentRunTool::new(os, handles);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = run_tool
+        .execute(
+            json!({ "run_id": "run-1", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    assert_eq!(result.data["status"], json!("failed"));
+    assert_eq!(result.data["error"], json!("agent failed"));
+}
+
+// ── AgentRunTool: missing required args ──────────────────────────────────────
+
+#[tokio::test]
+async fn agent_run_tool_requires_prompt_for_new_run() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = run_tool
+        .execute(
+            json!({ "agent_id": "worker", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("missing 'prompt'"));
+}
+
+#[tokio::test]
+async fn agent_run_tool_requires_agent_id_for_new_run() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = run_tool
+        .execute(
+            json!({ "prompt": "hello", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("missing 'agent_id'"));
+}
+
+// ── AgentRunTool: excluded agents via scope ──────────────────────────────────
+
+#[tokio::test]
+async fn agent_run_tool_rejects_excluded_agent() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .with_agent(
+            "secret",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+    fix.run_config
+        .set(SCOPE_EXCLUDED_AGENTS_KEY, vec!["secret"])
+        .unwrap();
+
+    let result = run_tool
+        .execute(
+            json!({ "agent_id": "secret", "prompt": "hi", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown or unavailable agent_id"));
+}
+
+// ── AgentRunTool: unknown run_id (no handle, no persisted) ───────────────────
+
+#[tokio::test]
+async fn agent_run_tool_returns_error_for_unknown_run_id() {
+    let os = AgentOs::builder().build().unwrap();
+    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = run_tool
+        .execute(
+            json!({ "run_id": "nonexistent", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown run_id"));
+}
+
+// ── AgentRunTool: persisted completed/failed returns without re-run ──────────
+
+#[tokio::test]
+async fn agent_run_tool_returns_persisted_completed_without_rerun() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+
+    let doc = json!({
+        "sub_agents": {
+            "runs": {
+                "run-1": {
+                    "thread_id": "sub-agent-run-1",
+                    "agent_id": "worker",
+                    "status": "completed"
+                }
+            }
+        }
+    });
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.run_config = caller_scope_with_state(doc);
+
+    let result = run_tool
+        .execute(
+            json!({ "run_id": "run-1", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    assert_eq!(result.data["status"], json!("completed"));
+}
+
+#[tokio::test]
+async fn agent_run_tool_returns_persisted_failed_with_error() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+
+    let doc = json!({
+        "sub_agents": {
+            "runs": {
+                "run-1": {
+                    "thread_id": "sub-agent-run-1",
+                    "agent_id": "worker",
+                    "status": "failed",
+                    "error": "something broke"
+                }
+            }
+        }
+    });
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.run_config = caller_scope_with_state(doc);
+
+    let result = run_tool
+        .execute(
+            json!({ "run_id": "run-1", "background": false }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    assert_eq!(result.data["status"], json!("failed"));
+    assert_eq!(result.data["error"], json!("something broke"));
+}
+
+// ── AgentStopTool edge cases ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn agent_stop_tool_requires_scope_context() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let stop_tool = AgentStopTool::new(handles);
+    let fix = TestFixture::new();
+
+    let result = stop_tool
+        .execute(
+            json!({ "run_id": "run-1" }),
+            &fix.ctx_with("call-1", "tool:agent_stop"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("missing caller thread context"));
+}
+
+#[tokio::test]
+async fn agent_stop_tool_requires_run_id() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let stop_tool = AgentStopTool::new(handles);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = stop_tool
+        .execute(
+            json!({}),
+            &fix.ctx_with("call-1", "tool:agent_stop"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("missing 'run_id'"));
+}
+
+#[tokio::test]
+async fn agent_stop_tool_stops_persisted_running_without_live_handle() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let stop_tool = AgentStopTool::new(handles);
+
+    let doc = json!({
+        "sub_agents": {
+            "runs": {
+                "run-orphan": {
+                    "thread_id": "sub-agent-run-orphan",
+                    "agent_id": "worker",
+                    "status": "running"
+                }
+            }
+        }
+    });
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.run_config = {
+        let mut rt = tirea_contract::RunConfig::new();
+        rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
+            .unwrap();
+        rt
+    };
+
+    let result = stop_tool
+        .execute(
+            json!({ "run_id": "run-orphan" }),
+            &fix.ctx_with("call-stop", "tool:agent_stop"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    assert_eq!(result.data["status"], json!("stopped"));
+
+    // Verify the state patch marks it stopped.
+    let patch = fix.ctx_with("call-stop", "tool:agent_stop").take_patch();
+    let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-orphan"]["status"],
+        json!("stopped")
+    );
+}
+
+// ── AgentOutputTool: missing run_id param ────────────────────────────────────
+
+#[tokio::test]
+async fn agent_output_tool_requires_run_id() {
+    let os = AgentOs::builder().build().unwrap();
+    let tool = AgentOutputTool::new(os);
+    let fix = TestFixture::new();
+
+    let result = tool
+        .execute(
+            json!({}),
+            &fix.ctx_with("call-1", "tool:agent_output"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("missing 'run_id'"));
+}
+
+// ── Recovery plugin: multiple orphans ────────────────────────────────────────
+
+#[tokio::test]
+async fn recovery_plugin_detects_multiple_orphans_creates_one_suspension() {
+    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let thread = Thread::with_initial_state(
+        "owner-1",
+        json!({
+            "sub_agents": {
+                "runs": {
+                    "run-1": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker-a",
+                        "status": "running"
+                    },
+                    "run-2": {
+                        "thread_id": "sub-agent-run-2",
+                        "agent_id": "worker-b",
+                        "status": "running"
+                    },
+                    "run-3": {
+                        "thread_id": "sub-agent-run-3",
+                        "agent_id": "worker-c",
+                        "status": "running"
+                    }
+                }
+            }
+        }),
+    );
+    let doc = thread.rebuild_state().unwrap();
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    let updated = fixture.updated_state();
+
+    // All 3 should be marked stopped.
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-1"]["status"],
+        json!("stopped")
+    );
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-2"]["status"],
+        json!("stopped")
+    );
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-3"]["status"],
+        json!("stopped")
+    );
+
+    // Only one recovery suspension should be created (for the first orphan).
+    let scope = &updated["__tool_call_scope"];
+    let suspended_count = scope
+        .as_object()
+        .map(|obj| {
+            obj.values()
+                .filter(|v| v.get("suspended_call").is_some())
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(
+        suspended_count, 1,
+        "only one recovery suspension should be created"
+    );
+}
+
+// ── Recovery plugin: mix of orphans and live handles ─────────────────────────
+
+#[tokio::test]
+async fn recovery_plugin_only_marks_orphans_when_some_have_live_handles() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+    // run-1 has a live handle.
+    handles
+        .put_running(
+            "run-1",
+            "owner-1".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker-a".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let plugin = AgentRecoveryPlugin::new(handles);
+    let thread = Thread::with_initial_state(
+        "owner-1",
+        json!({
+            "sub_agents": {
+                "runs": {
+                    "run-1": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker-a",
+                        "status": "running"
+                    },
+                    "run-2": {
+                        "thread_id": "sub-agent-run-2",
+                        "agent_id": "worker-b",
+                        "status": "running"
+                    }
+                }
+            }
+        }),
+    );
+    let doc = thread.rebuild_state().unwrap();
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    let updated = fixture.updated_state();
+
+    // run-1 has live handle → not marked stopped.
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-1"]["status"],
+        json!("running")
+    );
+
+    // run-2 is orphaned → marked stopped.
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-2"]["status"],
+        json!("stopped")
+    );
+}
+
+// ── Recovery plugin: no orphans when all have live handles ───────────────────
+
+#[tokio::test]
+async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
+    let handles = Arc::new(SubAgentHandleTable::new());
+    handles
+        .put_running(
+            "run-1",
+            "owner-1".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker-a".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .put_running(
+            "run-2",
+            "owner-1".to_string(),
+            "sub-agent-run-2".to_string(),
+            "worker-b".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let plugin = AgentRecoveryPlugin::new(handles);
+    let thread = Thread::with_initial_state(
+        "owner-1",
+        json!({
+            "sub_agents": {
+                "runs": {
+                    "run-1": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker-a",
+                        "status": "running"
+                    },
+                    "run-2": {
+                        "thread_id": "sub-agent-run-2",
+                        "agent_id": "worker-b",
+                        "status": "running"
+                    }
+                }
+            }
+        }),
+    );
+    let doc = thread.rebuild_state().unwrap();
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    let updated = fixture.updated_state();
+
+    // Both still running (no orphan detection).
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-1"]["status"],
+        json!("running")
+    );
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-2"]["status"],
+        json!("running")
+    );
+
+    // No suspended recovery interaction.
+    let has_suspended = updated
+        .get("__tool_call_scope")
+        .and_then(|scope| scope.as_object())
+        .map(|obj| {
+            obj.values()
+                .any(|v| v.get("suspended_call").is_some())
+        })
+        .unwrap_or(false);
+    assert!(!has_suspended, "no recovery suspension should be created when all have live handles");
+}
+
+// ── Recovery plugin: mixed statuses only Running without handle is orphan ────
+
+#[tokio::test]
+async fn recovery_plugin_ignores_completed_stopped_failed_in_persisted_state() {
+    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let thread = Thread::with_initial_state(
+        "owner-1",
+        json!({
+            "sub_agents": {
+                "runs": {
+                    "run-completed": {
+                        "thread_id": "sub-agent-run-completed",
+                        "agent_id": "worker",
+                        "status": "completed"
+                    },
+                    "run-failed": {
+                        "thread_id": "sub-agent-run-failed",
+                        "agent_id": "worker",
+                        "status": "failed",
+                        "error": "oops"
+                    },
+                    "run-stopped": {
+                        "thread_id": "sub-agent-run-stopped",
+                        "agent_id": "worker",
+                        "status": "stopped"
+                    }
+                }
+            }
+        }),
+    );
+    let doc = thread.rebuild_state().unwrap();
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    let updated = fixture.updated_state();
+
+    // None of them should change status.
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-completed"]["status"],
+        json!("completed")
+    );
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-failed"]["status"],
+        json!("failed")
+    );
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-stopped"]["status"],
+        json!("stopped")
+    );
+
+    // No suspended recovery interaction.
+    let has_suspended = updated
+        .get("__tool_call_scope")
+        .and_then(|scope| scope.as_object())
+        .map(|obj| {
+            obj.values()
+                .any(|v| v.get("suspended_call").is_some())
+        })
+        .unwrap_or(false);
+    assert!(!has_suspended);
+}
+
+// ── State helper tests ───────────────────────────────────────────────────────
+
+#[test]
+fn collect_descendant_run_ids_from_state_includes_full_tree() {
+    let runs = HashMap::from([
+        (
+            "root".to_string(),
+            SubAgent {
+                thread_id: "sub-agent-root".to_string(),
+                parent_run_id: None,
+                agent_id: "w".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        ),
+        (
+            "child-1".to_string(),
+            SubAgent {
+                thread_id: "sub-agent-child-1".to_string(),
+                parent_run_id: Some("root".to_string()),
+                agent_id: "w".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        ),
+        (
+            "child-2".to_string(),
+            SubAgent {
+                thread_id: "sub-agent-child-2".to_string(),
+                parent_run_id: Some("root".to_string()),
+                agent_id: "w".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        ),
+        (
+            "grandchild".to_string(),
+            SubAgent {
+                thread_id: "sub-agent-grandchild".to_string(),
+                parent_run_id: Some("child-1".to_string()),
+                agent_id: "w".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        ),
+        (
+            "unrelated".to_string(),
+            SubAgent {
+                thread_id: "sub-agent-unrelated".to_string(),
+                parent_run_id: None,
+                agent_id: "w".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        ),
+    ]);
+
+    let descendants = collect_descendant_run_ids_from_state(&runs, "root", true);
+    assert!(descendants.contains(&"root".to_string()));
+    assert!(descendants.contains(&"child-1".to_string()));
+    assert!(descendants.contains(&"child-2".to_string()));
+    assert!(descendants.contains(&"grandchild".to_string()));
+    assert!(!descendants.contains(&"unrelated".to_string()));
+    assert_eq!(descendants.len(), 4);
+}
+
+#[test]
+fn collect_descendant_run_ids_from_state_exclude_root() {
+    let runs = HashMap::from([
+        (
+            "root".to_string(),
+            SubAgent {
+                thread_id: "sub-agent-root".to_string(),
+                parent_run_id: None,
+                agent_id: "w".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        ),
+        (
+            "child".to_string(),
+            SubAgent {
+                thread_id: "sub-agent-child".to_string(),
+                parent_run_id: Some("root".to_string()),
+                agent_id: "w".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        ),
+    ]);
+
+    let descendants = collect_descendant_run_ids_from_state(&runs, "root", false);
+    assert!(!descendants.contains(&"root".to_string()));
+    assert!(descendants.contains(&"child".to_string()));
+    assert_eq!(descendants.len(), 1);
+}
+
+#[test]
+fn collect_descendant_run_ids_from_state_unknown_root_returns_empty() {
+    let runs: HashMap<String, SubAgent> = HashMap::new();
+    let descendants = collect_descendant_run_ids_from_state(&runs, "nonexistent", true);
+    assert!(descendants.is_empty());
+}
+
+#[test]
+fn collect_descendant_run_ids_from_state_leaf_node_returns_only_self() {
+    let runs = HashMap::from([(
+        "leaf".to_string(),
+        SubAgent {
+            thread_id: "sub-agent-leaf".to_string(),
+            parent_run_id: Some("parent".to_string()),
+            agent_id: "w".to_string(),
+            status: SubAgentStatus::Running,
+            error: None,
+        },
+    )]);
+
+    let descendants = collect_descendant_run_ids_from_state(&runs, "leaf", true);
+    assert_eq!(descendants, vec!["leaf".to_string()]);
+}
+
+// ── Parallel tool-level operations ───────────────────────────────────────────
+
+#[tokio::test]
+async fn parallel_background_launches_produce_unique_run_ids() {
+    let os = AgentOs::builder()
+        .with_registered_behavior(
+            "slow_terminate_behavior_requested",
+            Arc::new(SlowTerminatePlugin),
+        )
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+                .with_behavior_id("slow_terminate_behavior_requested"),
+        )
+        .build()
+        .unwrap();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let run_tool = AgentRunTool::new(os, handles.clone());
+
+    let mut run_ids = Vec::new();
+    for i in 0..5 {
+        let mut fix = TestFixture::new();
+        fix.run_config = caller_scope();
+        let started = run_tool
+            .execute(
+                json!({
+                    "agent_id": "worker",
+                    "prompt": format!("task-{i}"),
+                    "background": true
+                }),
+                &fix.ctx_with(&format!("call-{i}"), "tool:agent_run"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(started.status, ToolStatus::Success);
+        run_ids.push(
+            started.data["run_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+
+    // All run_ids should be unique.
+    let unique: std::collections::HashSet<&str> =
+        run_ids.iter().map(|s| s.as_str()).collect();
+    assert_eq!(unique.len(), 5, "all run_ids should be unique");
+
+    // All should be visible as running.
+    let running = handles.running_or_stopped_for_owner("owner-thread").await;
+    assert_eq!(running.len(), 5);
+}
+
+#[tokio::test]
+async fn parallel_launch_and_immediate_stop() {
+    let os = AgentOs::builder()
+        .with_registered_behavior(
+            "slow_terminate_behavior_requested",
+            Arc::new(SlowTerminatePlugin),
+        )
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+                .with_behavior_id("slow_terminate_behavior_requested"),
+        )
+        .build()
+        .unwrap();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let run_tool = AgentRunTool::new(os, handles.clone());
+    let stop_tool = AgentStopTool::new(handles.clone());
+
+    // Launch background run.
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+    let started = run_tool
+        .execute(
+            json!({
+                "agent_id": "worker",
+                "prompt": "fast task",
+                "background": true
+            }),
+            &fix.ctx_with("call-launch", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    let run_id = started.data["run_id"].as_str().unwrap().to_string();
+
+    // Immediately stop (race with background execution).
+    let mut stop_fix = TestFixture::new();
+    stop_fix.run_config = caller_scope();
+    let stopped = stop_tool
+        .execute(
+            json!({ "run_id": run_id }),
+            &stop_fix.ctx_with("call-stop", "tool:agent_stop"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stopped.status, ToolStatus::Success);
+    assert_eq!(stopped.data["status"], json!("stopped"));
+
+    // Wait for background task to flush.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify the run is stopped (cancellation override should prevent it from flipping to completed).
+    let summary = handles.get_owned_summary("owner-thread", &run_id).await.unwrap();
+    assert_eq!(summary.status, SubAgentStatus::Stopped);
+}
+
+// ── SubAgent serialization round-trip ────────────────────────────────────────
+
+#[test]
+fn sub_agent_serialization_roundtrip() {
+    let sub = SubAgent {
+        thread_id: "sub-agent-run-42".to_string(),
+        parent_run_id: Some("parent-7".to_string()),
+        agent_id: "researcher".to_string(),
+        status: SubAgentStatus::Completed,
+        error: None,
+    };
+    let json = serde_json::to_value(&sub).unwrap();
+    assert_eq!(json["thread_id"], "sub-agent-run-42");
+    assert_eq!(json["parent_run_id"], "parent-7");
+    assert_eq!(json["agent_id"], "researcher");
+    assert_eq!(json["status"], "completed");
+    assert!(json.get("error").is_none(), "None error should be skipped");
+
+    let roundtrip: SubAgent = serde_json::from_value(json).unwrap();
+    assert_eq!(roundtrip.thread_id, sub.thread_id);
+    assert_eq!(roundtrip.parent_run_id, sub.parent_run_id);
+    assert_eq!(roundtrip.agent_id, sub.agent_id);
+    assert_eq!(roundtrip.status as u8, SubAgentStatus::Completed as u8);
+    assert!(roundtrip.error.is_none());
+}
+
+#[test]
+fn sub_agent_deserializes_without_optional_fields() {
+    let json = json!({
+        "thread_id": "sub-agent-run-99",
+        "agent_id": "coder",
+        "status": "running"
+    });
+    let sub: SubAgent = serde_json::from_value(json).unwrap();
+    assert!(sub.parent_run_id.is_none());
+    assert!(sub.error.is_none());
+}
+
+#[test]
+fn sub_agent_status_as_str() {
+    assert_eq!(SubAgentStatus::Running.as_str(), "running");
+    assert_eq!(SubAgentStatus::Completed.as_str(), "completed");
+    assert_eq!(SubAgentStatus::Failed.as_str(), "failed");
+    assert_eq!(SubAgentStatus::Stopped.as_str(), "stopped");
+}
+
+// ── Handle table: collect_descendant_run_ids_by_parent ───────────────────────
+
+#[tokio::test]
+async fn handle_table_collect_descendants_across_owners() {
+    // Verifies that collect_descendant_run_ids_by_parent scopes to owner.
+    let handles = SubAgentHandleTable::new();
+    handles
+        .put_running(
+            "root",
+            "owner-1".to_string(),
+            "sub-agent-root".to_string(),
+            "w".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .put_running(
+            "child",
+            "owner-1".to_string(),
+            "sub-agent-child".to_string(),
+            "w".to_string(),
+            Some("root".to_string()),
+            None,
+        )
+        .await;
+    // This child belongs to a different owner, so should NOT be included.
+    handles
+        .put_running(
+            "other-child",
+            "owner-2".to_string(),
+            "sub-agent-other-child".to_string(),
+            "w".to_string(),
+            Some("root".to_string()),
+            None,
+        )
+        .await;
+
+    let stopped = handles.stop_owned_tree("owner-1", "root").await.unwrap();
+    let stopped_ids: Vec<&str> = stopped.iter().map(|s| s.run_id.as_str()).collect();
+    assert!(stopped_ids.contains(&"root"));
+    assert!(stopped_ids.contains(&"child"));
+    assert!(!stopped_ids.contains(&"other-child"));
+
+    // other-child should still be running.
+    let other = handles.get_owned_summary("owner-2", "other-child").await.unwrap();
+    assert_eq!(other.status, SubAgentStatus::Running);
+}
+
+// ── Plugin rendering edge cases ──────────────────────────────────────────────
+
+#[test]
+fn plugin_renders_empty_when_no_agents() {
+    let reg = InMemoryAgentRegistry::new();
+    let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(SubAgentHandleTable::new()));
+    let rendered = plugin.render_available_agents(None, None);
+    assert!(rendered.is_empty());
+}
+
+#[tokio::test]
+async fn plugin_no_reminder_when_no_handles() {
+    let reg = InMemoryAgentRegistry::new();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let plugin = AgentToolsPlugin::new(Arc::new(reg), handles);
+
+    let fixture = TestFixture::new();
+    let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
+    plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+    assert!(
+        step.messaging.reminders.is_empty(),
+        "no reminder should be emitted when there are no handles"
+    );
+}
+
+#[tokio::test]
+async fn plugin_reminder_shows_multiple_runs() {
+    let reg = InMemoryAgentRegistry::new();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    handles
+        .put_running(
+            "run-1",
+            "owner-1".to_string(),
+            "sub-agent-run-1".to_string(),
+            "worker-a".to_string(),
+            None,
+            None,
+        )
+        .await;
+    handles
+        .put_running(
+            "run-2",
+            "owner-1".to_string(),
+            "sub-agent-run-2".to_string(),
+            "worker-b".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let plugin = AgentToolsPlugin::new(Arc::new(reg), handles);
+    let fixture = TestFixture::new();
+    let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
+    plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+    let reminder = step.messaging.reminders.first()
+        .expect("should have a reminder for multiple running sub-agents");
+    assert!(reminder.contains("run-1"));
+    assert!(reminder.contains("run-2"));
+    assert!(reminder.contains("worker-a"));
+    assert!(reminder.contains("worker-b"));
+    assert!(reminder.contains("agent_output"));
+}
