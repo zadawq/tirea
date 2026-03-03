@@ -1,5 +1,7 @@
 use super::scope_context::ScopeContext;
 use super::spec::{reduce_state_actions, AnyStateAction, StateScope};
+use crate::runtime::action::Action;
+use crate::runtime::phase::step::StepContext;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -84,6 +86,28 @@ impl AnyStateAction {
             }),
             Self::Patch(_) => None,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Action impl for AnyStateAction
+// ---------------------------------------------------------------------------
+
+impl Action for AnyStateAction {
+    fn label(&self) -> &'static str {
+        "state_action"
+    }
+
+    fn is_state_action(&self) -> bool {
+        true
+    }
+
+    fn into_state_action(self: Box<Self>) -> Option<AnyStateAction> {
+        Some(*self)
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.emit_state_action(*self);
     }
 }
 

@@ -175,7 +175,11 @@ mod tests {
                 };
             }
         };
-        let (result, state_actions, _user_messages) = effect.into_parts();
+        let (result, actions) = effect.into_parts();
+        let state_actions: Vec<_> = actions
+            .into_iter()
+            .filter_map(|a| if a.is_state_action() { a.into_state_action() } else { None })
+            .collect();
         let scope_ctx = ScopeContext::run();
         let patches = reduce_state_actions(
             state_actions,

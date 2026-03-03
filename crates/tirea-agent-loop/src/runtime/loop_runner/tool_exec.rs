@@ -921,8 +921,6 @@ async fn execute_single_tool_with_phases_impl(
         mut execution,
         outcome,
         suspended_call,
-        tool_state_actions,
-        tool_user_messages,
         tool_actions,
     ) = if step.tool_blocked() {
         let reason = step
@@ -938,8 +936,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::<AnyStateAction>::new(),
-            Vec::<String>::new(),
             Vec::<Box<dyn Action>>::new(),
         )
     } else if let Some(plugin_result) = step.tool_result().cloned() {
@@ -952,8 +948,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             outcome,
             None,
-            Vec::<AnyStateAction>::new(),
-            Vec::<String>::new(),
             Vec::<Box<dyn Action>>::new(),
         )
     } else if tool.is_none() {
@@ -965,8 +959,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::<AnyStateAction>::new(),
-            Vec::<String>::new(),
             Vec::<Box<dyn Action>>::new(),
         )
     } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
@@ -979,8 +971,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::<AnyStateAction>::new(),
-            Vec::<String>::new(),
             Vec::<Box<dyn Action>>::new(),
         )
     } else if step.tool_pending() {
@@ -1000,8 +990,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Suspended,
             Some(SuspendedCall::new(call, suspend_ticket)),
-            Vec::<AnyStateAction>::new(),
-            Vec::<String>::new(),
             Vec::<Box<dyn Action>>::new(),
         )
     } else {
@@ -1035,7 +1023,7 @@ async fn execute_single_tool_with_phases_impl(
         if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
             effect = ToolExecutionEffect::from(result);
         }
-        let (result, state_actions, user_messages, actions) = effect.into_parts();
+        let (result, actions) = effect.into_parts();
         let outcome = ToolCallOutcome::from_tool_result(&result);
 
         let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
@@ -1052,8 +1040,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             outcome,
             suspended_call,
-            state_actions,
-            user_messages,
             actions,
         )
     };
@@ -1063,18 +1049,27 @@ async fn execute_single_tool_with_phases_impl(
         gate.result = Some(execution.result.clone());
     }
 
-    // Pre-populate user messages from tool effect so plugins see them in AfterToolExecute
-    step.extensions
-        .get_or_default::<MessagingContext>()
-        .user_messages = tool_user_messages;
+    // Partition tool actions: state actions go to execution.patch reduction;
+    // non-state actions are validated and applied before plugin hooks run.
+    let mut tool_state_actions = Vec::<AnyStateAction>::new();
+    let mut other_actions = Vec::<Box<dyn Action>>::new();
+    for action in tool_actions {
+        if action.is_state_action() {
+            if let Some(sa) = action.into_state_action() {
+                tool_state_actions.push(sa);
+            }
+        } else {
+            other_actions.push(action);
+        }
+    }
 
-    // Apply tool-emitted actions (validated against AfterToolExecute) before plugin hooks.
-    for action in &tool_actions {
+    // Apply non-state tool-emitted actions (validated against AfterToolExecute) before plugin hooks.
+    for action in &other_actions {
         action
             .validate(Phase::AfterToolExecute)
             .map_err(AgentLoopError::StateError)?;
     }
-    for action in tool_actions {
+    for action in other_actions {
         action.apply(&mut step);
     }
 

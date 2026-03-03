@@ -755,7 +755,7 @@ impl Tool for ActionStateTool {
     ) -> Result<ToolExecutionEffect, ToolError> {
         Ok(
             ToolExecutionEffect::new(ToolResult::success(self.id, json!({"ok": true})))
-                .with_state_action(AnyStateAction::new::<DebugFlags>(self.action)),
+                .with_action(AnyStateAction::new::<DebugFlags>(self.action)),
         )
     }
 }
@@ -1815,7 +1815,7 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
                 "action_effect_tool",
                 json!({"ok": true}),
             ))
-            .with_state_action(AnyStateAction::new::<DebugFlags>(
+            .with_action(AnyStateAction::new::<DebugFlags>(
                 DebugFlagAction::SetAfterToolEffect,
             )))
         }

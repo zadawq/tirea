@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
+use tirea_contract::runtime::inference::AddUserMessage;
 use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
@@ -176,13 +177,12 @@ impl SkillActivateTool {
             suspension: None,
         };
 
-        let mut effect = ToolExecutionEffect::from(result)
-            .with_state_action(activate_action);
+        let mut effect = ToolExecutionEffect::from(result).with_action(activate_action);
         for action in permission_actions {
-            effect = effect.with_state_action(permission_state_action(action));
+            effect = effect.with_action(permission_state_action(action));
         }
         if !instruction_for_message.trim().is_empty() {
-            effect = effect.with_user_message(instruction_for_message);
+            effect = effect.with_action(AddUserMessage(instruction_for_message));
         }
         Ok(effect)
     }

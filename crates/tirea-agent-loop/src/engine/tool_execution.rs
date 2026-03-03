@@ -1,6 +1,6 @@
 //! Tool execution utilities.
 
-use crate::contracts::{reduce_state_actions, ScopeContext};
+use crate::contracts::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::tool_call::ToolCallContext;
 use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
@@ -117,7 +117,11 @@ pub async fn execute_single_tool_with_scope_and_behavior(
             patch: None,
         };
     }
-    let (result, state_actions, _user_messages, _actions) = effect.into_parts();
+    let (result, actions) = effect.into_parts();
+    let state_actions: Vec<AnyStateAction> = actions
+        .into_iter()
+        .filter_map(|a| if a.is_state_action() { a.into_state_action() } else { None })
+        .collect();
 
     let tool_scope_ctx = ScopeContext::for_call(&call.id);
     let action_patches = match reduce_state_actions(
@@ -289,7 +293,7 @@ mod tests {
                     "effect",
                     json!({}),
                 ))
-                .with_state_action(AnyStateAction::new::<EffectCounterState>(2)),
+                .with_action(AnyStateAction::new::<EffectCounterState>(2)),
             )
         }
     }

@@ -194,14 +194,16 @@ impl ToolResult {
 
 /// Structured tool effect used by the action/reducer pipeline.
 ///
-/// Tools return a normal [`ToolResult`] plus optional state actions that the
-/// runtime reduces into patches after execution, and optional phase actions
-/// applied during `AfterToolExecute` before plugin hooks run.
+/// Tools return a [`ToolResult`] plus actions applied during `AfterToolExecute`
+/// before plugin hooks run. All side effects—state changes, user messages, and
+/// other context mutations—are expressed as `Box<dyn Action>`.
+///
+/// State actions (`AnyStateAction`) implement `Action` via `into_state_action`,
+/// which allows the loop to extract them for execution-patch reduction (required
+/// for parallel conflict detection) while keeping a single unified interface.
 pub struct ToolExecutionEffect {
     pub result: ToolResult,
-    state_actions: Vec<AnyStateAction>,
-    user_messages: Vec<String>,
-    /// Phase actions emitted by the tool, validated against `AfterToolExecute`.
+    /// All tool-emitted actions applied during `AfterToolExecute`.
     actions: Vec<Box<dyn Action>>,
 }
 
@@ -210,53 +212,24 @@ impl ToolExecutionEffect {
     pub fn new(result: ToolResult) -> Self {
         Self {
             result,
-            state_actions: Vec::new(),
-            user_messages: Vec::new(),
             actions: Vec::new(),
         }
     }
 
-    /// Add a state action to be reduced into a patch after execution.
-    #[must_use]
-    pub fn with_state_action(mut self, action: AnyStateAction) -> Self {
-        self.state_actions.push(action);
-        self
-    }
-
-    pub(crate) fn push_state_action(&mut self, action: AnyStateAction) {
-        self.state_actions.push(action);
-    }
-
-    #[must_use]
-    pub fn with_user_message(mut self, text: impl Into<String>) -> Self {
-        self.user_messages.push(text.into());
-        self
-    }
-
-    /// Add a phase action applied during `AfterToolExecute` before plugin hooks.
+    /// Add an action applied during `AfterToolExecute` before plugin hooks.
     ///
+    /// Accepts any `Action` implementor, including `AnyStateAction` (state
+    /// changes), `AddUserMessage` (user-facing messages), and custom actions.
     /// Only `AfterToolExecute`-compatible actions are accepted; others will be
     /// rejected at runtime by phase validation.
     #[must_use]
-    pub fn with_action(mut self, action: Box<dyn Action>) -> Self {
-        self.actions.push(action);
+    pub fn with_action<A: Action + 'static>(mut self, action: A) -> Self {
+        self.actions.push(Box::new(action));
         self
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        ToolResult,
-        Vec<AnyStateAction>,
-        Vec<String>,
-        Vec<Box<dyn Action>>,
-    ) {
-        (
-            self.result,
-            self.state_actions,
-            self.user_messages,
-            self.actions,
-        )
+    pub fn into_parts(self) -> (ToolResult, Vec<Box<dyn Action>>) {
+        (self.result, self.actions)
     }
 }
 
@@ -407,18 +380,19 @@ pub trait Tool: Send + Sync {
 
     /// Execute tool and return structured effects.
     ///
-    /// The default implementation delegates to [`Tool::execute`], wraps the
-    /// result, and converts any direct context patch into `state_actions`.
+    /// The default implementation delegates to [`Tool::execute`] and wraps the
+    /// result. Any direct context patch (from `ctx.state_of()`) is converted
+    /// into an `AnyStateAction::Patch` action on the effect.
     async fn execute_effect(
         &self,
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolExecutionEffect, ToolError> {
         let result = self.execute(args, ctx).await?;
-        let mut effect = ToolExecutionEffect::from(result);
+        let effect = ToolExecutionEffect::from(result);
         let direct_patch = ctx.take_patch();
         if !direct_patch.patch().is_empty() {
-            effect.push_state_action(AnyStateAction::Patch(direct_patch));
+            return Ok(effect.with_action(AnyStateAction::Patch(direct_patch)));
         }
         Ok(effect)
     }
@@ -1213,7 +1187,8 @@ mod tests {
 
         assert_eq!(effect.result.tool_name, "greet");
         assert!(effect.result.is_success());
-        assert!(effect.state_actions.is_empty());
+        let (_, actions) = effect.into_parts();
+        assert!(actions.is_empty());
     }
 
     struct ContextWriteDefaultTool;
@@ -1254,11 +1229,12 @@ mod tests {
             .expect("execute_effect should succeed");
 
         assert!(effect.result.is_success());
-        assert_eq!(effect.state_actions.len(), 1);
-        assert!(matches!(
-            effect.state_actions.first(),
-            Some(AnyStateAction::Patch(_))
-        ));
+        let (_, actions) = effect.into_parts();
+        assert_eq!(actions.len(), 1);
+        let boxed = actions.into_iter().next().unwrap();
+        assert!(boxed.is_state_action());
+        let sa = boxed.into_state_action().unwrap();
+        assert!(matches!(sa, AnyStateAction::Patch(_)));
         assert!(ctx.take_patch().patch().is_empty());
     }
 
@@ -1318,10 +1294,11 @@ mod tests {
             _args: Value,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolExecutionEffect, ToolError> {
-            let mut effect =
-                ToolExecutionEffect::new(ToolResult::success("effect_only", json!({"ok": true})));
-            effect.push_state_action(AnyStateAction::new::<ToolEffectState>(1));
-            Ok(effect)
+            Ok(ToolExecutionEffect::new(ToolResult::success(
+                "effect_only",
+                json!({"ok": true}),
+            ))
+            .with_action(AnyStateAction::new::<ToolEffectState>(1)))
         }
     }
 
@@ -1336,8 +1313,11 @@ mod tests {
             .expect("effect tool should succeed");
 
         assert!(effect.result.is_success());
-        assert_eq!(effect.state_actions.len(), 1);
-        let action = effect.state_actions.into_iter().next().unwrap();
-        assert!(action.state_type_name().contains("ToolEffectState"));
+        let (_, actions) = effect.into_parts();
+        assert_eq!(actions.len(), 1);
+        let boxed = actions.into_iter().next().unwrap();
+        assert!(boxed.is_state_action());
+        let sa = boxed.into_state_action().expect("is_state_action returned true");
+        assert!(sa.state_type_name().contains("ToolEffectState"));
     }
 }

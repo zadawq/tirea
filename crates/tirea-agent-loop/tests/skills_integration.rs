@@ -7,9 +7,11 @@ use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tirea_agent_loop::contracts::runtime::behavior::AgentBehavior;
+use tirea_agent_loop::contracts::runtime::inference::MessagingContext;
 use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
+use tirea_contract::testing::TestFixture;
 use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
 use tirea_extension_permission::{PermissionPlugin, SCOPE_ALLOWED_SKILLS_KEY};
 use tirea_extension_skills::{
@@ -173,9 +175,21 @@ async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect
         .execute_effect(json!({"skill": "docx"}), &ctx)
         .await
         .expect("execute_effect should succeed");
-    let (result, _state_actions, user_messages, _actions) = effect.into_parts();
+    let (result, actions) = effect.into_parts();
     assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.message.as_deref(), Some("Launching skill: docx"));
+    let fixture = TestFixture::new();
+    let mut step = fixture.step(vec![]);
+    for action in actions {
+        if !action.is_state_action() {
+            action.apply(&mut step);
+        }
+    }
+    let user_messages = step
+        .extensions
+        .get::<MessagingContext>()
+        .map(|m| m.user_messages.clone())
+        .unwrap_or_default();
     assert_eq!(user_messages.len(), 1);
     assert!(user_messages[0].contains("Use docx-js for new documents"));
 }
@@ -495,8 +509,20 @@ async fn test_skill_activation_user_messages_contain_skill_instructions() {
         .execute_effect(json!({"skill": "docx"}), &ctx)
         .await
         .expect("execute_effect should succeed");
-    let (result, _state_actions, user_messages, _actions) = effect.into_parts();
+    let (result, actions) = effect.into_parts();
     assert!(result.is_success());
+    let fixture = TestFixture::new();
+    let mut step = fixture.step(vec![]);
+    for action in actions {
+        if !action.is_state_action() {
+            action.apply(&mut step);
+        }
+    }
+    let user_messages = step
+        .extensions
+        .get::<MessagingContext>()
+        .map(|m| m.user_messages.clone())
+        .unwrap_or_default();
     assert_eq!(user_messages.len(), 1);
     assert!(
         user_messages[0].contains("# DOCX Processing"),
