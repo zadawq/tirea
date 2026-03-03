@@ -54,7 +54,7 @@ pub struct DelegationRecord {
 
 /// Persisted sub-agent delegation state at `state["agent_runs"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "agent_runs", action = "DelegationAction")]
+#[tirea(path = "agent_runs", action = "DelegationAction", scope = "thread")]
 pub struct DelegationState {
     /// Delegated runs keyed by `run_id`.
     #[tirea(default = "HashMap::new()")]

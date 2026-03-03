@@ -46,45 +46,46 @@ pub enum AnyStateAction {
 }
 
 impl AnyStateAction {
-    /// Create a type-erased action targeting run-scoped state `S`.
+    /// Create a type-erased action for Thread- or Run-scoped state `S`.
     ///
-    /// Always sets scope to `Run`. For tool-call-scoped state, use
+    /// The scope is read from `S::SCOPE`. For ToolCall-scoped state, use
     /// [`new_for_call`](Self::new_for_call) instead.
     ///
     /// # Panics
     ///
-    /// Panics if `S::PATH` is empty (state must have a bound path).
+    /// Panics if `S::PATH` is empty or `S::SCOPE` is `ToolCall`.
     pub fn new<S: StateSpec>(action: S::Action) -> Self {
         assert!(
-            !S::PATH.is_empty(),
-            "StateSpec type has no bound path; cannot create AnyStateAction"
+            S::SCOPE != StateScope::ToolCall,
+            "ToolCall-scoped state must use new_for_call(); got new() for {}",
+            std::any::type_name::<S>(),
         );
-
-        let serialized_payload = serde_json::to_value(&action)
-            .expect("StateSpec::Action must be serializable");
-
-        Self::Typed {
-            state_type_id: TypeId::of::<S>(),
-            state_type_name: std::any::type_name::<S>(),
-            scope: StateScope::Run,
-            base_path: S::PATH,
-            call_id_override: None,
-            reduce_fn: Self::make_reduce_fn::<S>(action),
-            register_lattice: S::register_lattice,
-            serialized_payload,
-        }
+        Self::build::<S>(action, S::SCOPE, None)
     }
 
     /// Create a type-erased action targeting a specific tool call scope.
     ///
-    /// Sets `scope = ToolCall` implicitly — `new_for_call` is exclusively for
-    /// call-scoped state. The `call_id` determines which `__tool_call_scope.<id>`
-    /// namespace the action is routed to.
+    /// The `call_id` determines which `__tool_call_scope.<id>` namespace the
+    /// action is routed to.
     ///
     /// # Panics
     ///
-    /// Panics if `S::PATH` is empty.
+    /// Panics if `S::PATH` is empty or `S::SCOPE` is not `ToolCall`.
     pub fn new_for_call<S: StateSpec>(action: S::Action, call_id: impl Into<String>) -> Self {
+        assert!(
+            S::SCOPE == StateScope::ToolCall,
+            "new_for_call() requires ToolCall-scoped state; {} has scope {:?}",
+            std::any::type_name::<S>(),
+            S::SCOPE,
+        );
+        Self::build::<S>(action, StateScope::ToolCall, Some(call_id.into()))
+    }
+
+    fn build<S: StateSpec>(
+        action: S::Action,
+        scope: StateScope,
+        call_id_override: Option<String>,
+    ) -> Self {
         assert!(
             !S::PATH.is_empty(),
             "StateSpec type has no bound path; cannot create AnyStateAction"
@@ -96,9 +97,9 @@ impl AnyStateAction {
         Self::Typed {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
-            scope: StateScope::ToolCall,
+            scope,
             base_path: S::PATH,
-            call_id_override: Some(call_id.into()),
+            call_id_override,
             reduce_fn: Self::make_reduce_fn::<S>(action),
             register_lattice: S::register_lattice,
             serialized_payload,
@@ -439,6 +440,7 @@ mod tests {
 
     impl StateSpec for ToolScopedCounter {
         type Action = CounterAction;
+        const SCOPE: StateScope = StateScope::ToolCall;
 
         fn reduce(&mut self, action: Self::Action) {
             match action {
@@ -516,9 +518,9 @@ mod tests {
     }
 
     #[test]
-    fn any_state_action_scope_defaults_to_run() {
+    fn any_state_action_scope_defaults_to_thread() {
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(1));
-        assert_eq!(action.scope(), StateScope::Run);
+        assert_eq!(action.scope(), StateScope::Thread);
     }
 
     #[test]
@@ -626,8 +628,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "no bound path")]
-    fn new_for_call_panics_on_empty_path() {
+    #[should_panic(expected = "requires ToolCall-scoped state")]
+    fn new_for_call_panics_on_non_tool_call_scope() {
         let _ = AnyStateAction::new_for_call::<Unbound>((), "call_1");
     }
 

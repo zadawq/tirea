@@ -34,7 +34,7 @@ pub enum PermissionPolicyAction {
 /// Persisted sequential permission overrides (internal).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[serde(default)]
-#[tirea(path = "permissions", action = "PermissionAction")]
+#[tirea(path = "permissions", action = "PermissionAction", scope = "thread")]
 pub(super) struct PermissionOverrides {
     pub default_behavior: ToolPermissionBehavior,
     pub tools: HashMap<String, ToolPermissionBehavior>,
@@ -58,7 +58,7 @@ impl PermissionOverrides {
 /// Run-scoped CRDT permission policy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[serde(default)]
-#[tirea(path = "permission_policy", action = "PermissionPolicyAction")]
+#[tirea(path = "permission_policy", action = "PermissionPolicyAction", scope = "thread")]
 pub struct PermissionPolicy {
     pub default_behavior: ToolPermissionBehavior,
     #[tirea(lattice)]

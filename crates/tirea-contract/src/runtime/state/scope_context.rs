@@ -85,6 +85,24 @@ mod tests {
     }
 
     #[test]
+    fn thread_scope_returns_base_path() {
+        let ctx = ScopeContext::run();
+        assert_eq!(
+            ctx.resolve_path(StateScope::Thread, "reminders"),
+            "reminders"
+        );
+    }
+
+    #[test]
+    fn for_call_leaves_thread_scope_unchanged() {
+        let ctx = ScopeContext::for_call("call_42");
+        assert_eq!(
+            ctx.resolve_path(StateScope::Thread, "reminders"),
+            "reminders"
+        );
+    }
+
+    #[test]
     fn call_id_accessor() {
         assert_eq!(ScopeContext::run().call_id(), None);
         assert_eq!(ScopeContext::for_call("x").call_id(), Some("x"));

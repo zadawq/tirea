@@ -3,7 +3,7 @@ use tirea_state::State;
 
 /// Reminder state stored in session state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "reminders", action = "ReminderAction")]
+#[tirea(path = "reminders", action = "ReminderAction", scope = "thread")]
 pub(super) struct ReminderState {
     #[serde(default)]
     pub items: Vec<String>,

@@ -95,7 +95,7 @@ macro_rules! declare_plugin_states {
             &self,
             registry: &mut $crate::runtime::state::StateScopeRegistry,
         ) {
-            $(registry.register::<$state>($crate::runtime::state::StateScope::Run);)+
+            $(registry.register::<$state>(<$state as ::tirea_state::StateSpec>::SCOPE);)+
         }
 
         fn register_action_deserializers(

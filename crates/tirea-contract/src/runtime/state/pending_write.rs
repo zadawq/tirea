@@ -433,6 +433,47 @@ mod tests {
         }
     }
 
+    // -- ToolCall-scoped test state type --
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    struct ToolCallTestCounter {
+        value: i64,
+    }
+
+    struct ToolCallTestCounterRef;
+
+    impl State for ToolCallTestCounter {
+        type Ref<'a> = ToolCallTestCounterRef;
+        const PATH: &'static str = "tc_counter";
+
+        fn state_ref<'a>(_: &'a DocCell, _: Path, _: PatchSink<'a>) -> Self::Ref<'a> {
+            ToolCallTestCounterRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+    }
+
+    impl StateSpec for ToolCallTestCounter {
+        type Action = TestCounterAction;
+        const SCOPE: StateScope = StateScope::ToolCall;
+
+        fn reduce(&mut self, action: TestCounterAction) {
+            match action {
+                TestCounterAction::Increment(n) => self.value += n,
+                TestCounterAction::Reset => self.value = 0,
+            }
+        }
+    }
+
     #[test]
     fn to_serialized_action_roundtrip() {
         let original = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(42));
@@ -440,7 +481,7 @@ mod tests {
 
         assert!(serialized.state_type_name.contains("TestCounter"));
         assert_eq!(serialized.base_path, "test_counter");
-        assert_eq!(serialized.scope, StateScope::Run);
+        assert_eq!(serialized.scope, StateScope::Thread);
         assert!(serialized.call_id_override.is_none());
         assert_eq!(serialized.payload, json!({"Increment": 42}));
     }
@@ -521,9 +562,9 @@ mod tests {
     #[test]
     fn tool_call_scoped_roundtrip() {
         let mut registry = ActionDeserializerRegistry::new();
-        registry.register::<TestCounter>();
+        registry.register::<ToolCallTestCounter>();
 
-        let original = AnyStateAction::new_for_call::<TestCounter>(
+        let original = AnyStateAction::new_for_call::<ToolCallTestCounter>(
             TestCounterAction::Increment(3),
             "call_99",
         );
@@ -543,7 +584,7 @@ mod tests {
         .unwrap();
         let result = apply_patch(&base, patches[0].patch()).unwrap();
         assert_eq!(
-            result["__tool_call_scope"]["call_99"]["test_counter"]["value"],
+            result["__tool_call_scope"]["call_99"]["tc_counter"]["value"],
             3
         );
     }
@@ -931,10 +972,10 @@ mod tests {
     #[test]
     fn recover_emits_scope_cleanup_for_tool_call_scoped_entries() {
         let mut registry = ActionDeserializerRegistry::new();
-        registry.register::<TestCounter>();
+        registry.register::<ToolCallTestCounter>();
 
         // Simulate a tool that wrote ToolCall-scoped state.
-        let action = AnyStateAction::new_for_call::<TestCounter>(
+        let action = AnyStateAction::new_for_call::<ToolCallTestCounter>(
             TestCounterAction::Increment(5),
             "call_x",
         );

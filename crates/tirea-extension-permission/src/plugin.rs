@@ -29,7 +29,7 @@ impl AgentBehavior for PermissionPlugin {
         PERMISSION_PLUGIN_ID
     }
 
-    tirea_contract::declare_plugin_states!(PermissionPolicy);
+    tirea_contract::declare_plugin_states!(PermissionPolicy, super::state::PermissionOverrides);
 
     async fn before_tool_execute(
         &self,

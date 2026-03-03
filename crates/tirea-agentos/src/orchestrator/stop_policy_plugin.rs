@@ -35,7 +35,7 @@ pub enum StopConditionSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__kernel.stop_policy_runtime", action = "StopPolicyRuntimeAction")]
+#[tirea(path = "__kernel.stop_policy_runtime", action = "StopPolicyRuntimeAction", scope = "run")]
 struct StopPolicyRuntimeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,

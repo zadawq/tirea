@@ -121,7 +121,7 @@ waiting -------> done
 
 /// Minimal durable run lifecycle envelope stored at `state["__run"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State, PartialEq, Eq)]
-#[tirea(path = "__run", action = "RunLifecycleAction")]
+#[tirea(path = "__run", action = "RunLifecycleAction", scope = "run")]
 pub struct RunLifecycleState {
     /// Current run id associated with this lifecycle record.
     #[serde(default)]

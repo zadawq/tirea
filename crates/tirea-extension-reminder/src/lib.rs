@@ -53,6 +53,8 @@ impl AgentBehavior for ReminderPlugin {
         REMINDER_PLUGIN_ID
     }
 
+    tirea_contract::declare_plugin_states!(state::ReminderState);
+
     async fn before_inference(
         &self,
         ctx: &ReadOnlyContext<'_>,
