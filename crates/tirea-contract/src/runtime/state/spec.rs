@@ -1,5 +1,4 @@
 use super::scope_context::ScopeContext;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
@@ -8,25 +7,8 @@ use tirea_state::{
     TrackedPatch,
 };
 
-// Re-export from tirea-state so downstream `use tirea_contract::runtime::state::StateSpec` still works.
-pub use tirea_state::StateSpec;
-
-/// Runtime scope where a state is valid.
-///
-/// Determines the namespace under which the state is stored in the document.
-/// `Run`-scoped state lives at the top level; `ToolCall`-scoped state is
-/// nested under `__tool_call_scope.<call_id>`.
-///
-/// Scope is implicit in the construction path: [`AnyStateAction::new`] always
-/// targets `Run`, while [`AnyStateAction::new_for_call`] always targets `ToolCall`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StateScope {
-    /// State that lives for the entire run.
-    Run,
-    /// State that is scoped to a single tool call.
-    ToolCall,
-}
+// Re-export from tirea-state so downstream code still works.
+pub use tirea_state::{StateScope, StateSpec};
 
 type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
 

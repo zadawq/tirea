@@ -31,7 +31,7 @@ impl ScopeContext {
 
     /// Resolve a (scope, base_path) pair to the actual storage path.
     ///
-    /// - `Run` scope: returns `base_path` unchanged.
+    /// - `Thread` / `Run` scope: returns `base_path` unchanged.
     /// - `ToolCall` scope with a call id: returns `__tool_call_scope.<id>.<base_path>`.
     /// - `ToolCall` scope without a call id: falls back to `base_path`.
     pub fn resolve_path(&self, scope: StateScope, base_path: &str) -> String {

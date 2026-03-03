@@ -28,6 +28,12 @@ pub struct ViewModelInput {
     /// When present, the derive macro generates `impl StateSpec for {Name}`.
     #[darling(default)]
     pub action: Option<String>,
+
+    /// Lifecycle scope (e.g., `#[tirea(scope = "run")]`).
+    /// Valid values: `"thread"`, `"run"`, `"tool_call"`. Defaults to `"thread"`.
+    /// Only meaningful when `action` is also set (generates `const SCOPE`).
+    #[darling(default)]
+    pub scope: Option<String>,
 }
 
 impl ViewModelInput {
@@ -154,6 +160,32 @@ mod tests {
 
         let parsed = ViewModelInput::from_derive_input(&input).unwrap();
         assert_eq!(parsed.action, Some("ReminderAction".to_string()));
+    }
+
+    #[test]
+    fn test_parse_scope_attribute() {
+        let input: syn::DeriveInput = parse_quote! {
+            #[tirea(path = "__run", action = "RunAction", scope = "run")]
+            struct RunLifecycleState {
+                status: String,
+            }
+        };
+
+        let parsed = ViewModelInput::from_derive_input(&input).unwrap();
+        assert_eq!(parsed.scope, Some("run".to_string()));
+    }
+
+    #[test]
+    fn test_parse_scope_defaults_to_none() {
+        let input: syn::DeriveInput = parse_quote! {
+            #[tirea(path = "counters", action = "CounterAction")]
+            struct Counter {
+                value: i64,
+            }
+        };
+
+        let parsed = ViewModelInput::from_derive_input(&input).unwrap();
+        assert_eq!(parsed.scope, None);
     }
 
     #[test]

@@ -147,7 +147,9 @@ impl ActionDeserializerRegistry {
                         source: e,
                     })?;
                 match entry.scope {
-                    StateScope::Run => Ok(AnyStateAction::new::<S>(action)),
+                    StateScope::Thread | StateScope::Run => {
+                        Ok(AnyStateAction::new::<S>(action))
+                    }
                     StateScope::ToolCall => {
                         let call_id = entry.call_id_override.as_deref().unwrap_or("");
                         Ok(AnyStateAction::new_for_call::<S>(

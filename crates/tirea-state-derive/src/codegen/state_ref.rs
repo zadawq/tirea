@@ -727,6 +727,9 @@ fn generate_diff_ops(fields: &[&FieldInput]) -> TokenStream {
 ///
 /// The generated impl delegates `reduce` to an inherent method on the struct,
 /// so the user writes business logic as `impl MyState { fn reduce(...) { ... } }`.
+///
+/// When `#[tirea(scope = "...")]` is also set, generates `const SCOPE`.
+/// Valid scope values: `"thread"` (default), `"run"`, `"tool_call"`.
 fn generate_state_spec(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let action_str = match &input.action {
         Some(a) => a,
@@ -744,9 +747,32 @@ fn generate_state_spec(input: &ViewModelInput) -> syn::Result<TokenStream> {
         )
     })?;
 
+    let scope_const = match input.scope.as_deref() {
+        None | Some("thread") => quote! {
+            const SCOPE: ::tirea_state::StateScope = ::tirea_state::StateScope::Thread;
+        },
+        Some("run") => quote! {
+            const SCOPE: ::tirea_state::StateScope = ::tirea_state::StateScope::Run;
+        },
+        Some("tool_call") => quote! {
+            const SCOPE: ::tirea_state::StateScope = ::tirea_state::StateScope::ToolCall;
+        },
+        Some(other) => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                format!(
+                    "invalid scope \"{}\" in #[tirea(scope = \"...\")]: expected \"thread\", \"run\", or \"tool_call\"",
+                    other
+                ),
+            ));
+        }
+    };
+
     Ok(quote! {
         impl ::tirea_state::StateSpec for #struct_name {
             type Action = #action_ty;
+
+            #scope_const
 
             fn reduce(&mut self, action: Self::Action) {
                 #struct_name::reduce(self, action)

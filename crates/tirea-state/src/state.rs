@@ -4,8 +4,30 @@
 //! It is typically implemented via the derive macro `#[derive(State)]`.
 
 use crate::{DocCell, LatticeRegistry, Op, Patch, Path, TireaResult, TrackedPatch};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+
+/// Lifecycle scope of a [`StateSpec`] type.
+///
+/// Determines when the framework automatically resets the state:
+///
+/// - **`Thread`** — persists across runs, never automatically cleaned.
+///   Examples: reminders, permission overrides, delegation records.
+/// - **`Run`** — reset at the start of each run (in `prepare_run`).
+///   Examples: run lifecycle state, per-run token counters.
+/// - **`ToolCall`** — scoped to a single tool call, cleaned up after execution.
+///   Examples: tool-call progress, suspended-call state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateScope {
+    /// State that persists across runs (thread lifetime).
+    Thread,
+    /// State that is reset at the start of each run.
+    Run,
+    /// State that is scoped to a single tool call.
+    ToolCall,
+}
 
 type CollectHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
 
@@ -338,6 +360,13 @@ impl<T: State> StateExt for T {}
 pub trait StateSpec: State + Clone + Sized + Send + 'static {
     /// The action type accepted by this state.
     type Action: serde::Serialize + serde::de::DeserializeOwned + Send + 'static;
+
+    /// Lifecycle scope of this state type.
+    ///
+    /// Defaults to `Thread` (never automatically cleaned) for backward
+    /// compatibility. Override via `#[tirea(scope = "run")]` or
+    /// `#[tirea(scope = "tool_call")]` in the derive macro.
+    const SCOPE: StateScope = StateScope::Thread;
 
     /// Pure reducer: apply an action to produce the next state.
     fn reduce(&mut self, action: Self::Action);
