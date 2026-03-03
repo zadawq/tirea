@@ -23,6 +23,8 @@ impl AgentBehavior for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
+    tirea_contract::declare_plugin_states!(DelegationState);
+
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         use crate::contracts::runtime::{
             PendingToolCall, SuspendedCall, ToolCallResumeMode, ToolCallState,

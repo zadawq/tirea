@@ -12,7 +12,7 @@ pub struct ScopeContext {
 }
 
 impl ScopeContext {
-    /// Create a run-level scope context (no call id).
+    /// Create a scope context without a call id (used for Thread and Run scopes).
     pub fn run() -> Self {
         Self { call_id: None }
     }

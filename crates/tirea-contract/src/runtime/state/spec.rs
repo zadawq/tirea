@@ -46,10 +46,10 @@ pub enum AnyStateAction {
 }
 
 impl AnyStateAction {
-    /// Create a type-erased action for Thread- or Run-scoped state `S`.
+    /// Create a type-erased action for non-ToolCall-scoped state `S`.
     ///
-    /// The scope is read from `S::SCOPE`. For ToolCall-scoped state, use
-    /// [`new_for_call`](Self::new_for_call) instead.
+    /// The scope is read from `S::SCOPE` (Thread or Run). For ToolCall-scoped
+    /// state, use [`new_for_call`](Self::new_for_call) instead.
     ///
     /// # Panics
     ///
@@ -214,7 +214,8 @@ impl AnyStateAction {
 /// Raw patch actions preserve the tracked patch metadata as-is.
 ///
 /// `scope_ctx` controls how `ToolCall`-scoped actions are routed to per-call
-/// namespaces. For non-tool phases, pass `ScopeContext::run()`.
+/// namespaces. For Thread/Run phases (anything outside a tool-call), pass
+/// `ScopeContext::run()`.
 pub fn reduce_state_actions(
     actions: Vec<AnyStateAction>,
     base_snapshot: &Value,

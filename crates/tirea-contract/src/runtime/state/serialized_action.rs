@@ -18,7 +18,7 @@ pub struct SerializedAction {
     pub state_type_name: String,
     /// `S::PATH` — the canonical JSON path for this state type.
     pub base_path: String,
-    /// Whether this action targets run-level or tool-call-level state.
+    /// Whether this action targets thread-, run-, or tool-call-level state.
     pub scope: StateScope,
     /// When set, overrides the scope context call_id for path resolution.
     pub call_id_override: Option<String>,
