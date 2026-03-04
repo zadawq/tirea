@@ -12,9 +12,26 @@ import { useThreads } from "@/hooks/use-threads";
 const sectionCardClass = "rounded-xl border border-slate-200 bg-white/80 p-4";
 const sectionLabelClass =
   "mb-2 inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-bold text-blue-700";
+const AGENT_OPTIONS = [
+  {
+    id: "default",
+    title: "Default Agent",
+    desc: "Backend tools + ask-user + frontend tool interaction",
+  },
+  {
+    id: "permission",
+    title: "Permission Agent",
+    desc: "PermissionConfirm flow with one-click approve/deny",
+  },
+  {
+    id: "stopper",
+    title: "Stopper Agent",
+    desc: "Stop policy demo via finish tool",
+  },
+] as const;
 
 export function PlaygroundPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [mode, setMode] = useState<PlaygroundMode>("conversation");
   const [canvasTheme, setCanvasTheme] = useState<"light" | "dark">("light");
   const [toolTodos, setToolTodos] = useState<string[]>([
@@ -35,6 +52,14 @@ export function PlaygroundPage() {
 
   const chatTheme = mode === "canvas" ? canvasTheme : "light";
   const agentId = searchParams.get("agentId")?.trim() || "default";
+  const activeAgent =
+    AGENT_OPTIONS.find((item) => item.id === agentId) ?? AGENT_OPTIONS[0];
+  const recommendedActions = RECOMMENDED_ACTIONS.filter(
+    (action) => !action.agentId || action.agentId === activeAgent.id,
+  );
+  const capabilities = Array.from(
+    new Set(recommendedActions.map((action) => action.capability)),
+  );
   const chatThreadId =
     mode === "conversation"
       ? activeThreadId
@@ -66,6 +91,54 @@ export function PlaygroundPage() {
 
       {mode === "conversation" && (
         <div className="mt-4 grid gap-3 rounded-2xl border border-slate-300 bg-white/90 p-5 text-slate-900 shadow-[0_20px_45px_rgba(15,23,42,0.12)]">
+          <section className={sectionCardClass}>
+            <div className={sectionLabelClass}>Quick Experience</div>
+            <h2 className="text-xl font-semibold text-slate-900">
+              Backend Capability Demo Guide
+            </h2>
+            <p className="mt-1 text-sm text-slate-700">
+              Pick an agent profile, then use the right-side Recommended Actions to
+              run end-to-end examples.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {AGENT_OPTIONS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  data-testid={`agent-switch-${item.id}`}
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.set("agentId", item.id);
+                    setSearchParams(next);
+                  }}
+                  className={
+                    item.id === activeAgent.id
+                      ? "rounded-full border border-cyan-700 bg-cyan-700 px-3 py-1.5 text-xs font-semibold text-cyan-50"
+                      : "rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-cyan-600 hover:bg-cyan-50"
+                  }
+                >
+                  {item.title}
+                </button>
+              ))}
+            </div>
+            <p
+              data-testid="active-agent-desc"
+              className="mt-2 text-xs font-medium text-slate-600"
+            >
+              Current: {activeAgent.title} - {activeAgent.desc}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {capabilities.map((capability) => (
+                <span
+                  key={`cap-${capability}`}
+                  className="rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700"
+                >
+                  {capability}
+                </span>
+              ))}
+            </div>
+          </section>
+
           <section className={sectionCardClass}>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -193,7 +266,7 @@ export function PlaygroundPage() {
             agentId={agentId}
             themeMode={chatTheme}
             layout={mode === "conversation" ? "conversation" : "default"}
-            recommendedActions={RECOMMENDED_ACTIONS}
+            recommendedActions={recommendedActions}
           />
         );
 

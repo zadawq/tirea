@@ -63,7 +63,7 @@ export function ChatPanel({
           }
         >
           <div className={themeMode === "dark" ? "text-xs font-semibold text-slate-300" : "text-xs font-semibold text-slate-600"}>
-            Recommended Actions
+            Recommended Actions ({agentId})
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
             {recommendedActions.map((action) => (
@@ -78,7 +78,10 @@ export function ChatPanel({
                     : "rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
                 }
               >
-                {action.title}
+                <span>{action.title}</span>
+                <span className={themeMode === "dark" ? "ml-1 text-[10px] text-slate-400" : "ml-1 text-[10px] text-slate-500"}>
+                  {action.capability}
+                </span>
               </button>
             ))}
           </div>
@@ -95,55 +98,57 @@ export function ChatPanel({
             : undefined
         }
       >
-        <MessageList
-          messages={messages}
-          isLoading={isLoading}
-          askAnswers={askAnswers}
-          onAskAnswerChange={(toolCallId, value) =>
-            setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
-          }
-          onApprove={async (id) => {
-            await addToolOutput({
-              tool: "PermissionConfirm" as never,
-              toolCallId: id,
-              state: "output-available",
-              output: { approved: true } as never,
-            });
-          }}
-          onDeny={async (id) => {
-            await addToolOutput({
-              tool: "PermissionConfirm" as never,
-              toolCallId: id,
-              state: "output-denied",
-              output: { approved: false } as never,
-            });
-          }}
-          onAskSubmit={async (toolCallId, answer) => {
-            await addToolOutput({
-              tool: "askUserQuestion" as never,
-              toolCallId,
-              state: "output-available",
-              output: { message: answer } as never,
-            });
-            setAskAnswers((prev) => ({ ...prev, [toolCallId]: "" }));
-          }}
-          onFrontendToolSubmit={async (toolCallId, toolName, output) => {
-            if (
-              toolName === "set_background_color" &&
-              typeof output.color === "string"
-            ) {
-              setFrontendBgColor(output.color);
+        <div className="flex h-full min-h-0 flex-col">
+          <MessageList
+            messages={messages}
+            isLoading={isLoading}
+            askAnswers={askAnswers}
+            onAskAnswerChange={(toolCallId, value) =>
+              setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
             }
-            await addToolOutput({
-              tool: toolName as never,
-              toolCallId,
-              state: "output-available",
-              output: output as never,
-            });
-          }}
-          themeMode={themeMode}
-          layout={layout}
-        />
+            onApprove={async (id) => {
+              await addToolOutput({
+                tool: "PermissionConfirm" as never,
+                toolCallId: id,
+                state: "output-available",
+                output: { approved: true } as never,
+              });
+            }}
+            onDeny={async (id) => {
+              await addToolOutput({
+                tool: "PermissionConfirm" as never,
+                toolCallId: id,
+                state: "output-denied",
+                output: { approved: false } as never,
+              });
+            }}
+            onAskSubmit={async (toolCallId, answer) => {
+              await addToolOutput({
+                tool: "askUserQuestion" as never,
+                toolCallId,
+                state: "output-available",
+                output: { message: answer } as never,
+              });
+              setAskAnswers((prev) => ({ ...prev, [toolCallId]: "" }));
+            }}
+            onFrontendToolSubmit={async (toolCallId, toolName, output) => {
+              if (
+                toolName === "set_background_color" &&
+                typeof output.color === "string"
+              ) {
+                setFrontendBgColor(output.color);
+              }
+              await addToolOutput({
+                tool: toolName as never,
+                toolCallId,
+                state: "output-available",
+                output: output as never,
+              });
+            }}
+            themeMode={themeMode}
+            layout={layout}
+          />
+        </div>
       </div>
       {error && (
         <div

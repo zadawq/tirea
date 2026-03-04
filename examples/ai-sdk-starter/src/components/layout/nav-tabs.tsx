@@ -1,22 +1,17 @@
-import { Link, useLocation } from "react-router";
+export type PlaygroundMode = "conversation" | "tools" | "canvas";
 
-type StarterMode = "canvas" | "basic" | "threads";
-
-const TABS: { mode: StarterMode; href: string; label: string }[] = [
-  { mode: "canvas", href: "/", label: "Canvas" },
-  { mode: "basic", href: "/basic", label: "Basic" },
-  { mode: "threads", href: "/threads", label: "Threads" },
+const PLAYGROUND_TABS: { mode: PlaygroundMode; label: string }[] = [
+  { mode: "conversation", label: "Conversation" },
+  { mode: "tools", label: "Tools" },
+  { mode: "canvas", label: "Canvas" },
 ];
 
-export function NavTabs() {
-  const { pathname } = useLocation();
+type NavTabsProps = {
+  mode: PlaygroundMode;
+  onModeChange: (mode: PlaygroundMode) => void;
+};
 
-  const activeMode: StarterMode =
-    pathname === "/basic"
-      ? "basic"
-      : pathname === "/threads"
-        ? "threads"
-        : "canvas";
+export function NavTabs({ mode, onModeChange }: NavTabsProps) {
 
   const tabClass = (active: boolean) =>
     active
@@ -28,15 +23,16 @@ export function NavTabs() {
       className="mt-3 flex w-fit flex-wrap items-center gap-2 rounded-full border border-slate-200 bg-white/80 p-1 backdrop-blur"
       data-testid="starter-mode-tabs"
     >
-      {TABS.map((tab) => (
-        <Link
+      {PLAYGROUND_TABS.map((tab) => (
+        <button
           key={tab.mode}
-          to={tab.href}
+          type="button"
           data-testid={`${tab.mode}-link`}
-          className={tabClass(activeMode === tab.mode)}
+          className={tabClass(mode === tab.mode)}
+          onClick={() => onModeChange(tab.mode)}
         >
           {tab.label}
-        </Link>
+        </button>
       ))}
     </nav>
   );

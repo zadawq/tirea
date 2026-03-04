@@ -1,14 +1,13 @@
-import { Routes, Route } from "react-router";
-import { CanvasPage } from "./pages/canvas-page";
-import { BasicPage } from "./pages/basic-page";
-import { ThreadsPage } from "./pages/threads-page";
+import { Navigate, Route, Routes } from "react-router";
+import { PlaygroundPage } from "./pages/playground-page";
 
 export function App() {
   return (
     <Routes>
-      <Route path="/" element={<CanvasPage />} />
-      <Route path="/basic" element={<BasicPage />} />
-      <Route path="/threads" element={<ThreadsPage />} />
+      <Route path="/" element={<PlaygroundPage />} />
+      <Route path="/basic" element={<Navigate to="/" replace />} />
+      <Route path="/canvas" element={<Navigate to="/" replace />} />
+      <Route path="/threads" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
