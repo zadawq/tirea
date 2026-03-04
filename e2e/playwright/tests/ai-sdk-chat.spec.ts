@@ -548,6 +548,121 @@ test.describe("AI SDK Chat", () => {
     expect(hasAskOutput).toBeTruthy();
   });
 
+  test("frontend set_background_color tool updates surface and resumes run", async ({
+    page,
+  }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    let chatRequestCount = 0;
+    let resumeRequestBody: Record<string, unknown> | null = null;
+
+    await page.route("**/api/chat", async (route) => {
+      chatRequestCount += 1;
+      const payloadText = route.request().postData() ?? "{}";
+      const payload = JSON.parse(payloadText) as Record<string, unknown>;
+
+      if (chatRequestCount === 1) {
+        const sse = [
+          'data: {"type":"start","messageId":"m_color_1"}',
+          "",
+          'data: {"type":"tool-input-start","toolCallId":"bg_call_1","toolName":"set_background_color"}',
+          "",
+          'data: {"type":"tool-input-available","toolCallId":"bg_call_1","toolName":"set_background_color","input":{"colors":["#dbeafe","#dcfce7"]}}',
+          "",
+          'data: {"type":"finish","finishReason":"tool-calls"}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n");
+
+        await route.fulfill({
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "x-vercel-ai-ui-message-stream": "v1",
+          },
+          body: sse,
+        });
+        return;
+      }
+
+      resumeRequestBody = payload;
+      const sse = [
+        'data: {"type":"start","messageId":"m_color_2"}',
+        "",
+        'data: {"type":"text-start","id":"txt_color_2"}',
+        "",
+        'data: {"type":"text-delta","id":"txt_color_2","delta":"Background color updated to #dbeafe."}',
+        "",
+        'data: {"type":"text-end","id":"txt_color_2"}',
+        "",
+        'data: {"type":"finish","finishReason":"stop"}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: sse,
+      });
+    });
+
+    await page.goto("/");
+
+    await page
+      .getByPlaceholder("Type a message...")
+      .fill("Please change the chat background color.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    const frontendDialog = page.getByTestId("set-background-color-dialog");
+    await expect(frontendDialog).toBeVisible({ timeout: 20_000 });
+    const colorOption = page.getByTestId("set-background-color-option-0");
+    await expect(colorOption).toBeVisible();
+    await colorOption.click();
+
+    await expect(page.locator("main")).toContainText(
+      "Background color updated to #dbeafe.",
+      { timeout: 20_000 },
+    );
+    await expect(page.getByTestId("chat-frontend-surface")).toHaveAttribute(
+      "style",
+      /#dbeafe22/i,
+    );
+
+    await expect.poll(() => chatRequestCount).toBeGreaterThanOrEqual(2);
+    expect(resumeRequestBody).not.toBeNull();
+
+    const resumeMessages = (resumeRequestBody?.messages as Array<Record<string, unknown>>) ?? [];
+    const hasFrontendToolOutput = resumeMessages.some((message) => {
+      const parts = (message.parts as Array<Record<string, unknown>>) ?? [];
+      return parts.some((part) => {
+        if (
+          !(
+            (part.type === "tool-set_background_color" ||
+              part.type === "dynamic-tool") &&
+            part.state === "output-available"
+          )
+        ) {
+          return false;
+        }
+        const output = part.output as { color?: string } | undefined;
+        return output?.color === "#dbeafe";
+      });
+    });
+    expect(hasFrontendToolOutput).toBeTruthy();
+  });
+
   test("StopOnTool terminates agent run", async ({ page }) => {
     await page.goto("/?agentId=stopper");
 

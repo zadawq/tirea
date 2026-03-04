@@ -3,18 +3,25 @@ import { MessageList } from "./message-list";
 import { ChatInput } from "./chat-input";
 import { MetricsPanel } from "./metrics-panel";
 import { ToolProgressPanel } from "./tool-progress-panel";
+import type { StarterAction } from "@/lib/recommended-actions";
+import { useEffect, useState } from "react";
 
 type ChatPanelProps = {
   threadId: string;
   agentId?: string;
   themeMode?: "light" | "dark";
+  layout?: "default" | "conversation";
+  recommendedActions?: StarterAction[];
 };
 
 export function ChatPanel({
   threadId,
   agentId = "default",
   themeMode = "light",
+  layout = "default",
+  recommendedActions = [],
 }: ChatPanelProps) {
+  const [frontendBgColor, setFrontendBgColor] = useState<string | null>(null);
   const {
     messages,
     sendMessage,
@@ -30,6 +37,11 @@ export function ChatPanel({
   } = useChatSession(threadId, agentId);
 
   const isLoading = status === "streaming" || status === "submitted";
+  const showQuickActions = recommendedActions.length > 0;
+
+  useEffect(() => {
+    setFrontendBgColor(null);
+  }, [threadId]);
 
   if (!historyLoaded) {
     const loadingClass =
@@ -43,26 +55,83 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <MessageList
-        messages={messages}
-        isLoading={isLoading}
-        askAnswers={askAnswers}
-        onAskAnswerChange={(toolCallId, value) =>
-          setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
+      {showQuickActions && (
+        <div
+          className={
+            themeMode === "dark"
+              ? "border-b border-slate-700 bg-slate-900/70 px-4 py-3"
+              : "border-b border-slate-200 bg-slate-50 px-4 py-3"
+          }
+        >
+          <div className={themeMode === "dark" ? "text-xs font-semibold text-slate-300" : "text-xs font-semibold text-slate-600"}>
+            Recommended Actions
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {recommendedActions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                disabled={isLoading}
+                onClick={() => sendMessage({ text: action.prompt })}
+                className={
+                  themeMode === "dark"
+                    ? "rounded-full border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+                    : "rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+                }
+              >
+                {action.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div
+        data-testid="chat-frontend-surface"
+        className="min-h-0 flex-1"
+        style={
+          frontendBgColor
+            ? {
+                backgroundImage: `linear-gradient(180deg, ${frontendBgColor}22 0%, transparent 36%)`,
+              }
+            : undefined
         }
-        onApprove={(id) => addToolApprovalResponse({ id, approved: true })}
-        onDeny={(id) => addToolApprovalResponse({ id, approved: false })}
-        onAskSubmit={async (toolCallId, answer) => {
-          await addToolOutput({
-            tool: "askUserQuestion" as never,
-            toolCallId,
-            state: "output-available",
-            output: { message: answer } as never,
-          });
-          setAskAnswers((prev) => ({ ...prev, [toolCallId]: "" }));
-        }}
-        themeMode={themeMode}
-      />
+      >
+        <MessageList
+          messages={messages}
+          isLoading={isLoading}
+          askAnswers={askAnswers}
+          onAskAnswerChange={(toolCallId, value) =>
+            setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
+          }
+          onApprove={(id) => addToolApprovalResponse({ id, approved: true })}
+          onDeny={(id) => addToolApprovalResponse({ id, approved: false })}
+          onAskSubmit={async (toolCallId, answer) => {
+            await addToolOutput({
+              tool: "askUserQuestion" as never,
+              toolCallId,
+              state: "output-available",
+              output: { message: answer } as never,
+            });
+            setAskAnswers((prev) => ({ ...prev, [toolCallId]: "" }));
+          }}
+          onFrontendToolSubmit={async (toolCallId, toolName, output) => {
+            if (
+              toolName === "set_background_color" &&
+              typeof output.color === "string"
+            ) {
+              setFrontendBgColor(output.color);
+            }
+            await addToolOutput({
+              tool: toolName as never,
+              toolCallId,
+              state: "output-available",
+              output: output as never,
+            });
+          }}
+          themeMode={themeMode}
+          layout={layout}
+        />
+      </div>
       {error && (
         <div
           className={

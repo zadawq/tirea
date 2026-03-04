@@ -155,7 +155,9 @@ export function useChatSession(threadId: string, agentId = "default") {
           }
 
           if (
-            toolName === "askUserQuestion" &&
+            (toolName === "askUserQuestion" ||
+              toolName === "highlight_place" ||
+              toolName === "set_background_color") &&
             (state === "output-available" || state === "output-denied" || state === "output-error")
           ) {
             if (toolCallId) return [toolCallId];

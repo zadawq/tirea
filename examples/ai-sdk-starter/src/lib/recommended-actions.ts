@@ -30,4 +30,10 @@ export const RECOMMENDED_ACTIONS: StarterAction[] = [
     capability: "Parallel Tools",
     prompt: "Get weather in Tokyo and stock price for NVDA.",
   },
+  {
+    id: "frontend-color",
+    title: "Frontend Tool",
+    capability: "Client-side Action",
+    prompt: "Use set_background_color to change chat background to #dbeafe.",
+  },
 ];

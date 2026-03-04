@@ -16,68 +16,72 @@ type MessageListProps = {
   messages: UIMessage[];
   isLoading: boolean;
   themeMode?: "light" | "dark";
+  layout?: "default" | "conversation";
   askAnswers: Record<string, string>;
   onAskAnswerChange: (toolCallId: string, value: string) => void;
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
   onAskSubmit: (toolCallId: string, answer: string) => void;
+  onFrontendToolSubmit: (
+    toolCallId: string,
+    toolName: string,
+    output: Record<string, unknown>,
+  ) => Promise<void> | void;
 };
 
 export function MessageList({
   messages,
   isLoading,
   themeMode = "light",
+  layout = "default",
   askAnswers,
   onAskAnswerChange,
   onApprove,
   onDeny,
   onAskSubmit,
+  onFrontendToolSubmit,
 }: MessageListProps) {
   const isDark = themeMode === "dark";
   const itemClass = isDark ? "border-slate-700" : "border-slate-100";
   const roleClass = isDark ? "text-slate-300" : "text-slate-600";
   const loadingClass = isDark ? "text-slate-400" : "text-slate-400";
+  const isConversation = layout === "conversation";
 
   return (
     <div className="chat-messages flex-1 overflow-y-auto px-4 py-3">
       {messages.map((m) => (
-        <div
-          key={m.id}
-          className={`border-b py-2 last:border-0 ${itemClass}`}
-        >
-          <strong className={`text-sm ${roleClass}`}>
-            {m.role === "user" ? "You" : "Agent"}:
-          </strong>
-          {m.parts.map((p, i) => {
-            if (p.type === "text") {
-              return <TextPart key={i} text={p.text} />;
-            }
-            if (p.type === "reasoning") {
-              const r = p as { text?: string; state?: string };
-              return <ReasoningPart key={i} text={r.text} state={r.state} />;
-            }
-            if (p.type === "source-url") {
-              const s = p as { url: string; title?: string };
-              return <SourceUrlPart key={i} url={s.url} title={s.title} />;
-            }
-            if (p.type === "source-document") {
-              const s = p as { title: string; filename?: string; mediaType?: string };
-              return (
-                <SourceDocumentPart
-                  key={i}
-                  title={s.title}
-                  filename={s.filename}
-                  mediaType={s.mediaType}
-                />
-              );
-            }
-            if (p.type === "file") {
-              const f = p as { url: string; mediaType?: string };
-              return <FilePart key={i} url={f.url} mediaType={f.mediaType} />;
-            }
-            if (p.type === "dynamic-tool" || p.type.startsWith("tool-")) {
-              return (
-                <ToolPartRenderer
+        <div key={m.id} className={isConversation ? "mb-3" : `border-b py-2 last:border-0 ${itemClass}`}>
+          {isConversation ? (
+            <ConversationItem
+              role={m.role}
+              isDark={isDark}
+              roleClass={roleClass}
+              content={
+                <>
+                  {m.parts.map((p, i) => (
+                    <PartRenderer
+                      key={i}
+                      part={p}
+                      isLoading={isLoading}
+                      askAnswers={askAnswers}
+                      onAskAnswerChange={onAskAnswerChange}
+                      onApprove={onApprove}
+                      onDeny={onDeny}
+                      onAskSubmit={onAskSubmit}
+                      onFrontendToolSubmit={onFrontendToolSubmit}
+                      themeMode={themeMode}
+                    />
+                  ))}
+                </>
+              }
+            />
+          ) : (
+            <>
+              <strong className={`text-sm ${roleClass}`}>
+                {m.role === "user" ? "You" : "Agent"}:
+              </strong>
+              {m.parts.map((p, i) => (
+                <PartRenderer
                   key={i}
                   part={p}
                   isLoading={isLoading}
@@ -86,12 +90,12 @@ export function MessageList({
                   onApprove={onApprove}
                   onDeny={onDeny}
                   onAskSubmit={onAskSubmit}
+                  onFrontendToolSubmit={onFrontendToolSubmit}
                   themeMode={themeMode}
                 />
-              );
-            }
-            return null;
-          })}
+              ))}
+            </>
+          )}
         </div>
       ))}
       {isLoading && (
@@ -99,6 +103,98 @@ export function MessageList({
       )}
     </div>
   );
+}
+
+function ConversationItem({
+  role,
+  isDark,
+  roleClass,
+  content,
+}: {
+  role: string;
+  isDark: boolean;
+  roleClass: string;
+  content: JSX.Element;
+}) {
+  const isUser = role === "user";
+  const wrapperClass = isUser ? "flex justify-end" : "flex justify-start";
+  const bubbleClass = isUser
+    ? isDark
+      ? "max-w-[88%] rounded-2xl border border-cyan-700/40 bg-cyan-900/30 px-4 py-3"
+      : "max-w-[88%] rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3"
+    : isDark
+      ? "max-w-[88%] rounded-2xl border border-slate-700 bg-slate-800/90 px-4 py-3"
+      : "max-w-[88%] rounded-2xl border border-slate-200 bg-white px-4 py-3";
+
+  return (
+    <div className={wrapperClass}>
+      <div className={bubbleClass}>
+        <div className={`mb-1 text-xs font-semibold ${roleClass}`}>
+          {isUser ? "You" : "Assistant"}
+        </div>
+        {content}
+      </div>
+    </div>
+  );
+}
+
+function PartRenderer({
+  part,
+  isLoading,
+  askAnswers,
+  onAskAnswerChange,
+  onApprove,
+  onDeny,
+  onAskSubmit,
+  onFrontendToolSubmit,
+  themeMode,
+}: {
+  part: Record<string, unknown>;
+  isLoading: boolean;
+  askAnswers: Record<string, string>;
+  onAskAnswerChange: (toolCallId: string, value: string) => void;
+  onApprove: (id: string) => void;
+  onDeny: (id: string) => void;
+  onAskSubmit: (toolCallId: string, answer: string) => void;
+  onFrontendToolSubmit: (
+    toolCallId: string,
+    toolName: string,
+    output: Record<string, unknown>,
+  ) => Promise<void> | void;
+  themeMode: "light" | "dark";
+}) {
+  const p = part as { type: string; text?: string; state?: string; url?: string; title?: string; filename?: string; mediaType?: string };
+  if (p.type === "text") {
+    return <TextPart text={p.text ?? ""} />;
+  }
+  if (p.type === "reasoning") {
+    return <ReasoningPart text={p.text} state={p.state} />;
+  }
+  if (p.type === "source-url") {
+    return <SourceUrlPart url={p.url ?? ""} title={p.title} />;
+  }
+  if (p.type === "source-document") {
+    return <SourceDocumentPart title={p.title ?? ""} filename={p.filename} mediaType={p.mediaType} />;
+  }
+  if (p.type === "file") {
+    return <FilePart url={p.url ?? ""} mediaType={p.mediaType} />;
+  }
+  if (p.type === "dynamic-tool" || p.type.startsWith("tool-")) {
+    return (
+      <ToolPartRenderer
+        part={p}
+        isLoading={isLoading}
+        askAnswers={askAnswers}
+        onAskAnswerChange={onAskAnswerChange}
+        onApprove={onApprove}
+        onDeny={onDeny}
+        onAskSubmit={onAskSubmit}
+        onFrontendToolSubmit={onFrontendToolSubmit}
+        themeMode={themeMode}
+      />
+    );
+  }
+  return null;
 }
 
 function ToolPartRenderer({
@@ -109,6 +205,7 @@ function ToolPartRenderer({
   onApprove,
   onDeny,
   onAskSubmit,
+  onFrontendToolSubmit,
   themeMode,
 }: {
   part: Record<string, unknown>;
@@ -118,6 +215,11 @@ function ToolPartRenderer({
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
   onAskSubmit: (toolCallId: string, answer: string) => void;
+  onFrontendToolSubmit: (
+    toolCallId: string,
+    toolName: string,
+    output: Record<string, unknown>,
+  ) => Promise<void> | void;
   themeMode: "light" | "dark";
 }) {
   const tool = part as {
@@ -176,6 +278,25 @@ function ToolPartRenderer({
       ? String((tool.input as Record<string, unknown>).message)
       : "";
 
+  const highlightCandidates =
+    name === "highlight_place" && tool.input != null && typeof tool.input === "object"
+      ? (((tool.input as Record<string, unknown>).candidates as unknown[]) ?? [])
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+  const placeOptions =
+    highlightCandidates.length > 0 ? highlightCandidates : ["Eiffel Tower", "Tokyo Station", "Golden Gate Bridge"];
+  const requestedColors =
+    name === "set_background_color" && tool.input != null && typeof tool.input === "object"
+      ? (((tool.input as Record<string, unknown>).colors as unknown[]) ??
+          ((tool.input as Record<string, unknown>).palette as unknown[]) ??
+          [])
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+  const colorOptions =
+    requestedColors.length > 0
+      ? requestedColors
+      : ["#f8fafc", "#dbeafe", "#dcfce7", "#fee2e2", "#fef3c7"];
+
   return (
     <div>
       <ToolCard
@@ -204,6 +325,95 @@ function ToolPartRenderer({
           disabled={isLoading}
           themeMode={themeMode}
         />
+      )}
+      {tool.state === "input-available" && name === "highlight_place" && (
+        <div
+          data-testid="highlight-place-dialog"
+          className={
+            themeMode === "dark"
+              ? "mt-2 rounded-lg border border-slate-700 bg-slate-900 p-3"
+              : "mt-2 rounded-lg border border-slate-200 bg-white p-3"
+          }
+        >
+          <div
+            className={
+              themeMode === "dark"
+                ? "mb-2 text-sm text-slate-200"
+                : "mb-2 text-sm text-slate-800"
+            }
+          >
+            Pick a place to highlight on the frontend map view:
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {placeOptions.map((place) => (
+              <button
+                key={place}
+                type="button"
+                data-testid={`highlight-place-option-${place}`}
+                onClick={() =>
+                  onFrontendToolSubmit(tool.toolCallId, "highlight_place", {
+                    place,
+                    highlighted: true,
+                  })
+                }
+                disabled={isLoading}
+                className={
+                  themeMode === "dark"
+                    ? "rounded-full border border-cyan-700/50 bg-cyan-900/30 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-800/40 disabled:opacity-50"
+                    : "rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-900 transition hover:bg-cyan-100 disabled:opacity-50"
+                }
+              >
+                {place}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {tool.state === "input-available" && name === "set_background_color" && (
+        <div
+          data-testid="set-background-color-dialog"
+          className={
+            themeMode === "dark"
+              ? "mt-2 rounded-lg border border-slate-700 bg-slate-900 p-3"
+              : "mt-2 rounded-lg border border-slate-200 bg-white p-3"
+          }
+        >
+          <div
+            className={
+              themeMode === "dark"
+                ? "mb-2 text-sm text-slate-200"
+                : "mb-2 text-sm text-slate-800"
+            }
+          >
+            Select a background color for this chat panel:
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {colorOptions.map((color, index) => (
+              <button
+                key={`${color}-${index}`}
+                type="button"
+                data-testid={`set-background-color-option-${index}`}
+                onClick={() =>
+                  onFrontendToolSubmit(tool.toolCallId, "set_background_color", {
+                    color,
+                  })
+                }
+                disabled={isLoading}
+                className={
+                  themeMode === "dark"
+                    ? "inline-flex items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-100 transition hover:bg-slate-700 disabled:opacity-50"
+                    : "inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 transition hover:bg-slate-100 disabled:opacity-50"
+                }
+              >
+                <span
+                  className="h-3 w-3 rounded-full border border-slate-400/60"
+                  style={{ backgroundColor: color }}
+                />
+                {color}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
       {tool.state === "output-denied" && (
         <div
