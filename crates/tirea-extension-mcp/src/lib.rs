@@ -203,10 +203,7 @@ impl Tool for McpTool {
                 result = result
                     .with_metadata(MCP_META_UI_RESOURCE_URI, Value::String(uri.clone()))
                     .with_metadata(MCP_META_UI_CONTENT, Value::String(content.text))
-                    .with_metadata(
-                        MCP_META_UI_MIME_TYPE,
-                        Value::String(content.mime_type),
-                    );
+                    .with_metadata(MCP_META_UI_MIME_TYPE, Value::String(content.mime_type));
             }
         }
 
@@ -936,7 +933,8 @@ mod tests {
         assert!(!events.is_empty());
         assert!(events.iter().any(|(stream_id, activity_type, op)| {
             stream_id == "tool_call:call-progress"
-                && activity_type == "progress"
+                && activity_type
+                    == tirea_contract::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE
                 && op.path().to_string() == "$.progress"
         }));
     }
@@ -977,7 +975,8 @@ mod tests {
         let events = activity_manager.events.lock().unwrap();
         assert!(events.iter().any(|(stream_id, activity_type, op)| {
             stream_id == "tool_call:call-progress-registry"
-                && activity_type == "progress"
+                && activity_type
+                    == tirea_contract::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE
                 && op.path().to_string() == "$.progress"
         }));
     }
@@ -1080,7 +1079,8 @@ mod tests {
         let events = activity_manager.events.lock().unwrap();
         assert!(events.iter().any(|(stream_id, activity_type, op)| {
             stream_id == "tool_call:call-http-progress"
-                && activity_type == "progress"
+                && activity_type
+                    == tirea_contract::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE
                 && op.path().to_string() == "$.progress"
         }));
     }
@@ -1418,10 +1418,11 @@ mod tests {
         let mut def = McpToolDefinition::new("chart");
         def.meta = Some(json!({"ui": {"resourceUri": "ui://chart/render"}}));
 
-        let transport = Arc::new(
-            FakeUiTransport::new(vec![def.clone()])
-                .with_resource("ui://chart/render", "<html>chart</html>", "text/html"),
-        );
+        let transport = Arc::new(FakeUiTransport::new(vec![def.clone()]).with_resource(
+            "ui://chart/render",
+            "<html>chart</html>",
+            "text/html",
+        ));
 
         let tool = McpTool::new(
             "mcp__s1__chart".to_string(),
@@ -1475,9 +1476,11 @@ mod tests {
 
     #[test]
     fn extract_resource_text_valid_response() {
-        let transport = Arc::new(
-            FakeUiTransport::new(vec![]).with_resource("ui://t/v", "<div>ok</div>", "text/html"),
-        );
+        let transport = Arc::new(FakeUiTransport::new(vec![]).with_resource(
+            "ui://t/v",
+            "<div>ok</div>",
+            "text/html",
+        ));
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

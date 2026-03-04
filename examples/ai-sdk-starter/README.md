@@ -16,6 +16,11 @@ Three demo pages:
 - `/basic` — Backend tools (weather, stock, notes), tool approval, interactive dialogs
 - `/threads` — Backend-persisted thread management with history
 
+The chat panel also demonstrates parsing custom AI SDK data events:
+
+- `data-activity-snapshot` with `activityType = "tool-call-progress"`
+- rendered as a lightweight **Tool Call Progress** panel in the UI
+
 ## Prerequisites
 
 - Node.js 18+

@@ -404,6 +404,7 @@ pub(super) fn value_to_map(value: &Value) -> HashMap<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tirea_contract::TokenUsage;
 
     /// Create a context pre-initialized via a RunStart event.
@@ -485,6 +486,31 @@ mod tests {
         assert_eq!(value["type"], "REASONING_ENCRYPTED_VALUE");
         assert_eq!(value["subtype"], "message");
         assert_eq!(value["encryptedValue"], "opaque-token");
+    }
+
+    #[test]
+    fn tool_call_progress_activity_snapshot_maps_to_agui_example() {
+        let mut ctx = make_ctx();
+        let events = ctx.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "tool_call:call_1".into(),
+            activity_type: "tool-call-progress".into(),
+            content: json!({
+                "type": "tool-call-progress",
+                "schema": "tool-call-progress.v1",
+                "node_id": "tool_call:call_1",
+                "parent_node_id": "run:run_1",
+                "status": "running",
+                "progress": 0.35,
+                "message": "calling MCP"
+            }),
+            replace: Some(true),
+        });
+        assert_eq!(events.len(), 1);
+        let value = serde_json::to_value(&events[0]).expect("serialize ag-ui event");
+        assert_eq!(value["type"], "ACTIVITY_SNAPSHOT");
+        assert_eq!(value["activityType"], "tool-call-progress");
+        assert_eq!(value["content"]["schema"], "tool-call-progress.v1");
+        assert_eq!(value["content"]["progress"], 0.35);
     }
 }
 

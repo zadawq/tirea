@@ -2,6 +2,7 @@ import { useChatSession } from "@/hooks/use-chat-session";
 import { MessageList } from "./message-list";
 import { ChatInput } from "./chat-input";
 import { MetricsPanel } from "./metrics-panel";
+import { ToolProgressPanel } from "./tool-progress-panel";
 
 type ChatPanelProps = {
   threadId: string;
@@ -18,6 +19,7 @@ export function ChatPanel({ threadId, agentId = "default" }: ChatPanelProps) {
     addToolOutput,
     historyLoaded,
     metrics,
+    toolProgress,
     askAnswers,
     setAskAnswers,
   } = useChatSession(threadId, agentId);
@@ -58,6 +60,7 @@ export function ChatPanel({ threadId, agentId = "default" }: ChatPanelProps) {
           Error: {error.message}
         </div>
       )}
+      <ToolProgressPanel progressByNodeId={toolProgress} />
       <MetricsPanel metrics={metrics} />
       <ChatInput
         onSend={(text) => sendMessage({ text })}

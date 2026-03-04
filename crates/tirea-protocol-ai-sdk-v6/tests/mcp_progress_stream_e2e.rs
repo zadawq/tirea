@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use tirea_agent_loop::contracts::thread::{Message, Thread};
 use tirea_agent_loop::contracts::{AgentEvent, RunConfig, RunContext};
 use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, Agent, BaseAgent, LlmExecutor};
+use tirea_contract::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE;
 use tirea_contract::Transcoder;
 use tirea_extension_mcp::McpToolRegistryManager;
 use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, UIStreamEvent};
@@ -247,7 +248,10 @@ fn assert_progress_chain(agent_events: &[AgentEvent], ui_events: &[UIStreamEvent
                 content,
                 ..
             } if message_id == &stream_id
-                && activity_type == "progress"
+                && activity_type == TOOL_CALL_PROGRESS_ACTIVITY_TYPE
+                && content["type"] == json!("tool-call-progress")
+                && content["schema"] == json!("tool-call-progress.v1")
+                && content["node_id"] == json!(stream_id.as_str())
                 && content["progress"] == json!(0.25)
         )
     }));
@@ -260,7 +264,9 @@ fn assert_progress_chain(agent_events: &[AgentEvent], ui_events: &[UIStreamEvent
                 content,
                 ..
             } if message_id == &stream_id
-                && activity_type == "progress"
+                && activity_type == TOOL_CALL_PROGRESS_ACTIVITY_TYPE
+                && content["type"] == json!("tool-call-progress")
+                && content["schema"] == json!("tool-call-progress.v1")
                 && content["progress"] == json!(1.0)
         )
     }));
@@ -271,7 +277,8 @@ fn assert_progress_chain(agent_events: &[AgentEvent], ui_events: &[UIStreamEvent
             UIStreamEvent::Data { data_type, data, .. }
                 if data_type == "data-activity-snapshot"
                     && data["messageId"] == json!(stream_id.as_str())
-                    && data["activityType"] == json!("progress")
+                    && data["activityType"] == json!(TOOL_CALL_PROGRESS_ACTIVITY_TYPE)
+                    && data["content"]["schema"] == json!("tool-call-progress.v1")
                     && data["content"]["progress"] == json!(0.25)
         )
     }));
@@ -281,7 +288,8 @@ fn assert_progress_chain(agent_events: &[AgentEvent], ui_events: &[UIStreamEvent
             UIStreamEvent::Data { data_type, data, .. }
                 if data_type == "data-activity-snapshot"
                     && data["messageId"] == json!(stream_id.as_str())
-                    && data["activityType"] == json!("progress")
+                    && data["activityType"] == json!(TOOL_CALL_PROGRESS_ACTIVITY_TYPE)
+                    && data["content"]["type"] == json!("tool-call-progress")
                     && data["content"]["progress"] == json!(1.0)
         )
     }));

@@ -89,6 +89,24 @@ export default function ChatPage() {
 }
 ```
 
+### Optional: consume tool-call progress data
+
+`tirea-agentos-server` emits tool progress as `data-activity-snapshot`
+with `activityType = "tool-call-progress"`.
+
+```ts,ignore
+const { messages } = useChat({
+  transport,
+  onData(part) {
+    if (part.type !== "data-activity-snapshot") return;
+    const payload = part.data as any;
+    if (payload?.activityType !== "tool-call-progress") return;
+    const node = payload.content;
+    console.log("tool progress", node.node_id, node.status, node.progress);
+  },
+});
+```
+
 4. Optional: add `app/api/history/route.ts` that proxies
 `GET /v1/ai-sdk/threads/:id/messages` to preload history.
 

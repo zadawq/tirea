@@ -903,6 +903,40 @@ mod tests {
     }
 
     #[test]
+    fn activity_snapshot_tool_call_progress_emits_data_event_example() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "tool_call:call_1".to_string(),
+            activity_type: "tool-call-progress".to_string(),
+            content: json!({
+                "type": "tool-call-progress",
+                "schema": "tool-call-progress.v1",
+                "node_id": "tool_call:call_1",
+                "parent_node_id": "run:run_1",
+                "call_id": "call_1",
+                "tool_name": "mcp.search",
+                "status": "running",
+                "progress": 0.4,
+                "total": 10,
+                "message": "searching...",
+                "run_id": "run_1"
+            }),
+            replace: Some(true),
+        });
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                UIStreamEvent::Data { data_type, data, .. }
+                    if data_type == "data-activity-snapshot"
+                        && data["activityType"] == json!("tool-call-progress")
+                        && data["content"]["schema"] == json!("tool-call-progress.v1")
+                        && data["content"]["progress"] == json!(0.4)
+            )
+        }));
+    }
+
+    #[test]
     fn activity_snapshot_source_url_document_and_file_emit_native_events() {
         let mut enc = AiSdkEncoder::new();
 

@@ -202,6 +202,23 @@ Mode selection tips:
 - Persisted thread switching with explicit `threadId`
 - Canvas v2 flow (`CopilotChat`, `useAgent`, multi-tool rendering, structured HITL)
 
+AG-UI activity example emitted by backend for tool progress:
+
+```json
+{
+  "type": "ACTIVITY_SNAPSHOT",
+  "messageId": "tool_call:call_123",
+  "activityType": "tool-call-progress",
+  "content": {
+    "type": "tool-call-progress",
+    "schema": "tool-call-progress.v1",
+    "node_id": "tool_call:call_123",
+    "status": "running",
+    "progress": 0.4
+  }
+}
+```
+
 ## Key files
 
 - `lib/copilotkit-app.ts`: CopilotKit runtime + persisted thread-capable AG-UI agent

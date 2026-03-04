@@ -76,6 +76,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 5. Add chat UI in `app/page.tsx` using `CopilotChat` or `CopilotSidebar`.
 
+### Optional: parse `tool-call-progress` activity events
+
+When reading raw AG-UI events, inspect `ACTIVITY_SNAPSHOT` /
+`ACTIVITY_DELTA` with `activityType = "tool-call-progress"`.
+
+```ts,ignore
+function onAgUiEvent(event: any) {
+  if (event?.type !== "ACTIVITY_SNAPSHOT") return;
+  if (event.activityType !== "tool-call-progress") return;
+  const node = event.content;
+  console.log("tool progress", node.node_id, node.status, node.progress);
+}
+```
+
 ## Verify
 
 - `POST /api/copilotkit` streams AG-UI events.

@@ -136,15 +136,18 @@ pub use io::{
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
     build_read_only_context_from_step, reduce_state_actions, Action, ActionDeserializerRegistry,
-    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior,
-    AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext, DecisionReplayPolicy,
-    Extensions, NoOpBehavior, PendingWriteError, Phase, PhaseContext, PhasePolicy, ReadOnlyContext,
-    RunAction, RunContext, RunDelta, RunEndContext, RunStartContext, ScopeContext, SerializedAction,
-    StateScope, StateScopeRegistry, StateSpec, StepContext, StepEndContext, StepOutcome,
-    StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension, SuspensionResponse,
-    TerminationReason, TokenUsage, ToolCallAction, ToolCallContext, ToolCallOutcome, ToolExecution,
-    ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
-    ToolGate, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
+    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext,
+    AgentBehavior, AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
+    DecisionReplayPolicy, Extensions, NoOpBehavior, PendingWriteError, Phase, PhaseContext,
+    PhasePolicy, ReadOnlyContext, RunAction, RunContext, RunDelta, RunEndContext, RunStartContext,
+    ScopeContext, SerializedAction, StateScope, StateScopeRegistry, StateSpec, StepContext,
+    StepEndContext, StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket,
+    Suspension, SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
+    ToolCallOutcome, ToolCallProgressState, ToolCallProgressStatus, ToolCallProgressUpdate,
+    ToolExecution, ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
+    ToolExecutorError, ToolGate, ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE,
+    TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE,
+    TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
 };
 
 // storage

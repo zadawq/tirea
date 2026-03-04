@@ -39,6 +39,28 @@ Example event sequence:
 { "type": "finish", "finishReason": "stop" }
 ```
 
+Tool-call progress example (custom `data-*` event):
+
+```json
+{
+  "type": "data-activity-snapshot",
+  "data": {
+    "messageId": "tool_call:call_123",
+    "activityType": "tool-call-progress",
+    "content": {
+      "type": "tool-call-progress",
+      "schema": "tool-call-progress.v1",
+      "node_id": "tool_call:call_123",
+      "parent_node_id": "run:run_abc",
+      "status": "running",
+      "progress": 0.4,
+      "message": "searching..."
+    },
+    "replace": true
+  }
+}
+```
+
 ## Validation and Errors
 
 - empty `sessionId` -> `400` (`sessionId cannot be empty`)

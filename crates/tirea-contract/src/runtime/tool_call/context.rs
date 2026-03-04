@@ -12,6 +12,7 @@ use futures::future::pending;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_state::{
     get_at_path, parse_path, DocCell, Op, Patch, PatchSink, Path, State, TireaError, TireaResult,
     TrackedPatch,
@@ -20,8 +21,92 @@ use tokio_util::sync::CancellationToken;
 
 type PatchHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
 const TOOL_PROGRESS_STREAM_PREFIX: &str = "tool_call:";
-/// Default activity type used for tool progress updates.
-pub const TOOL_PROGRESS_ACTIVITY_TYPE: &str = "progress";
+const TOOL_SCOPE_CALLER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
+const TOOL_CALL_PROGRESS_PARENT_NODE_ID_KEY: &str = "progress_parent_node_id";
+/// Activity type used for tool-call progress updates.
+pub const TOOL_CALL_PROGRESS_ACTIVITY_TYPE: &str = "tool-call-progress";
+/// Legacy public alias kept for backward compatibility.
+pub const TOOL_PROGRESS_ACTIVITY_TYPE: &str = TOOL_CALL_PROGRESS_ACTIVITY_TYPE;
+/// Legacy activity type accepted by consumers.
+pub const TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY: &str = "progress";
+/// Canonical payload `type` value for tool-call progress events.
+pub const TOOL_CALL_PROGRESS_TYPE: &str = "tool-call-progress";
+/// Canonical payload schema version for tool-call progress events.
+pub const TOOL_CALL_PROGRESS_SCHEMA: &str = "tool-call-progress.v1";
+
+/// Status marker for a tool-call progress node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolCallProgressStatus {
+    Pending,
+    #[default]
+    Running,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+/// Canonical tree-node payload for tool-call progress updates.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+pub struct ToolCallProgressState {
+    /// Payload type identifier.
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// Payload schema version.
+    pub schema: String,
+    /// Stable node id.
+    pub node_id: String,
+    /// Optional parent node id in the progress tree.
+    #[serde(default)]
+    pub parent_node_id: Option<String>,
+    /// Tool call id that owns this node.
+    pub call_id: String,
+    /// Optional tool name.
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    /// Current status.
+    pub status: ToolCallProgressStatus,
+    /// Normalized progress ratio when available.
+    #[serde(default)]
+    pub progress: Option<f64>,
+    /// Optional absolute loaded counter.
+    #[serde(default)]
+    pub loaded: Option<f64>,
+    /// Optional absolute total counter.
+    #[serde(default)]
+    pub total: Option<f64>,
+    /// Optional human-readable message.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// Current run id.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Parent run id.
+    #[serde(default)]
+    pub parent_run_id: Option<String>,
+    /// Current thread id when available.
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    /// Last update timestamp in unix milliseconds.
+    pub updated_at_ms: u64,
+}
+
+/// Input shape for publishing tool-call progress updates.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolCallProgressUpdate {
+    #[serde(default)]
+    pub status: ToolCallProgressStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_node_id: Option<String>,
+}
 
 /// Canonical activity state shape for tool progress updates.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
@@ -307,39 +392,102 @@ impl<'a> ToolCallContext<'a> {
         format!("{TOOL_PROGRESS_STREAM_PREFIX}{}", self.call_id)
     }
 
+    fn source_tool_name(&self) -> Option<String> {
+        self.source
+            .strip_prefix("tool:")
+            .filter(|name| !name.trim().is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    fn scope_string(&self, key: &str) -> Option<String> {
+        self.run_config
+            .value(key)
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+    }
+
+    fn validate_progress_value(name: &str, value: Option<f64>) -> TireaResult<()> {
+        let Some(value) = value else {
+            return Ok(());
+        };
+        if !value.is_finite() {
+            return Err(TireaError::invalid_operation(format!(
+                "{name} must be a finite number"
+            )));
+        }
+        if value < 0.0 {
+            return Err(TireaError::invalid_operation(format!(
+                "{name} must be non-negative"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Publish a typed tool-call progress node update.
+    ///
+    /// The update is written to `activity(progress_stream_id(), "tool-call-progress")`
+    /// with payload schema `tool-call-progress.v1`.
+    pub fn report_tool_call_progress(&self, update: ToolCallProgressUpdate) -> TireaResult<()> {
+        Self::validate_progress_value("progress value", update.progress)?;
+        Self::validate_progress_value("progress loaded", update.loaded)?;
+        Self::validate_progress_value("progress total", update.total)?;
+
+        let parent_node_id = update
+            .parent_node_id
+            .or_else(|| self.scope_string(TOOL_CALL_PROGRESS_PARENT_NODE_ID_KEY));
+        let run_id = self.scope_string("run_id");
+        let parent_run_id = self.scope_string("parent_run_id");
+        let thread_id = self.scope_string(TOOL_SCOPE_CALLER_THREAD_ID_KEY);
+        let stream_id = self.progress_stream_id();
+        let payload = ToolCallProgressState {
+            event_type: TOOL_CALL_PROGRESS_TYPE.to_string(),
+            schema: TOOL_CALL_PROGRESS_SCHEMA.to_string(),
+            node_id: stream_id.clone(),
+            parent_node_id,
+            call_id: self.call_id.clone(),
+            tool_name: self.source_tool_name(),
+            status: update.status,
+            progress: update.progress,
+            loaded: update.loaded,
+            total: update.total,
+            message: update.message,
+            run_id,
+            parent_run_id,
+            thread_id,
+            updated_at_ms: current_unix_millis(),
+        };
+
+        let Value::Object(fields) = serde_json::to_value(payload)? else {
+            return Err(TireaError::invalid_operation(
+                "tool-call-progress payload must serialize as object",
+            ));
+        };
+        for (key, value) in fields {
+            let op = Op::set(Path::root().key(key), value);
+            self.activity_manager
+                .on_activity_op(&stream_id, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, &op);
+        }
+
+        Ok(())
+    }
+
     /// Publish a progress update for this tool call.
     ///
-    /// The update is written to `activity(progress_stream_id(), "progress")`.
+    /// This helper emits `tool-call-progress.v1` payloads with activity type
+    /// `tool-call-progress`.
     pub fn report_progress(
         &self,
         progress: f64,
         total: Option<f64>,
         message: Option<String>,
     ) -> TireaResult<()> {
-        if !progress.is_finite() {
-            return Err(TireaError::invalid_operation(
-                "progress value must be a finite number",
-            ));
-        }
-        if let Some(total) = total {
-            if !total.is_finite() {
-                return Err(TireaError::invalid_operation(
-                    "progress total must be a finite number",
-                ));
-            }
-            if total < 0.0 {
-                return Err(TireaError::invalid_operation(
-                    "progress total must be non-negative",
-                ));
-            }
-        }
-
-        let activity = self.activity(self.progress_stream_id(), TOOL_PROGRESS_ACTIVITY_TYPE);
-        let state = activity.state::<ToolProgressState>("");
-        state.set_progress(progress)?;
-        state.set_total(total)?;
-        state.set_message(message)?;
-        Ok(())
+        self.report_tool_call_progress(ToolCallProgressUpdate {
+            status: ToolCallProgressStatus::Running,
+            progress: Some(progress),
+            loaded: None,
+            total,
+            message,
+            parent_node_id: None,
+        })
     }
 
     // =========================================================================
@@ -391,6 +539,12 @@ impl<'a> ToolCallContext<'a> {
     pub fn ops_count(&self) -> usize {
         self.ops.lock().unwrap().len()
     }
+}
+
+fn current_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
 /// Activity-scoped state context.
@@ -457,6 +611,7 @@ mod tests {
     use crate::testing::TestFixtureState;
     use serde_json::json;
     use std::sync::Arc;
+    use tirea_state::apply_patch;
     use tokio::time::{timeout, Duration};
     use tokio_util::sync::CancellationToken;
 
@@ -745,8 +900,17 @@ mod tests {
         }
     }
 
+    fn rebuild_activity_state(events: &[(String, String, Op)]) -> Value {
+        let mut value = json!({});
+        for (_, _, op) in events {
+            value = apply_patch(&value, &Patch::with_ops(vec![op.clone()]))
+                .expect("activity op should apply");
+        }
+        value
+    }
+
     #[test]
-    fn test_report_progress_emits_progress_activity() {
+    fn test_report_progress_emits_tool_call_progress_activity() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
@@ -769,14 +933,17 @@ mod tests {
         let events = activity_manager.events.lock().unwrap();
         assert!(!events.is_empty());
         assert!(events.iter().all(|(stream_id, activity_type, _)| {
-            stream_id == "tool_call:call-1" && activity_type == "progress"
+            stream_id == "tool_call:call-1" && activity_type == TOOL_CALL_PROGRESS_ACTIVITY_TYPE
         }));
-        assert!(
-            events
-                .iter()
-                .any(|(_, _, op)| op.path().to_string() == "$.progress"),
-            "progress op should be emitted"
-        );
+        let state = rebuild_activity_state(&events);
+        assert_eq!(state["type"], TOOL_CALL_PROGRESS_TYPE);
+        assert_eq!(state["schema"], TOOL_CALL_PROGRESS_SCHEMA);
+        assert_eq!(state["node_id"], "tool_call:call-1");
+        assert_eq!(state["call_id"], "call-1");
+        assert_eq!(state["status"], "running");
+        assert_eq!(state["progress"], json!(0.5));
+        assert_eq!(state["total"], json!(10.0));
+        assert_eq!(state["message"], json!("half way"));
     }
 
     #[test]
@@ -790,5 +957,54 @@ mod tests {
         assert!(ctx.report_progress(f64::NAN, None, None).is_err());
         assert!(ctx.report_progress(0.5, Some(f64::INFINITY), None).is_err());
         assert!(ctx.report_progress(0.5, Some(-1.0), None).is_err());
+    }
+
+    #[test]
+    fn test_report_tool_call_progress_writes_lineage_and_metadata() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let mut scope = RunConfig::new();
+        scope.set("run_id", "run-123").expect("set run_id");
+        scope
+            .set("parent_run_id", "run-parent")
+            .expect("set parent_run_id");
+        scope
+            .set("__agent_tool_caller_thread_id", "thread-abc")
+            .expect("set caller thread id");
+        let pending = Mutex::new(Vec::new());
+        let activity_manager = Arc::new(RecordingActivityManager::default());
+
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-1",
+            "tool:echo",
+            &scope,
+            &pending,
+            activity_manager.clone(),
+        );
+
+        ctx.report_tool_call_progress(ToolCallProgressUpdate {
+            status: ToolCallProgressStatus::Done,
+            progress: Some(1.0),
+            loaded: Some(5.0),
+            total: Some(5.0),
+            message: Some("done".to_string()),
+            parent_node_id: Some("run:run-123".to_string()),
+        })
+        .expect("tool call progress should be emitted");
+
+        let events = activity_manager.events.lock().unwrap();
+        let state = rebuild_activity_state(&events);
+        assert_eq!(state["type"], TOOL_CALL_PROGRESS_TYPE);
+        assert_eq!(state["schema"], TOOL_CALL_PROGRESS_SCHEMA);
+        assert_eq!(state["node_id"], "tool_call:call-1");
+        assert_eq!(state["parent_node_id"], "run:run-123");
+        assert_eq!(state["tool_name"], "echo");
+        assert_eq!(state["status"], "done");
+        assert_eq!(state["run_id"], "run-123");
+        assert_eq!(state["parent_run_id"], "run-parent");
+        assert_eq!(state["thread_id"], "thread-abc");
+        assert!(state["updated_at_ms"].as_u64().unwrap_or_default() > 0);
     }
 }
