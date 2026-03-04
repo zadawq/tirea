@@ -20,7 +20,9 @@ export async function fetchHistory(sessionId: string): Promise<UIMessage[]> {
     const res = await fetch(historyApiUrl(sessionId));
     if (!res.ok) return [];
     const data = await res.json();
-    return data.messages ?? [];
+    if (Array.isArray(data.messages)) return data.messages;
+    if (Array.isArray(data.items)) return data.items;
+    return [];
   } catch {
     return [];
   }

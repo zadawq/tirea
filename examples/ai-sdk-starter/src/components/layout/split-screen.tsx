@@ -6,6 +6,7 @@ type SplitScreenProps = {
   chatHint: string;
   left: ReactNode;
   chat: ReactNode;
+  chatTheme?: "light" | "dark";
 };
 
 export function SplitScreen({
@@ -14,7 +15,9 @@ export function SplitScreen({
   chatHint,
   left,
   chat,
+  chatTheme = "light",
 }: SplitScreenProps) {
+  const isDark = chatTheme === "dark";
   return (
     <main
       data-testid={rootTestId}
@@ -32,12 +35,26 @@ export function SplitScreen({
           </div>
         </section>
         <aside className="min-h-[66vh] border-t border-white/30 bg-white/10 p-2 backdrop-blur-md lg:min-h-0 lg:border-l lg:border-t-0">
-          <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-[0_18px_36px_rgba(15,23,42,0.16)]">
-            <header className="border-b border-slate-200 bg-gradient-to-b from-slate-50 to-slate-100 px-4 py-3">
-              <h2 className="m-0 text-base font-semibold text-slate-900">
+          <div
+            className={
+              isDark
+                ? "flex h-full flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900/95 shadow-[0_18px_36px_rgba(2,6,23,0.5)]"
+                : "flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-[0_18px_36px_rgba(15,23,42,0.16)]"
+            }
+          >
+            <header
+              className={
+                isDark
+                  ? "border-b border-slate-700 bg-gradient-to-b from-slate-900 to-slate-800 px-4 py-3"
+                  : "border-b border-slate-200 bg-gradient-to-b from-slate-50 to-slate-100 px-4 py-3"
+              }
+            >
+              <h2 className={isDark ? "m-0 text-base font-semibold text-slate-100" : "m-0 text-base font-semibold text-slate-900"}>
                 tirea assistant
               </h2>
-              <p className="mt-1 text-xs text-slate-600">{chatHint}</p>
+              <p className={isDark ? "mt-1 text-xs text-slate-300" : "mt-1 text-xs text-slate-600"}>
+                {chatHint}
+              </p>
             </header>
             <div className="min-h-0 flex-1 overflow-hidden">{chat}</div>
           </div>

@@ -85,8 +85,9 @@ export function CanvasPage() {
       rootTestId="canvas-root"
       pageStyle={pageStyle}
       chatHint="Try: get weather, stock price, or append a note."
+      chatTheme={themeMode}
       left={leftPane}
-      chat={<ChatPanel threadId={sessionId} />}
+      chat={<ChatPanel threadId={sessionId} themeMode={themeMode} />}
     />
   );
 }

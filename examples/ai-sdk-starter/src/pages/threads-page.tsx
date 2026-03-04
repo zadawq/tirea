@@ -7,7 +7,7 @@ import { RECOMMENDED_ACTIONS } from "@/lib/recommended-actions";
 import { useThreads } from "@/hooks/use-threads";
 
 const pageStyle = {
-  backgroundColor: "#0f766e",
+  backgroundColor: "#e2e8f0",
 } as CSSProperties;
 
 export function ThreadsPage() {
@@ -21,11 +21,11 @@ export function ThreadsPage() {
       </div>
       <h1
         data-testid="page-title"
-        className="mt-3 text-4xl font-bold tracking-tight text-white md:text-5xl"
+        className="mt-3 text-4xl font-bold tracking-tight text-slate-900 md:text-5xl"
       >
         with-tirea threads
       </h1>
-      <p className="mt-2 max-w-[760px] text-sm text-slate-100/95 md:text-base">
+      <p className="mt-2 max-w-[760px] text-sm text-slate-700 md:text-base">
         Backend-persisted thread demo: switch threads, keep history and state.
       </p>
       <NavTabs />
@@ -112,6 +112,7 @@ export function ThreadsPage() {
       rootTestId="threads-root"
       pageStyle={pageStyle}
       chatHint="Try switching threads and chatting."
+      chatTheme="light"
       left={leftPane}
       chat={
         activeThreadId ? (

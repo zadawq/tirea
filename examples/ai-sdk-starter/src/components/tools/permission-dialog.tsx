@@ -3,6 +3,7 @@ type PermissionDialogProps = {
   approvalId: string;
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
+  themeMode?: "light" | "dark";
 };
 
 export function PermissionDialog({
@@ -10,13 +11,19 @@ export function PermissionDialog({
   approvalId,
   onApprove,
   onDeny,
+  themeMode = "light",
 }: PermissionDialogProps) {
+  const isDark = themeMode === "dark";
   return (
     <div
       data-testid="permission-dialog"
-      className="mt-2 rounded-lg border border-slate-200 bg-white p-3"
+      className={
+        isDark
+          ? "mt-2 rounded-lg border border-slate-700 bg-slate-900 p-3"
+          : "mt-2 rounded-lg border border-slate-200 bg-white p-3"
+      }
     >
-      <div className="mb-2 text-sm text-slate-800">
+      <div className={isDark ? "mb-2 text-sm text-slate-200" : "mb-2 text-sm text-slate-800"}>
         Approve tool &apos;{requestedToolName}&apos; execution?
       </div>
       <div className="flex gap-2">

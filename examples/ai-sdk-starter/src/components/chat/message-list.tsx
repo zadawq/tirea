@@ -15,6 +15,7 @@ import { getMcpUiContent, McpAppFrame } from "@/components/tools/mcp-app-frame";
 type MessageListProps = {
   messages: UIMessage[];
   isLoading: boolean;
+  themeMode?: "light" | "dark";
   askAnswers: Record<string, string>;
   onAskAnswerChange: (toolCallId: string, value: string) => void;
   onApprove: (id: string) => void;
@@ -25,20 +26,26 @@ type MessageListProps = {
 export function MessageList({
   messages,
   isLoading,
+  themeMode = "light",
   askAnswers,
   onAskAnswerChange,
   onApprove,
   onDeny,
   onAskSubmit,
 }: MessageListProps) {
+  const isDark = themeMode === "dark";
+  const itemClass = isDark ? "border-slate-700" : "border-slate-100";
+  const roleClass = isDark ? "text-slate-300" : "text-slate-600";
+  const loadingClass = isDark ? "text-slate-400" : "text-slate-400";
+
   return (
     <div className="chat-messages flex-1 overflow-y-auto px-4 py-3">
       {messages.map((m) => (
         <div
           key={m.id}
-          className="border-b border-slate-100 py-2 last:border-0"
+          className={`border-b py-2 last:border-0 ${itemClass}`}
         >
-          <strong className="text-sm text-slate-600">
+          <strong className={`text-sm ${roleClass}`}>
             {m.role === "user" ? "You" : "Agent"}:
           </strong>
           {m.parts.map((p, i) => {
@@ -79,6 +86,7 @@ export function MessageList({
                   onApprove={onApprove}
                   onDeny={onDeny}
                   onAskSubmit={onAskSubmit}
+                  themeMode={themeMode}
                 />
               );
             }
@@ -87,7 +95,7 @@ export function MessageList({
         </div>
       ))}
       {isLoading && (
-        <div className="py-2 text-sm text-slate-400">Thinking...</div>
+        <div className={`py-2 text-sm ${loadingClass}`}>Thinking...</div>
       )}
     </div>
   );
@@ -101,6 +109,7 @@ function ToolPartRenderer({
   onApprove,
   onDeny,
   onAskSubmit,
+  themeMode,
 }: {
   part: Record<string, unknown>;
   isLoading: boolean;
@@ -109,6 +118,7 @@ function ToolPartRenderer({
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
   onAskSubmit: (toolCallId: string, answer: string) => void;
+  themeMode: "light" | "dark";
 }) {
   const tool = part as {
     type: string;
@@ -181,6 +191,7 @@ function ToolPartRenderer({
           approvalId={tool.approval.id}
           onApprove={onApprove}
           onDeny={onDeny}
+          themeMode={themeMode}
         />
       )}
       {tool.state === "input-available" && name === "askUserQuestion" && (
@@ -191,6 +202,7 @@ function ToolPartRenderer({
           onChange={(v) => onAskAnswerChange(tool.toolCallId, v)}
           onSubmit={onAskSubmit}
           disabled={isLoading}
+          themeMode={themeMode}
         />
       )}
       {tool.state === "output-denied" && (

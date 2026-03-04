@@ -98,23 +98,12 @@ function parseToolCallProgressSnapshot(data: unknown): ToolCallProgressNode | nu
 }
 
 export function useChatSession(threadId: string, agentId = "default") {
-  const [initialMessages, setInitialMessages] = useState<UIMessage[] | undefined>(undefined);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [metrics, setMetrics] = useState<InferenceMetrics[]>([]);
   const [toolProgress, setToolProgress] = useState<Record<string, ToolCallProgressNode>>({});
   const [askAnswers, setAskAnswers] = useState<Record<string, string>>({});
   const autoSubmittedIds = useRef<Set<string>>(new Set());
-  const historyFetched = useRef(false);
-
-  useEffect(() => {
-    if (!threadId || historyFetched.current) return;
-    historyFetched.current = true;
-
-    fetchHistory(threadId).then((messages) => {
-      setInitialMessages(messages.length > 0 ? messages : undefined);
-      setHistoryLoaded(true);
-    });
-  }, [threadId]);
+  const historyLoadToken = useRef(0);
 
   const transport = useMemo(
     () => createTransport(threadId, agentId),
@@ -188,11 +177,46 @@ export function useChatSession(threadId: string, agentId = "default") {
   );
 
   const chat = useChat({
-    messages: initialMessages,
+    id: threadId,
     transport,
     onData: onData as never,
     sendAutomaticallyWhen,
   });
+  const { setMessages } = chat;
+
+  useEffect(() => {
+    let cancelled = false;
+    const token = ++historyLoadToken.current;
+
+    setHistoryLoaded(false);
+    setMetrics([]);
+    setToolProgress({});
+    setAskAnswers({});
+    autoSubmittedIds.current = new Set();
+    setMessages([]);
+
+    if (!threadId) {
+      setHistoryLoaded(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    fetchHistory(threadId)
+      .then((messages) => {
+        if (cancelled || token !== historyLoadToken.current) return;
+        setMessages(messages);
+        setHistoryLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled || token !== historyLoadToken.current) return;
+        setHistoryLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId, setMessages]);
 
   return {
     ...chat,

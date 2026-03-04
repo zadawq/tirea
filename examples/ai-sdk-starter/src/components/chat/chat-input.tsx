@@ -3,10 +3,16 @@ import { useState, type FormEvent } from "react";
 type ChatInputProps = {
   onSend: (text: string) => void;
   disabled: boolean;
+  themeMode?: "light" | "dark";
 };
 
-export function ChatInput({ onSend, disabled }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  disabled,
+  themeMode = "light",
+}: ChatInputProps) {
   const [input, setInput] = useState("");
+  const isDark = themeMode === "dark";
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -19,13 +25,21 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3"
+      className={
+        isDark
+          ? "flex gap-2 border-t border-slate-700 bg-slate-900/70 px-4 py-3"
+          : "flex gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3"
+      }
     >
       <input
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder="Type a message..."
-        className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-cyan-300 focus:ring-2"
+        className={
+          isDark
+            ? "flex-1 rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2"
+            : "flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-cyan-300 focus:ring-2"
+        }
       />
       <button
         type="submit"
