@@ -1,6 +1,8 @@
 use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY};
 use super::{AgentOs, AgentRegistry};
-use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::runtime::tool_call::{
+    Tool, ToolDescriptor, ToolResult, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
+};
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{AgentEvent, Suspension};
 use crate::extensions::permission::ToolPermissionBehavior;
@@ -20,6 +22,7 @@ use types::{SubAgent, SubAgentAction, SubAgentState, SubAgentStatus};
 const SCOPE_CALLER_SESSION_ID_KEY: &str = TOOL_SCOPE_CALLER_THREAD_ID_KEY;
 const SCOPE_CALLER_STATE_KEY: &str = TOOL_SCOPE_CALLER_STATE_KEY;
 const SCOPE_CALLER_MESSAGES_KEY: &str = TOOL_SCOPE_CALLER_MESSAGES_KEY;
+const SCOPE_PARENT_TOOL_CALL_ID_KEY: &str = TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY;
 const SCOPE_RUN_ID_KEY: &str = "run_id";
 pub(crate) const AGENT_TOOLS_PLUGIN_ID: &str = "agent_tools";
 pub(crate) const AGENT_RECOVERY_PLUGIN_ID: &str = "agent_recovery";

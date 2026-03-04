@@ -9,7 +9,7 @@ pub use context::{
     ActivityContext, ToolCallContext, ToolCallProgressState, ToolCallProgressStatus,
     ToolCallProgressUpdate, ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE,
     TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE,
-    TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
+    TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
 };
 pub use executor::{
     DecisionReplayPolicy, ToolCallOutcome, ToolExecution, ToolExecutionRequest,

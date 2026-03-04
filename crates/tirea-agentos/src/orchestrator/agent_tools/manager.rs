@@ -220,12 +220,29 @@ pub(super) struct SubAgentCompletion {
     pub(super) error: Option<String>,
 }
 
+fn bind_parent_tool_call_scope(
+    run_config: &mut crate::contracts::RunConfig,
+    parent_tool_call_id: Option<&str>,
+) -> Result<(), crate::contracts::RunConfigError> {
+    let Some(parent_tool_call_id) = parent_tool_call_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(());
+    };
+    run_config.set(
+        SCOPE_PARENT_TOOL_CALL_ID_KEY,
+        parent_tool_call_id.to_string(),
+    )
+}
+
 pub(super) async fn execute_sub_agent(
     os: AgentOs,
     agent_id: String,
     child_thread_id: String,
     run_id: String,
     parent_run_id: Option<String>,
+    parent_tool_call_id: Option<String>,
     parent_thread_id: String,
     messages: Vec<crate::contracts::thread::Message>,
     initial_state: Option<serde_json::Value>,
@@ -243,7 +260,7 @@ pub(super) async fn execute_sub_agent(
         initial_decisions: Vec::new(),
     };
 
-    let resolved = match os.resolve(&request.agent_id) {
+    let mut resolved = match os.resolve(&request.agent_id) {
         Ok(r) => r,
         Err(e) => {
             return SubAgentCompletion {
@@ -252,6 +269,14 @@ pub(super) async fn execute_sub_agent(
             };
         }
     };
+    if let Err(e) =
+        bind_parent_tool_call_scope(&mut resolved.run_config, parent_tool_call_id.as_deref())
+    {
+        return SubAgentCompletion {
+            status: SubAgentStatus::Failed,
+            error: Some(e.to_string()),
+        };
+    }
 
     let mut prepared = match os.prepare_run(request, resolved).await {
         Ok(p) => p,
@@ -313,6 +338,31 @@ pub(super) async fn execute_sub_agent(
     SubAgentCompletion {
         status,
         error: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_parent_tool_call_scope_sets_scope_key_when_present() {
+        let mut run_config = crate::contracts::RunConfig::default();
+        bind_parent_tool_call_scope(&mut run_config, Some("call_parent_1"))
+            .expect("set parent tool call id");
+        assert_eq!(
+            run_config
+                .value(SCOPE_PARENT_TOOL_CALL_ID_KEY)
+                .and_then(serde_json::Value::as_str),
+            Some("call_parent_1")
+        );
+    }
+
+    #[test]
+    fn bind_parent_tool_call_scope_ignores_blank_values() {
+        let mut run_config = crate::contracts::RunConfig::default();
+        bind_parent_tool_call_scope(&mut run_config, Some("   ")).expect("ignore blank id");
+        assert!(run_config.value(SCOPE_PARENT_TOOL_CALL_ID_KEY).is_none());
     }
 }
 

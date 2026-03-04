@@ -912,7 +912,8 @@ mod tests {
                 "type": "tool-call-progress",
                 "schema": "tool-call-progress.v1",
                 "node_id": "tool_call:call_1",
-                "parent_node_id": "run:run_1",
+                "parent_call_id": "call_parent_1",
+                "parent_node_id": "tool_call:call_parent_1",
                 "call_id": "call_1",
                 "tool_name": "mcp.search",
                 "status": "running",
@@ -931,6 +932,7 @@ mod tests {
                     if data_type == "data-activity-snapshot"
                         && data["activityType"] == json!("tool-call-progress")
                         && data["content"]["schema"] == json!("tool-call-progress.v1")
+                        && data["content"]["parent_call_id"] == json!("call_parent_1")
                         && data["content"]["progress"] == json!(0.4)
             )
         }));

@@ -244,10 +244,12 @@ impl AgentRunTool {
             status: SubAgentStatus::Running,
             error: None,
         };
+        let parent_tool_call_id = ctx.call_id().to_string();
 
         if background {
             let token = RunCancellationToken::new();
             let parent_run_id_bg = parent_run_id.clone();
+            let parent_tool_call_id_bg = parent_tool_call_id.clone();
             let epoch = self
                 .handles
                 .put_running(
@@ -282,6 +284,7 @@ impl AgentRunTool {
                     child_thread_id_bg,
                     run_id_bg.clone(),
                     parent_run_id_bg,
+                    Some(parent_tool_call_id_bg),
                     parent_thread_id_bg,
                     messages,
                     initial_state,
@@ -323,6 +326,7 @@ impl AgentRunTool {
             child_thread_id.clone(),
             run_id.clone(),
             parent_run_id.clone(),
+            Some(parent_tool_call_id),
             owner_thread_id,
             messages,
             initial_state,

@@ -36,7 +36,8 @@ Canonical `content` shape (`tool-call-progress.v1`):
   "type": "tool-call-progress",
   "schema": "tool-call-progress.v1",
   "node_id": "tool_call:call_123",
-  "parent_node_id": "run:run_abc",
+  "parent_node_id": "tool_call:call_parent_1",
+  "parent_call_id": "call_parent_1",
   "call_id": "call_123",
   "tool_name": "mcp.search",
   "status": "running",
@@ -49,6 +50,9 @@ Canonical `content` shape (`tool-call-progress.v1`):
   "updated_at_ms": 1760000000000
 }
 ```
+
+`call_id` / `parent_call_id` are framework-maintained lineage fields.
+Tools should not set or override them.
 
 Compatibility:
 

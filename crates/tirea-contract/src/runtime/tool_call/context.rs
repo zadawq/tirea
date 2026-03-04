@@ -22,7 +22,11 @@ use tokio_util::sync::CancellationToken;
 type PatchHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
 const TOOL_PROGRESS_STREAM_PREFIX: &str = "tool_call:";
 const TOOL_SCOPE_CALLER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
-const TOOL_CALL_PROGRESS_PARENT_NODE_ID_KEY: &str = "progress_parent_node_id";
+/// Scope key injected by the framework for nested sub-runs.
+///
+/// When present, progress events emitted from the current tool call are linked
+/// to the parent tool-call node.
+pub const TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY: &str = "__agent_parent_tool_call_id";
 /// Activity type used for tool-call progress updates.
 pub const TOOL_CALL_PROGRESS_ACTIVITY_TYPE: &str = "tool-call-progress";
 /// Legacy public alias kept for backward compatibility.
@@ -59,6 +63,9 @@ pub struct ToolCallProgressState {
     /// Optional parent node id in the progress tree.
     #[serde(default)]
     pub parent_node_id: Option<String>,
+    /// Optional parent tool call id when this node belongs to a nested run.
+    #[serde(default)]
+    pub parent_call_id: Option<String>,
     /// Tool call id that owns this node.
     pub call_id: String,
     /// Optional tool name.
@@ -104,8 +111,6 @@ pub struct ToolCallProgressUpdate {
     pub total: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_node_id: Option<String>,
 }
 
 /// Canonical activity state shape for tool progress updates.
@@ -431,18 +436,30 @@ impl<'a> ToolCallContext<'a> {
         Self::validate_progress_value("progress loaded", update.loaded)?;
         Self::validate_progress_value("progress total", update.total)?;
 
-        let parent_node_id = update
-            .parent_node_id
-            .or_else(|| self.scope_string(TOOL_CALL_PROGRESS_PARENT_NODE_ID_KEY));
         let run_id = self.scope_string("run_id");
         let parent_run_id = self.scope_string("parent_run_id");
         let thread_id = self.scope_string(TOOL_SCOPE_CALLER_THREAD_ID_KEY);
+        let parent_call_id = self
+            .scope_string(TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY)
+            .and_then(|id| {
+                let trimmed = id.trim();
+                if trimmed.is_empty() || trimmed == self.call_id {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+        let parent_node_id = parent_call_id
+            .as_ref()
+            .map(|id| format!("{TOOL_PROGRESS_STREAM_PREFIX}{id}"))
+            .or_else(|| run_id.as_ref().map(|id| format!("run:{id}")));
         let stream_id = self.progress_stream_id();
         let payload = ToolCallProgressState {
             event_type: TOOL_CALL_PROGRESS_TYPE.to_string(),
             schema: TOOL_CALL_PROGRESS_SCHEMA.to_string(),
             node_id: stream_id.clone(),
             parent_node_id,
+            parent_call_id,
             call_id: self.call_id.clone(),
             tool_name: self.source_tool_name(),
             status: update.status,
@@ -486,7 +503,6 @@ impl<'a> ToolCallContext<'a> {
             loaded: None,
             total,
             message,
-            parent_node_id: None,
         })
     }
 
@@ -969,6 +985,9 @@ mod tests {
             .set("parent_run_id", "run-parent")
             .expect("set parent_run_id");
         scope
+            .set(TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY, "call-parent")
+            .expect("set parent tool call id");
+        scope
             .set("__agent_tool_caller_thread_id", "thread-abc")
             .expect("set caller thread id");
         let pending = Mutex::new(Vec::new());
@@ -990,7 +1009,6 @@ mod tests {
             loaded: Some(5.0),
             total: Some(5.0),
             message: Some("done".to_string()),
-            parent_node_id: Some("run:run-123".to_string()),
         })
         .expect("tool call progress should be emitted");
 
@@ -999,12 +1017,46 @@ mod tests {
         assert_eq!(state["type"], TOOL_CALL_PROGRESS_TYPE);
         assert_eq!(state["schema"], TOOL_CALL_PROGRESS_SCHEMA);
         assert_eq!(state["node_id"], "tool_call:call-1");
-        assert_eq!(state["parent_node_id"], "run:run-123");
+        assert_eq!(state["parent_node_id"], "tool_call:call-parent");
+        assert_eq!(state["parent_call_id"], "call-parent");
         assert_eq!(state["tool_name"], "echo");
         assert_eq!(state["status"], "done");
         assert_eq!(state["run_id"], "run-123");
         assert_eq!(state["parent_run_id"], "run-parent");
         assert_eq!(state["thread_id"], "thread-abc");
         assert!(state["updated_at_ms"].as_u64().unwrap_or_default() > 0);
+    }
+
+    #[test]
+    fn test_report_tool_call_progress_without_parent_tool_call_anchors_to_run_node() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let mut scope = RunConfig::new();
+        scope.set("run_id", "run-123").expect("set run_id");
+        let pending = Mutex::new(Vec::new());
+        let activity_manager = Arc::new(RecordingActivityManager::default());
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-1",
+            "tool:echo",
+            &scope,
+            &pending,
+            activity_manager.clone(),
+        );
+
+        ctx.report_tool_call_progress(ToolCallProgressUpdate {
+            status: ToolCallProgressStatus::Running,
+            progress: Some(0.3),
+            loaded: None,
+            total: None,
+            message: Some("working".to_string()),
+        })
+        .expect("tool call progress should be emitted");
+
+        let events = activity_manager.events.lock().unwrap();
+        let state = rebuild_activity_state(&events);
+        assert_eq!(state["parent_node_id"], "run:run-123");
+        assert!(state["parent_call_id"].is_null());
     }
 }

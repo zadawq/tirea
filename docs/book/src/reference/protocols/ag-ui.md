@@ -46,7 +46,8 @@ Tool-call progress example:
     "type": "tool-call-progress",
     "schema": "tool-call-progress.v1",
     "node_id": "tool_call:call_123",
-    "parent_node_id": "run:run_abc",
+    "parent_node_id": "tool_call:call_parent_1",
+    "parent_call_id": "call_parent_1",
     "status": "running",
     "progress": 0.4,
     "message": "searching..."

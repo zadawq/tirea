@@ -25,6 +25,7 @@ export interface ToolCallProgressNode {
   schema: string;
   node_id: string;
   parent_node_id?: string;
+  parent_call_id?: string;
   call_id?: string;
   tool_name?: string;
   status: ToolCallProgressStatus;
@@ -81,6 +82,7 @@ function parseToolCallProgressSnapshot(data: unknown): ToolCallProgressNode | nu
     schema: asString(content.schema) ?? "tool-call-progress.v1",
     node_id,
     parent_node_id: asString(content.parent_node_id),
+    parent_call_id: asString(content.parent_call_id),
     call_id: asString(content.call_id),
     tool_name: asString(content.tool_name),
     status: asStatus(content.status),

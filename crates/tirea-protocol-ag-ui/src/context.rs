@@ -498,7 +498,8 @@ mod tests {
                 "type": "tool-call-progress",
                 "schema": "tool-call-progress.v1",
                 "node_id": "tool_call:call_1",
-                "parent_node_id": "run:run_1",
+                "parent_call_id": "call_parent_1",
+                "parent_node_id": "tool_call:call_parent_1",
                 "status": "running",
                 "progress": 0.35,
                 "message": "calling MCP"
@@ -510,6 +511,7 @@ mod tests {
         assert_eq!(value["type"], "ACTIVITY_SNAPSHOT");
         assert_eq!(value["activityType"], "tool-call-progress");
         assert_eq!(value["content"]["schema"], "tool-call-progress.v1");
+        assert_eq!(value["content"]["parent_call_id"], "call_parent_1");
         assert_eq!(value["content"]["progress"], 0.35);
     }
 }

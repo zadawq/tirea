@@ -213,6 +213,8 @@ AG-UI activity example emitted by backend for tool progress:
     "type": "tool-call-progress",
     "schema": "tool-call-progress.v1",
     "node_id": "tool_call:call_123",
+    "parent_call_id": "call_parent_1",
+    "parent_node_id": "tool_call:call_parent_1",
     "status": "running",
     "progress": 0.4
   }
