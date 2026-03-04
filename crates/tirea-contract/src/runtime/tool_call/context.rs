@@ -487,25 +487,6 @@ impl<'a> ToolCallContext<'a> {
         Ok(())
     }
 
-    /// Publish a progress update for this tool call.
-    ///
-    /// This helper emits `tool-call-progress.v1` payloads with activity type
-    /// `tool-call-progress`.
-    pub fn report_progress(
-        &self,
-        progress: f64,
-        total: Option<f64>,
-        message: Option<String>,
-    ) -> TireaResult<()> {
-        self.report_tool_call_progress(ToolCallProgressUpdate {
-            status: ToolCallProgressStatus::Running,
-            progress: Some(progress),
-            loaded: None,
-            total,
-            message,
-        })
-    }
-
     // =========================================================================
     // State snapshot
     // =========================================================================
@@ -926,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn test_report_progress_emits_tool_call_progress_activity() {
+    fn test_report_tool_call_progress_emits_tool_call_progress_activity() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
@@ -943,8 +924,14 @@ mod tests {
             activity_manager.clone(),
         );
 
-        ctx.report_progress(0.5, Some(10.0), Some("half way".to_string()))
-            .expect("progress should be emitted");
+        ctx.report_tool_call_progress(ToolCallProgressUpdate {
+            status: ToolCallProgressStatus::Running,
+            progress: Some(0.5),
+            loaded: None,
+            total: Some(10.0),
+            message: Some("half way".to_string()),
+        })
+        .expect("progress should be emitted");
 
         let events = activity_manager.events.lock().unwrap();
         assert!(!events.is_empty());
@@ -963,16 +950,40 @@ mod tests {
     }
 
     #[test]
-    fn test_report_progress_rejects_non_finite_values() {
+    fn test_report_tool_call_progress_rejects_non_finite_values() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        assert!(ctx.report_progress(f64::NAN, None, None).is_err());
-        assert!(ctx.report_progress(0.5, Some(f64::INFINITY), None).is_err());
-        assert!(ctx.report_progress(0.5, Some(-1.0), None).is_err());
+        assert!(ctx
+            .report_tool_call_progress(ToolCallProgressUpdate {
+                status: ToolCallProgressStatus::Running,
+                progress: Some(f64::NAN),
+                loaded: None,
+                total: None,
+                message: None,
+            })
+            .is_err());
+        assert!(ctx
+            .report_tool_call_progress(ToolCallProgressUpdate {
+                status: ToolCallProgressStatus::Running,
+                progress: Some(0.5),
+                loaded: None,
+                total: Some(f64::INFINITY),
+                message: None,
+            })
+            .is_err());
+        assert!(ctx
+            .report_tool_call_progress(ToolCallProgressUpdate {
+                status: ToolCallProgressStatus::Running,
+                progress: Some(0.5),
+                loaded: Some(-1.0),
+                total: None,
+                message: None,
+            })
+            .is_err());
     }
 
     #[test]

@@ -8,7 +8,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
-use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::runtime::tool_call::{
+    Tool, ToolCallProgressStatus, ToolCallProgressUpdate, ToolDescriptor, ToolError, ToolResult,
+};
 use tirea_contract::ToolCallContext;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
@@ -243,7 +245,13 @@ fn emit_mcp_progress(
     if !should_emit_progress(gate, normalized_progress, update.message.as_deref()) {
         return;
     }
-    let _ = ctx.report_progress(normalized_progress, update.total, update.message);
+    let _ = ctx.report_tool_call_progress(ToolCallProgressUpdate {
+        status: ToolCallProgressStatus::Running,
+        progress: Some(normalized_progress),
+        loaded: Some(update.progress),
+        total: update.total,
+        message: update.message,
+    });
 }
 
 fn normalize_progress(update: &McpProgressUpdate) -> Option<f64> {
