@@ -7,6 +7,7 @@ type SplitScreenProps = {
   left: ReactNode;
   chat: ReactNode;
   chatTheme?: "light" | "dark";
+  rootTextClass?: string;
 };
 
 export function SplitScreen({
@@ -16,12 +17,13 @@ export function SplitScreen({
   left,
   chat,
   chatTheme = "light",
+  rootTextClass = "text-white",
 }: SplitScreenProps) {
   const isDark = chatTheme === "dark";
   return (
     <main
       data-testid={rootTestId}
-      className="relative isolate min-h-screen overflow-hidden text-white"
+      className={`relative isolate min-h-screen overflow-hidden ${rootTextClass}`}
       style={pageStyle}
     >
       <div
@@ -56,7 +58,15 @@ export function SplitScreen({
                 {chatHint}
               </p>
             </header>
-            <div className="min-h-0 flex-1 overflow-hidden">{chat}</div>
+            <div
+              className={
+                isDark
+                  ? "min-h-0 flex-1 overflow-hidden text-slate-100"
+                  : "min-h-0 flex-1 overflow-hidden text-slate-900"
+              }
+            >
+              {chat}
+            </div>
           </div>
         </aside>
       </div>

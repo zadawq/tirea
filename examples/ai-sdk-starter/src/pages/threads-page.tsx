@@ -16,7 +16,7 @@ export function ThreadsPage() {
 
   const leftPane = (
     <div className="mx-auto max-w-[1040px]">
-      <div className="inline-flex items-center gap-2 rounded-full border border-white/50 bg-slate-900/30 px-3 py-1 text-xs font-semibold tracking-wide text-slate-100">
+      <div className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold tracking-wide text-slate-700">
         AI SDK x tirea starter
       </div>
       <h1
@@ -113,6 +113,7 @@ export function ThreadsPage() {
       pageStyle={pageStyle}
       chatHint="Try switching threads and chatting."
       chatTheme="light"
+      rootTextClass="text-slate-900"
       left={leftPane}
       chat={
         activeThreadId ? (
