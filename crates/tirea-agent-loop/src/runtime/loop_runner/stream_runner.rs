@@ -372,7 +372,7 @@ pub(super) fn run_stream(
             let request_transforms = prepared.request_transforms;
 
             match prepared.run_action {
-                RunAction::Continue | RunAction::RetryInference { .. } => {}
+                RunAction::Continue => {}
                 RunAction::Terminate(reason) => {
                     if matches!(reason, TerminationReason::Suspended) {
                         for event in suspended_call_pending_events(&run_ctx) {
@@ -620,11 +620,11 @@ pub(super) fn run_stream(
 
             mark_step_completed(&mut run_state);
 
-            // Handle RetryInference: append messages and re-enter the loop.
-            if let RunAction::RetryInference { messages } = &post_inference_action {
-                for msg in messages {
-                    run_ctx.add_message(std::sync::Arc::new(msg.clone()));
-                }
+            // Truncation recovery: if the model hit max_tokens with no tool
+            // calls, inject a continuation prompt and re-enter inference.
+            if truncation_recovery::should_retry(&result, &mut run_state) {
+                let prompt = truncation_recovery::continuation_message();
+                run_ctx.add_message(std::sync::Arc::new(prompt));
                 continue;
             }
 

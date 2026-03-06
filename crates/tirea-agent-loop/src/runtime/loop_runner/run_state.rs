@@ -17,6 +17,8 @@ pub(super) struct LoopRunState {
     start_time: Instant,
     /// Tool call names per step (most recent last), capped at 20 entries.
     pub(super) tool_call_history: VecDeque<Vec<String>>,
+    /// Number of truncation recovery retries consumed so far.
+    pub(super) truncation_retries: usize,
 }
 
 impl LoopRunState {
@@ -33,6 +35,7 @@ impl LoopRunState {
             consecutive_errors: 0,
             start_time: Instant::now(),
             tool_call_history: VecDeque::new(),
+            truncation_retries: 0,
         }
     }
 

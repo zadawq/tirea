@@ -49,6 +49,7 @@ mod state_commit;
 mod stream_core;
 mod stream_runner;
 mod tool_exec;
+mod truncation_recovery;
 
 use crate::contracts::io::ResumeDecisionAction;
 use crate::contracts::runtime::phase::Phase;
@@ -1573,7 +1574,7 @@ pub async fn run_loop(
         run_ctx.add_thread_patches(prepared.pending_patches);
 
         match prepared.run_action {
-            RunAction::Continue | RunAction::RetryInference { .. } => {}
+            RunAction::Continue => {}
             RunAction::Terminate(reason) => {
                 let response = if matches!(reason, TerminationReason::BehaviorRequested) {
                     Some(last_text.clone())
@@ -1693,11 +1694,11 @@ pub async fn run_loop(
 
         mark_step_completed(&mut run_state);
 
-        // Handle RetryInference: append messages and re-enter the loop.
-        if let RunAction::RetryInference { messages } = &post_inference_action {
-            for msg in messages {
-                run_ctx.add_message(std::sync::Arc::new(msg.clone()));
-            }
+        // Truncation recovery: if the model hit max_tokens with no tool
+        // calls, inject a continuation prompt and re-enter inference.
+        if truncation_recovery::should_retry(&result, &mut run_state) {
+            let prompt = truncation_recovery::continuation_message();
+            run_ctx.add_message(Arc::new(prompt));
             continue;
         }
 
