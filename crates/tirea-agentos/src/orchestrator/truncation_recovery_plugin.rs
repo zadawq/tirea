@@ -79,15 +79,14 @@ impl tirea_contract::runtime::AgentBehavior for TruncationRecoveryPlugin {
         {
             self.recovery_count.fetch_add(1, Ordering::Relaxed);
 
-            // Include the truncated assistant response so the model sees
-            // its own context, then add the continuation prompt.
-            // Both messages are Internal — visible to the LLM only,
-            // hidden from the user-facing event stream / API.
-            let mut assistant_msg = Message::assistant(&result.text);
-            assistant_msg.visibility = Visibility::Internal;
+            // The truncated assistant response is already appended to the
+            // thread by the core loop (assistant_turn_message), so the LLM
+            // will see its own partial output. We only inject the
+            // continuation prompt as an Internal user message — visible to
+            // the LLM but hidden from the user-facing API / event stream.
             let mut prompt_msg = Message::user(&self.continuation_prompt);
             prompt_msg.visibility = Visibility::Internal;
-            let messages = vec![assistant_msg, prompt_msg];
+            let messages = vec![prompt_msg];
 
             ActionSet::single(AfterInferenceAction::RetryInference { messages })
         } else {
@@ -210,19 +209,15 @@ mod tests {
         let action = actions.into_vec().pop().unwrap();
         match action {
             AfterInferenceAction::RetryInference { messages } => {
-                assert_eq!(messages.len(), 2);
-                assert_eq!(messages[0].content, "partial output...");
+                // Only the continuation prompt is injected; the truncated
+                // assistant response is already in the thread via the core loop.
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].content, "Please continue.");
                 assert_eq!(
                     messages[0].role,
-                    tirea_contract::thread::Role::Assistant
-                );
-                assert_eq!(messages[0].visibility, Visibility::Internal);
-                assert_eq!(messages[1].content, "Please continue.");
-                assert_eq!(
-                    messages[1].role,
                     tirea_contract::thread::Role::User
                 );
-                assert_eq!(messages[1].visibility, Visibility::Internal);
+                assert_eq!(messages[0].visibility, Visibility::Internal);
             }
             _ => panic!("expected RetryInference"),
         }
