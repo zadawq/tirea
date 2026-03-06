@@ -246,7 +246,7 @@ impl AgentOsBuilder {
             },
         )?;
 
-        if skills_config.mode != SkillsMode::Disabled
+        if skills_config.enabled
             && skills.is_empty()
             && skill_registries.is_empty()
         {

@@ -1,11 +1,7 @@
-use crate::{
-    LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
-    SkillRuntimePlugin, SkillScriptTool,
-};
+use crate::{LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillRegistry, SkillScriptTool};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_contract::runtime::tool_call::Tool;
-use tirea_contract::runtime::AgentBehavior;
 
 /// Errors returned when wiring the skills subsystem into an agent.
 #[derive(Debug, thiserror::Error)]
@@ -41,8 +37,8 @@ pub enum SkillSubsystemError {
 /// let mut tools = std::collections::HashMap::new();
 /// skills.extend_tools(&mut tools).unwrap();
 ///
-/// // 4) Register the combined plugin: discovery catalog + runtime injection.
-/// let config = BaseAgent::new("gpt-4o-mini").with_plugin(skills.plugin());
+/// // 4) Register the discovery plugin: injects skills catalog before inference.
+/// let config = BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(skills.discovery_plugin()));
 /// # let _ = config;
 /// # let _ = tools;
 /// ```
@@ -66,18 +62,7 @@ impl SkillSubsystem {
         &self.registry
     }
 
-    /// Build the combined skills plugin (discovery + runtime).
-    pub fn plugin(&self) -> Arc<dyn AgentBehavior> {
-        let discovery = SkillDiscoveryPlugin::new(self.registry.clone());
-        SkillPlugin::new(discovery).boxed()
-    }
-
-    /// Build only the runtime plugin (inject activated skills).
-    pub fn runtime_plugin(&self) -> Arc<dyn AgentBehavior> {
-        Arc::new(SkillRuntimePlugin::new())
-    }
-
-    /// Build only the discovery plugin.
+    /// Build the discovery plugin (injects skills catalog before inference).
     pub fn discovery_plugin(&self) -> SkillDiscoveryPlugin {
         SkillDiscoveryPlugin::new(self.registry.clone())
     }
@@ -134,7 +119,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::runtime::behavior::ReadOnlyContext;
+    use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
     use tirea_contract::runtime::phase::Phase;
     use tirea_contract::runtime::state::{reduce_state_actions, ScopeContext};
     use tirea_contract::runtime::tool_call::{ToolError, ToolResult};
@@ -344,8 +329,8 @@ mod tests {
             thread
         };
 
-        // Run the subsystem plugin and verify discovery catalog is injected.
-        let plugin = sys.plugin();
+        // Run the discovery plugin and verify discovery catalog is injected.
+        let plugin: Arc<dyn AgentBehavior> = Arc::new(sys.discovery_plugin());
         let state = thread.rebuild_state().unwrap();
         let fix = tirea_contract::testing::TestFixture::new_with_state(state);
         let run_config = tirea_contract::RunConfig::default();

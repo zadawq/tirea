@@ -75,4 +75,4 @@ pub use crate::extensions::reminder::{
 // ── Skills extension (require "skills" feature) ──────────────────────────
 
 #[cfg(feature = "skills")]
-pub use crate::skills::{SkillPlugin, SkillRegistry, SkillSubsystem};
+pub use crate::skills::{SkillDiscoveryPlugin, SkillRegistry, SkillSubsystem};

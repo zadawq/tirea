@@ -6,7 +6,7 @@ use super::stop_policy_plugin::{StopConditionSpec, StopPolicyPlugin, STOP_POLICY
 use super::*;
 use crate::extensions::skills::{
     InMemorySkillRegistry, Skill, SkillRegistry, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID,
-    SKILLS_PLUGIN_ID, SKILLS_RUNTIME_PLUGIN_ID,
+    SKILLS_PLUGIN_ID,
 };
 use crate::runtime::loop_runner::GenaiLlmExecutor;
 
@@ -76,7 +76,6 @@ impl AgentOs {
         &[
             SKILLS_PLUGIN_ID,
             SKILLS_DISCOVERY_PLUGIN_ID,
-            SKILLS_RUNTIME_PLUGIN_ID,
             AGENT_TOOLS_PLUGIN_ID,
             AGENT_RECOVERY_PLUGIN_ID,
             STOP_POLICY_PLUGIN_ID,
@@ -84,11 +83,7 @@ impl AgentOs {
     }
 
     fn reserved_skills_behavior_ids() -> &'static [&'static str] {
-        &[
-            SKILLS_PLUGIN_ID,
-            SKILLS_DISCOVERY_PLUGIN_ID,
-            SKILLS_RUNTIME_PLUGIN_ID,
-        ]
+        &[SKILLS_PLUGIN_ID, SKILLS_DISCOVERY_PLUGIN_ID]
     }
 
     fn resolve_behavior_id_list(
@@ -179,24 +174,14 @@ impl AgentOs {
         &self,
         registry: Arc<dyn SkillRegistry>,
     ) -> Vec<Arc<dyn AgentBehavior>> {
-        match self.skills_config.mode {
-            SkillsMode::Disabled => Vec::new(),
-            SkillsMode::DiscoveryAndRuntime => {
-                let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
-                    self.skills_config.discovery_max_entries,
-                    self.skills_config.discovery_max_chars,
-                );
-                vec![SkillPlugin::new(discovery).boxed()]
-            }
-            SkillsMode::DiscoveryOnly => {
-                let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
-                    self.skills_config.discovery_max_entries,
-                    self.skills_config.discovery_max_chars,
-                );
-                vec![Arc::new(discovery)]
-            }
-            SkillsMode::RuntimeOnly => vec![Arc::new(SkillRuntimePlugin::new())],
+        if !self.skills_config.enabled || !self.skills_config.advertise_catalog {
+            return Vec::new();
         }
+        let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
+            self.skills_config.discovery_max_entries,
+            self.skills_config.discovery_max_chars,
+        );
+        vec![Arc::new(discovery)]
     }
 
     fn freeze_agent_registry(&self) -> Arc<dyn AgentRegistry> {
@@ -229,7 +214,7 @@ impl AgentOs {
         resolved_plugins: &[Arc<dyn AgentBehavior>],
         skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
-        if self.skills_config.mode == SkillsMode::Disabled {
+        if !self.skills_config.enabled {
             return Ok(Vec::new());
         }
 

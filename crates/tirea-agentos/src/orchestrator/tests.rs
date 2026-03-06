@@ -254,7 +254,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
             FsSkill::discover(root).unwrap().skills,
         ))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryAndRuntime,
+            enabled: true,
             ..SkillsConfig::default()
         })
         .build()
@@ -270,7 +270,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
 
     let behavior_ids = cfg.behavior.behavior_ids();
     assert_eq!(behavior_ids.len(), 2);
-    assert_eq!(behavior_ids[0], "skills");
+    assert_eq!(behavior_ids[0], "skills_discovery");
     assert_eq!(behavior_ids[1], "stop_policy");
 
     // Verify injection does not panic and includes catalog.
@@ -311,7 +311,8 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
             FsSkill::discover(root).unwrap().skills,
         ))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::RuntimeOnly,
+            enabled: true,
+            advertise_catalog: false,
             ..SkillsConfig::default()
         })
         .build()
@@ -321,38 +322,15 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
+    // With advertise_catalog=false, no discovery plugin is registered — only tools.
     let behavior_ids = cfg.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 2);
-    assert_eq!(behavior_ids[0], "skills_runtime");
-    assert_eq!(behavior_ids[1], "stop_policy");
+    assert_eq!(behavior_ids.len(), 1);
+    assert_eq!(behavior_ids[0], "stop_policy");
 
-    let state = json!({
-        "skills": {
-            "active": ["s1"],
-            "instructions": {"s1": "Do X"},
-            "references": {},
-            "scripts": {}
-        }
-    });
-    let doc = tirea_state::DocCell::new(state);
-    let run_config = crate::contracts::RunConfig::new();
-    let ctx = ReadOnlyContext::new(
-        crate::contracts::runtime::phase::Phase::BeforeInference,
-        "thread_1",
-        &[],
-        &run_config,
-        &doc,
-    );
-    let actions = cfg.behavior.before_inference(&ctx).await;
-    let apply_fixture = TestFixture::new();
-    let mut apply_step = apply_fixture.step(vec![]);
-    apply_before_inference_for_test(&mut apply_step, actions);
-    let merged: String = apply_step.inference.system_context.join("\n");
-    assert!(!merged.contains("<available_skills>"));
-    assert!(
-        !merged.contains("<skill_instructions skill=\"s1\">"),
-        "runtime-only plugin is intentionally no-op for system context"
-    );
+    // Tools are still available even without the catalog plugin.
+    assert!(tools.contains_key("skill"));
+    assert!(tools.contains_key("load_skill_resource"));
+    assert!(tools.contains_key("skill_script"));
 }
 
 #[test]
@@ -363,7 +341,7 @@ fn wire_skills_disabled_is_noop() {
             FsSkill::discover(root).unwrap().skills,
         ))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::Disabled,
+            enabled: false,
             ..SkillsConfig::default()
         })
         .build()
@@ -454,7 +432,7 @@ fn build_errors_if_agent_references_reserved_skills_plugin_id() {
             FsSkill::discover(root).unwrap().skills,
         ))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryAndRuntime,
+            enabled: true,
             ..SkillsConfig::default()
         })
         .with_registered_behavior("skills", Arc::new(FakeSkillsPlugin))
@@ -561,7 +539,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
             FsSkill::discover(root).unwrap().skills,
         ))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryAndRuntime,
+            enabled: true,
             ..SkillsConfig::default()
         })
         .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
@@ -583,7 +561,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("agent_stop"));
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids.len(), 4);
-    assert_eq!(behavior_ids[0], "skills");
+    assert_eq!(behavior_ids[0], "skills_discovery");
     assert_eq!(behavior_ids[1], "agent_tools");
     assert_eq!(behavior_ids[2], "agent_recovery");
     assert_eq!(behavior_ids[3], "stop_policy");
@@ -894,7 +872,8 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .with_agent("root", AgentDefinition::new("gpt-4o-mini"))
         .with_skill_registry(dynamic_skills.clone() as Arc<dyn SkillRegistry>)
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryOnly,
+            enabled: true,
+            advertise_catalog: true,
             discovery_max_entries: 32,
             discovery_max_chars: 8 * 1024,
         })
@@ -966,7 +945,8 @@ fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
         .with_skill_registry(Arc::new(manager.clone()) as Arc<dyn SkillRegistry>)
         .with_skill_registry_refresh_interval(Duration::from_millis(20))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryOnly,
+            enabled: true,
+            advertise_catalog: true,
             discovery_max_entries: 32,
             discovery_max_chars: 8 * 1024,
         })
@@ -1212,7 +1192,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
             FsSkill::discover(root).unwrap().skills,
         ))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryAndRuntime,
+            enabled: true,
             ..SkillsConfig::default()
         })
         .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
@@ -1287,7 +1267,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
 fn build_errors_if_skills_enabled_without_root() {
     let err = AgentOs::builder()
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryAndRuntime,
+            enabled: true,
             ..SkillsConfig::default()
         })
         .build()
@@ -1306,7 +1286,8 @@ fn build_errors_on_duplicate_skill_id_across_skill_registries() {
         .with_skills(skills)
         .with_skill_registry(Arc::new(duplicate_registry) as Arc<dyn SkillRegistry>)
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryOnly,
+            enabled: true,
+            advertise_catalog: true,
             discovery_max_entries: 32,
             discovery_max_chars: 8 * 1024,
         })
@@ -1439,7 +1420,7 @@ async fn resolve_wires_skills_before_plugins() {
             FsSkill::discover(root).unwrap().skills,
         ))
         .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryAndRuntime,
+            enabled: true,
             ..SkillsConfig::default()
         })
         .with_registered_behavior("policy1", Arc::new(TestPlugin("policy1")))
@@ -1461,7 +1442,7 @@ async fn resolve_wires_skills_before_plugins() {
     assert!(resolved.tools.contains_key("agent_stop"));
 
     let behavior_ids = resolved.agent.behavior.behavior_ids();
-    assert_eq!(behavior_ids[0], "skills");
+    assert_eq!(behavior_ids[0], "skills_discovery");
     assert_eq!(behavior_ids[1], "agent_tools");
     assert_eq!(behavior_ids[2], "agent_recovery");
     assert_eq!(behavior_ids[3], "policy1");

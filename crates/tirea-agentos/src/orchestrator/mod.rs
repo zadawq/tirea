@@ -16,8 +16,8 @@ use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use crate::extensions::skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillError,
-    SkillPlugin, SkillRegistry, SkillRegistryError, SkillRegistryManagerError, SkillRuntimePlugin,
-    SkillSubsystem, SkillSubsystemError,
+    SkillRegistry, SkillRegistryError, SkillRegistryManagerError, SkillSubsystem,
+    SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
     Agent, AgentLoopError, BaseAgent, RunCancellationToken, StateCommitError, StateCommitter,
@@ -87,17 +87,17 @@ impl StateCommitter for AgentStateStoreStateCommitter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillsMode {
-    Disabled,
-    DiscoveryAndRuntime,
-    DiscoveryOnly,
-    RuntimeOnly,
-}
-
+/// Configuration for the skills subsystem.
+///
+/// - `enabled: false` → no skills tools or plugins are registered.
+/// - `enabled: true, advertise_catalog: true` → discovery plugin injects skills catalog
+///   before inference so the model knows which skills are available.
+/// - `enabled: true, advertise_catalog: false` → tools are registered but the catalog
+///   is not injected (the model must be told about skills through other means).
 #[derive(Debug, Clone)]
 pub struct SkillsConfig {
-    pub mode: SkillsMode,
+    pub enabled: bool,
+    pub advertise_catalog: bool,
     pub discovery_max_entries: usize,
     pub discovery_max_chars: usize,
 }
@@ -106,7 +106,8 @@ impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
             // Skills are opt-in. If enabled, the caller must provide skills.
-            mode: SkillsMode::Disabled,
+            enabled: false,
+            advertise_catalog: true,
             discovery_max_entries: 32,
             discovery_max_chars: 16 * 1024,
         }

@@ -10,7 +10,7 @@ use tirea_agentos::contracts::AgentEvent;
 use tirea_agentos::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
 use tirea_agentos::extensions::permission::PermissionPlugin;
 use tirea_agentos::extensions::skills::{
-    FsSkill, InMemorySkillRegistry, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
+    FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem,
 };
 use tirea_agentos::orchestrator::compose_behaviors;
 use tirea_contract::testing::TestFixture;
@@ -51,10 +51,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
 
     let behavior = compose_behaviors(
         "skills_test_router",
-        vec![
-            Arc::new(PermissionPlugin),
-            Arc::new(SkillRuntimePlugin::new()),
-        ],
+        vec![Arc::new(PermissionPlugin)],
     );
     let exec = execute_single_tool_with_scope_and_behavior(
         Some(tool.as_ref()),
@@ -163,7 +160,8 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
         FsSkill::into_arc_skills(result.skills),
     ));
     let skills = SkillSubsystem::new(registry);
-    let plugin = skills.plugin();
+    let plugin: Arc<dyn tirea_agentos::contracts::runtime::AgentBehavior> =
+        Arc::new(skills.discovery_plugin());
 
     // Even without activation, discovery should inject available_skills.
     let fixture = TestFixture::new();

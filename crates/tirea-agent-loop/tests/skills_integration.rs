@@ -15,19 +15,17 @@ use tirea_contract::testing::TestFixture;
 use tirea_extension_permission::{PermissionPlugin, SCOPE_ALLOWED_SKILLS_KEY};
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
-    SkillRuntimePlugin, SkillScriptTool,
+    SkillScriptTool,
 };
 
 struct TestToolBehavior {
     permission: PermissionPlugin,
-    skills_runtime: SkillRuntimePlugin,
 }
 
 impl TestToolBehavior {
     fn new() -> Self {
         Self {
             permission: PermissionPlugin,
-            skills_runtime: SkillRuntimePlugin::new(),
         }
     }
 }
@@ -39,9 +37,7 @@ impl AgentBehavior for TestToolBehavior {
     }
 
     fn behavior_ids(&self) -> Vec<&str> {
-        let mut ids = self.permission.behavior_ids();
-        ids.extend(self.skills_runtime.behavior_ids());
-        ids
+        self.permission.behavior_ids()
     }
 }
 
