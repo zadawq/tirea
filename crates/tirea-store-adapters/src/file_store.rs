@@ -1,3 +1,4 @@
+use crate::file_utils;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -6,7 +7,6 @@ use tirea_contract::storage::{
     ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
-use tokio::io::AsyncWriteExt;
 
 pub struct FileStore {
     base_path: PathBuf,
@@ -25,29 +25,9 @@ impl FileStore {
         Ok(self.base_path.join(format!("{}.json", thread_id)))
     }
 
-    /// Validate that a session ID is safe for use as a filename.
-    /// Rejects path separators, `..`, and control characters.
     fn validate_thread_id(thread_id: &str) -> Result<(), ThreadStoreError> {
-        if thread_id.is_empty() {
-            return Err(ThreadStoreError::InvalidId(
-                "thread id cannot be empty".to_string(),
-            ));
-        }
-        if thread_id.contains('/')
-            || thread_id.contains('\\')
-            || thread_id.contains("..")
-            || thread_id.contains('\0')
-        {
-            return Err(ThreadStoreError::InvalidId(format!(
-                "thread id contains invalid characters: {thread_id:?}"
-            )));
-        }
-        if thread_id.chars().any(|c| c.is_control()) {
-            return Err(ThreadStoreError::InvalidId(format!(
-                "thread id contains control characters: {thread_id:?}"
-            )));
-        }
-        Ok(())
+        file_utils::validate_fs_id(thread_id, "thread id")
+            .map_err(ThreadStoreError::InvalidId)
     }
 }
 
@@ -131,24 +111,7 @@ impl ThreadReader for FileStore {
         &self,
         query: &ThreadListQuery,
     ) -> Result<ThreadListPage, ThreadStoreError> {
-        // Read directory for all thread IDs
-        let mut all = if !self.base_path.exists() {
-            Vec::new()
-        } else {
-            let mut entries = tokio::fs::read_dir(&self.base_path).await?;
-            let mut ids = Vec::new();
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "json") {
-                    if let Some(stem) = path.file_stem() {
-                        if let Some(id) = stem.to_str() {
-                            ids.push(id.to_string());
-                        }
-                    }
-                }
-            }
-            ids
-        };
+        let mut all = file_utils::scan_json_stems(&self.base_path).await?;
 
         // Filter by resource_id if specified.
         if let Some(ref resource_id) = query.resource_id {
@@ -217,11 +180,6 @@ impl FileStore {
 
     /// Save a thread head (thread + version) to file atomically.
     async fn save_head(&self, head: &ThreadHead) -> Result<(), ThreadStoreError> {
-        if !self.base_path.exists() {
-            tokio::fs::create_dir_all(&self.base_path).await?;
-        }
-        let path = self.thread_path(&head.thread.id)?;
-
         // Embed version into the JSON
         let mut v = serde_json::to_value(&head.thread)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
@@ -231,35 +189,10 @@ impl FileStore {
         let content = serde_json::to_string_pretty(&v)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
 
-        let tmp_path = self.base_path.join(format!(
-            ".{}.{}.tmp",
-            head.thread.id,
-            uuid::Uuid::new_v4().simple()
-        ));
-
-        let write_result = async {
-            let mut file = tokio::fs::File::create(&tmp_path).await?;
-            file.write_all(content.as_bytes()).await?;
-            file.flush().await?;
-            file.sync_all().await?;
-            drop(file);
-            match tokio::fs::rename(&tmp_path, &path).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    tokio::fs::remove_file(&path).await?;
-                    tokio::fs::rename(&tmp_path, &path).await?;
-                }
-                Err(e) => return Err(e),
-            }
-            Ok::<(), std::io::Error>(())
-        }
-        .await;
-
-        if let Err(e) = write_result {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(ThreadStoreError::Io(e));
-        }
-        Ok(())
+        let filename = format!("{}.json", head.thread.id);
+        file_utils::atomic_json_write(&self.base_path, &filename, &content)
+            .await
+            .map_err(ThreadStoreError::Io)
     }
 }
 

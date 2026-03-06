@@ -2,6 +2,7 @@
 
 pub mod file_run_store;
 pub mod file_store;
+pub mod file_utils;
 pub mod memory_run_store;
 pub mod memory_store;
 #[cfg(feature = "nats")]

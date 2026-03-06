@@ -1,9 +1,9 @@
+use crate::file_utils;
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tirea_contract::storage::{
     paginate_runs_in_memory, RunPage, RunQuery, RunReader, RunRecord, RunStoreError, RunWriter,
 };
-use tokio::io::AsyncWriteExt;
 
 /// File-based run projection store.
 ///
@@ -25,61 +25,16 @@ impl FileRunStore {
     }
 
     fn validate_run_id(run_id: &str) -> Result<(), RunStoreError> {
-        if run_id.trim().is_empty() {
-            return Err(RunStoreError::InvalidId(
-                "run id cannot be empty".to_string(),
-            ));
-        }
-        if run_id.contains('/')
-            || run_id.contains('\\')
-            || run_id.contains("..")
-            || run_id.contains('\0')
-            || run_id.chars().any(|c| c.is_control())
-        {
-            return Err(RunStoreError::InvalidId(format!(
-                "run id contains invalid characters: {run_id:?}"
-            )));
-        }
-        Ok(())
+        file_utils::validate_fs_id(run_id, "run id").map_err(RunStoreError::InvalidId)
     }
 
     async fn save_run(&self, record: &RunRecord) -> Result<(), RunStoreError> {
-        if !self.base_path.exists() {
-            tokio::fs::create_dir_all(&self.base_path).await?;
-        }
-        let path = self.run_path(&record.run_id)?;
         let payload = serde_json::to_string_pretty(record)
             .map_err(|e| RunStoreError::Serialization(e.to_string()))?;
-
-        let tmp_path = self.base_path.join(format!(
-            ".{}.{}.tmp",
-            record.run_id,
-            uuid::Uuid::new_v4().simple()
-        ));
-
-        let write_result = async {
-            let mut file = tokio::fs::File::create(&tmp_path).await?;
-            file.write_all(payload.as_bytes()).await?;
-            file.flush().await?;
-            file.sync_all().await?;
-            drop(file);
-            match tokio::fs::rename(&tmp_path, &path).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    tokio::fs::remove_file(&path).await?;
-                    tokio::fs::rename(&tmp_path, &path).await?;
-                }
-                Err(e) => return Err(e),
-            }
-            Ok::<(), std::io::Error>(())
-        }
-        .await;
-
-        if let Err(err) = write_result {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(RunStoreError::Io(err));
-        }
-        Ok(())
+        let filename = format!("{}.json", record.run_id);
+        file_utils::atomic_json_write(&self.base_path, &filename, &payload)
+            .await
+            .map_err(RunStoreError::Io)
     }
 
     async fn load_all_runs(&self) -> Result<Vec<RunRecord>, RunStoreError> {
