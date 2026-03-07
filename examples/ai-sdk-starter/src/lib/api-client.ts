@@ -11,9 +11,17 @@ export function historyApiUrl(sessionId: string): string {
   return `${BACKEND_URL}/v1/ai-sdk/threads/${encodeURIComponent(sessionId)}/messages?limit=200`;
 }
 
-export function threadsApiUrl(): string {
-  return `${BACKEND_URL}/v1/threads?offset=0&limit=200`;
+export function threadSummariesUrl(): string {
+  return `${BACKEND_URL}/v1/threads/summaries`;
 }
+
+export type ThreadSummary = {
+  id: string;
+  title: string | null;
+  updated_at: number | null;
+  created_at: number | null;
+  message_count: number;
+};
 
 export async function fetchHistory(sessionId: string): Promise<UIMessage[]> {
   try {
@@ -28,13 +36,30 @@ export async function fetchHistory(sessionId: string): Promise<UIMessage[]> {
   }
 }
 
-export async function fetchThreadIds(): Promise<string[]> {
+export async function fetchThreadSummaries(): Promise<ThreadSummary[]> {
   try {
-    const res = await fetch(threadsApiUrl());
+    const res = await fetch(threadSummariesUrl());
     if (!res.ok) return [];
     const data = await res.json();
-    return Array.isArray(data.items) ? data.items : [];
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }
+}
+
+export async function patchThreadTitle(
+  threadId: string,
+  title: string,
+): Promise<void> {
+  await fetch(`${BACKEND_URL}/v1/threads/${encodeURIComponent(threadId)}/metadata`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteThread(threadId: string): Promise<void> {
+  await fetch(`${BACKEND_URL}/v1/threads/${encodeURIComponent(threadId)}`, {
+    method: "DELETE",
+  });
 }

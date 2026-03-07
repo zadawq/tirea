@@ -4,24 +4,142 @@ import { ChatInput } from "./chat-input";
 import { MetricsPanel } from "./metrics-panel";
 import { ToolProgressPanel } from "./tool-progress-panel";
 import type { StarterAction } from "@/lib/recommended-actions";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type ChatPanelProps = {
-  threadId: string;
+  threadId: string | null;
   agentId?: string;
   themeMode?: "light" | "dark";
   layout?: "default" | "conversation";
   recommendedActions?: StarterAction[];
+  onRequestThread?: () => string;
+  onFirstMessage?: (threadId: string, text: string) => void;
 };
 
 export function ChatPanel({
   threadId,
   agentId = "default",
   themeMode = "light",
-  layout = "default",
+  layout = "conversation",
   recommendedActions = [],
+  onRequestThread,
+  onFirstMessage,
 }: ChatPanelProps) {
   const [frontendBgColor, setFrontendBgColor] = useState<string | null>(null);
+  const [resolvedThreadId, setResolvedThreadId] = useState(threadId);
+  const pendingRef = useRef<string | null>(null);
+  const hasSentFirst = useRef(false);
+
+  useEffect(() => {
+    setResolvedThreadId(threadId);
+    hasSentFirst.current = false;
+    setFrontendBgColor(null);
+  }, [threadId]);
+
+  // Draft mode: no thread yet
+  if (!resolvedThreadId) {
+    const handleDraftSend = (text: string) => {
+      if (onRequestThread) {
+        const newId = onRequestThread();
+        pendingRef.current = text;
+        hasSentFirst.current = false;
+        setResolvedThreadId(newId);
+        onFirstMessage?.(newId, text);
+      }
+    };
+
+    return (
+      <div className="flex h-full flex-col">
+        <WelcomeScreen
+          actions={recommendedActions}
+          agentId={agentId}
+          onSend={handleDraftSend}
+        />
+        <ChatInput onSend={handleDraftSend} disabled={false} themeMode={themeMode} />
+      </div>
+    );
+  }
+
+  return (
+    <ActiveChatPanel
+      key={resolvedThreadId}
+      threadId={resolvedThreadId}
+      agentId={agentId}
+      themeMode={themeMode}
+      layout={layout}
+      recommendedActions={recommendedActions}
+      frontendBgColor={frontendBgColor}
+      setFrontendBgColor={setFrontendBgColor}
+      pendingRef={pendingRef}
+      hasSentFirst={hasSentFirst}
+      onFirstMessage={onFirstMessage}
+    />
+  );
+}
+
+function WelcomeScreen({
+  actions,
+  agentId,
+  onSend,
+}: {
+  actions: StarterAction[];
+  agentId: string;
+  onSend: (text: string) => void;
+}) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center px-4">
+      <h1 className="text-2xl font-semibold text-slate-800">tirea assistant</h1>
+      <p className="mt-2 text-sm text-slate-500">
+        Start a conversation or pick an action below.
+      </p>
+      {actions.length > 0 && (
+        <div className="mt-6 flex max-w-2xl flex-wrap justify-center gap-2">
+          {actions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              data-testid={`scenario-action-${action.scenarioId}`}
+              onClick={() => onSend(action.prompt)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-700 shadow-sm transition hover:border-slate-300 hover:shadow"
+            >
+              <div className="font-medium">{action.title}</div>
+              <div className="mt-0.5 text-xs text-slate-400">{action.capability}</div>
+            </button>
+          ))}
+        </div>
+      )}
+      {actions.length === 0 && (
+        <p className="mt-4 text-sm text-slate-400">
+          No recommended actions for the current agent. Type a message to begin.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ActiveChatPanel({
+  threadId,
+  agentId,
+  themeMode,
+  layout,
+  recommendedActions,
+  frontendBgColor,
+  setFrontendBgColor,
+  pendingRef,
+  hasSentFirst,
+  onFirstMessage,
+}: {
+  threadId: string;
+  agentId: string;
+  themeMode: "light" | "dark";
+  layout: "default" | "conversation";
+  recommendedActions: StarterAction[];
+  frontendBgColor: string | null;
+  setFrontendBgColor: (c: string | null) => void;
+  pendingRef: React.MutableRefObject<string | null>;
+  hasSentFirst: React.MutableRefObject<boolean>;
+  onFirstMessage?: (threadId: string, text: string) => void;
+}) {
   const {
     messages,
     sendMessage,
@@ -36,139 +154,117 @@ export function ChatPanel({
   } = useChatSession(threadId, agentId);
 
   const isLoading = status === "streaming" || status === "submitted";
-  const showQuickActions = recommendedActions.length > 0;
 
+  // Send pending message once chat session is loaded
   useEffect(() => {
-    setFrontendBgColor(null);
-  }, [threadId]);
+    if (historyLoaded && pendingRef.current) {
+      const text = pendingRef.current;
+      pendingRef.current = null;
+      sendMessage({ text });
+    }
+  }, [historyLoaded, sendMessage, pendingRef]);
+
+  const handleSend = (text: string) => {
+    if (!hasSentFirst.current) {
+      hasSentFirst.current = true;
+      onFirstMessage?.(threadId, text);
+    }
+    sendMessage({ text });
+  };
 
   if (!historyLoaded) {
-    const loadingClass =
-      themeMode === "dark" ? "text-slate-400" : "text-slate-400";
     return (
-      <div className={`flex h-full items-center justify-center text-sm ${loadingClass}`}>
+      <div className="flex h-full items-center justify-center text-sm text-slate-400">
         Loading...
       </div>
     );
   }
 
+  const showWelcome = messages.length === 0 && recommendedActions.length > 0;
+
   return (
     <div className="flex h-full flex-col">
-      {showQuickActions && (
+      {showWelcome && (
+        <WelcomeScreen
+          actions={recommendedActions}
+          agentId={agentId}
+          onSend={handleSend}
+        />
+      )}
+      {!showWelcome && (
         <div
-          className={
-            themeMode === "dark"
-              ? "border-b border-slate-700 bg-slate-900/70 px-4 py-3"
-              : "border-b border-slate-200 bg-slate-50 px-4 py-3"
+          data-testid="chat-frontend-surface"
+          className="min-h-0 flex-1"
+          style={
+            frontendBgColor
+              ? {
+                  backgroundImage: `linear-gradient(180deg, ${frontendBgColor}22 0%, transparent 36%)`,
+                }
+              : undefined
           }
         >
-          <div className={themeMode === "dark" ? "text-xs font-semibold text-slate-300" : "text-xs font-semibold text-slate-600"}>
-            Recommended Actions ({agentId})
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {recommendedActions.map((action) => (
-              <button
-                key={action.id}
-                type="button"
-                data-testid={`scenario-action-${action.scenarioId}`}
-                disabled={isLoading}
-                onClick={() => sendMessage({ text: action.prompt })}
-                className={
-                  themeMode === "dark"
-                    ? "rounded-full border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
-                    : "rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+          <div className="flex h-full min-h-0 flex-col">
+            <MessageList
+              messages={messages}
+              isLoading={isLoading}
+              askAnswers={askAnswers}
+              onAskAnswerChange={(toolCallId, value) =>
+                setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
+              }
+              onApprove={async (id) => {
+                await addToolOutput({
+                  tool: "PermissionConfirm" as never,
+                  toolCallId: id,
+                  state: "output-available",
+                  output: { approved: true } as never,
+                });
+              }}
+              onDeny={async (id) => {
+                await addToolOutput({
+                  tool: "PermissionConfirm" as never,
+                  toolCallId: id,
+                  state: "output-denied",
+                  output: { approved: false } as never,
+                });
+              }}
+              onAskSubmit={async (toolCallId, answer) => {
+                await addToolOutput({
+                  tool: "askUserQuestion" as never,
+                  toolCallId,
+                  state: "output-available",
+                  output: { message: answer } as never,
+                });
+                setAskAnswers((prev) => ({ ...prev, [toolCallId]: "" }));
+              }}
+              onFrontendToolSubmit={async (toolCallId, toolName, output) => {
+                if (
+                  toolName === "set_background_color" &&
+                  typeof output.color === "string"
+                ) {
+                  setFrontendBgColor(output.color);
                 }
-              >
-                <span>{action.title}</span>
-                <span className={themeMode === "dark" ? "ml-1 text-[10px] text-slate-400" : "ml-1 text-[10px] text-slate-500"}>
-                  {action.capability}
-                </span>
-                <span className={themeMode === "dark" ? "ml-1 text-[10px] text-cyan-300" : "ml-1 text-[10px] text-cyan-700"}>
-                  {action.scenarioId}
-                </span>
-              </button>
-            ))}
+                await addToolOutput({
+                  tool: toolName as never,
+                  toolCallId,
+                  state: "output-available",
+                  output: output as never,
+                });
+              }}
+              themeMode={themeMode}
+              layout={layout}
+            />
           </div>
         </div>
       )}
-      <div
-        data-testid="chat-frontend-surface"
-        className="min-h-0 flex-1"
-        style={
-          frontendBgColor
-            ? {
-                backgroundImage: `linear-gradient(180deg, ${frontendBgColor}22 0%, transparent 36%)`,
-              }
-            : undefined
-        }
-      >
-        <div className="flex h-full min-h-0 flex-col">
-          <MessageList
-            messages={messages}
-            isLoading={isLoading}
-            askAnswers={askAnswers}
-            onAskAnswerChange={(toolCallId, value) =>
-              setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
-            }
-            onApprove={async (id) => {
-              await addToolOutput({
-                tool: "PermissionConfirm" as never,
-                toolCallId: id,
-                state: "output-available",
-                output: { approved: true } as never,
-              });
-            }}
-            onDeny={async (id) => {
-              await addToolOutput({
-                tool: "PermissionConfirm" as never,
-                toolCallId: id,
-                state: "output-denied",
-                output: { approved: false } as never,
-              });
-            }}
-            onAskSubmit={async (toolCallId, answer) => {
-              await addToolOutput({
-                tool: "askUserQuestion" as never,
-                toolCallId,
-                state: "output-available",
-                output: { message: answer } as never,
-              });
-              setAskAnswers((prev) => ({ ...prev, [toolCallId]: "" }));
-            }}
-            onFrontendToolSubmit={async (toolCallId, toolName, output) => {
-              if (
-                toolName === "set_background_color" &&
-                typeof output.color === "string"
-              ) {
-                setFrontendBgColor(output.color);
-              }
-              await addToolOutput({
-                tool: toolName as never,
-                toolCallId,
-                state: "output-available",
-                output: output as never,
-              });
-            }}
-            themeMode={themeMode}
-            layout={layout}
-          />
-        </div>
-      </div>
       {error && (
-        <div
-          className={
-            themeMode === "dark"
-              ? "bg-red-950/30 px-4 py-2 text-sm text-red-300"
-              : "bg-red-50 px-4 py-2 text-sm text-red-600"
-          }
-        >
+        <div className="bg-red-50 px-4 py-2 text-sm text-red-600">
           Error: {error.message}
         </div>
       )}
       <ToolProgressPanel progressByNodeId={toolProgress} />
       <MetricsPanel metrics={metrics} />
       <ChatInput
-        onSend={(text) => sendMessage({ text })}
+        onSend={handleSend}
         disabled={isLoading}
         themeMode={themeMode}
       />

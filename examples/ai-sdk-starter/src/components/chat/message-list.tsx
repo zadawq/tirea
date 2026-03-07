@@ -50,7 +50,7 @@ export function MessageList({
   return (
     <div className="chat-messages flex-1 overflow-y-auto px-4 py-3">
       {messages.map((m) => (
-        <div key={m.id} className={isConversation ? "mb-3" : `border-b py-2 last:border-0 ${itemClass}`}>
+        <div key={m.id} className={isConversation ? "" : `border-b py-2 last:border-0 ${itemClass}`}>
           {isConversation ? (
             <ConversationItem
               role={m.role}
@@ -117,22 +117,15 @@ function ConversationItem({
   content: JSX.Element;
 }) {
   const isUser = role === "user";
-  const wrapperClass = isUser ? "flex justify-end" : "flex justify-start";
-  const bubbleClass = isUser
-    ? isDark
-      ? "max-w-[88%] rounded-2xl border border-cyan-700/40 bg-cyan-900/30 px-4 py-3"
-      : "max-w-[88%] rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3"
-    : isDark
-      ? "max-w-[88%] rounded-2xl border border-slate-700 bg-slate-800/90 px-4 py-3"
-      : "max-w-[88%] rounded-2xl border border-slate-200 bg-white px-4 py-3";
+  const borderClass = isDark ? "border-slate-800" : "border-slate-100";
 
   return (
-    <div className={wrapperClass}>
-      <div className={bubbleClass}>
-        <div className={`mb-1 text-xs font-semibold ${roleClass}`}>
+    <div className={`border-b py-4 last:border-b-0 ${borderClass}`}>
+      <div className="mx-auto max-w-3xl">
+        <div className={`mb-1.5 text-xs font-semibold ${roleClass}`}>
           {isUser ? "You" : "Assistant"}
         </div>
-        {content}
+        <div className={isUser ? "" : ""}>{content}</div>
       </div>
     </div>
   );

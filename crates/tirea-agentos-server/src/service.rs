@@ -466,8 +466,7 @@ pub async fn start_background_run(
     protocol_label: &'static str,
 ) -> Result<(String, String), ApiError> {
     let resolved = os.resolve(agent_id).map_err(AgentOsRunError::from)?;
-    let prepared =
-        prepare_http_run(os, resolved, run_request, protocol_label, agent_id).await?;
+    let prepared = prepare_http_run(os, resolved, run_request, protocol_label, agent_id).await?;
     let run_id = prepared.run_id.clone();
     let thread_id = prepared.thread_id.clone();
     let active_key = prepared.active_key.clone();

@@ -1,10 +1,10 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
 use tirea_agentos::contracts::storage::{MessagePage, ThreadListPage, ThreadListQuery};
@@ -17,8 +17,9 @@ use tirea_contract::{AgentEvent, Identity};
 
 use crate::run_service::{global_run_service, wrap_with_run_tracking};
 use crate::service::{
-    check_run_liveness, load_run_record, parse_message_query, prepare_http_run, remove_active_run,
-    resolve_thread_id_from_run, start_background_run, try_cancel_active_run_by_id,
+    check_run_liveness, load_run_record, parse_message_query, prepare_http_run,
+    remove_active_run, require_agent_state_store, resolve_thread_id_from_run,
+    start_background_run, try_cancel_active_run_by_id,
     try_forward_decisions_to_active_run_by_id, ApiError, MessageQueryParams, RunLookup,
 };
 use crate::transport::http_run::wire_http_sse_relay;
@@ -28,7 +29,9 @@ pub use crate::service::AppState;
 
 const HEALTH_PATH: &str = "/health";
 const THREADS_PATH: &str = "/v1/threads";
+const THREAD_SUMMARIES_PATH: &str = "/v1/threads/summaries";
 const THREAD_PATH: &str = "/v1/threads/:id";
+const THREAD_METADATA_PATH: &str = "/v1/threads/:id/metadata";
 const THREAD_MESSAGES_PATH: &str = "/v1/threads/:id/messages";
 const RUNS_PATH: &str = "/v1/runs";
 const RUN_PATH: &str = "/v1/runs/:id";
@@ -44,7 +47,10 @@ pub fn health_routes() -> Router<AppState> {
 pub fn thread_routes() -> Router<AppState> {
     Router::new()
         .route(THREADS_PATH, get(list_threads))
-        .route(THREAD_PATH, get(get_thread))
+        // Register /summaries before /:id to avoid `:id` capturing "summaries"
+        .route(THREAD_SUMMARIES_PATH, get(get_thread_summaries))
+        .route(THREAD_PATH, get(get_thread).delete(delete_thread))
+        .route(THREAD_METADATA_PATH, patch(patch_thread_metadata))
         .route(THREAD_MESSAGES_PATH, get(get_thread_messages))
 }
 
@@ -123,6 +129,117 @@ async fn get_thread_messages(
             }
             other => ApiError::Internal(other.to_string()),
         })
+}
+
+// ---------------------------------------------------------------------------
+// Thread CRUD + summaries
+// ---------------------------------------------------------------------------
+
+async fn delete_thread(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let store = require_agent_state_store(&st.os)?;
+    store
+        .delete(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchMetadataPayload {
+    title: Option<String>,
+}
+
+async fn patch_thread_metadata(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<PatchMetadataPayload>,
+) -> Result<Json<Value>, ApiError> {
+    let store = require_agent_state_store(&st.os)?;
+    let mut thread = store
+        .load_thread(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::ThreadNotFound(id))?;
+
+    if let Some(title) = payload.title {
+        thread
+            .metadata
+            .extra
+            .insert("title".to_string(), Value::String(title));
+    }
+
+    store
+        .save(&thread)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(serde_json::to_value(&thread.metadata).unwrap_or_default()))
+}
+
+#[derive(Debug, Serialize)]
+struct ThreadSummary {
+    id: String,
+    title: Option<String>,
+    updated_at: Option<u64>,
+    created_at: Option<u64>,
+    message_count: usize,
+}
+
+async fn get_thread_summaries(
+    State(st): State<AppState>,
+) -> Result<Json<Vec<ThreadSummary>>, ApiError> {
+    let query = ThreadListQuery {
+        offset: 0,
+        limit: 200,
+        resource_id: None,
+        parent_thread_id: None,
+    };
+    let page = st
+        .read_store
+        .list_paginated(&query)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let mut summaries = Vec::with_capacity(page.items.len());
+    for id in &page.items {
+        if let Some(head) = st
+            .read_store
+            .load(id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        {
+            // Skip sub-agent threads (they have a parent_thread_id)
+            if head.thread.parent_thread_id.is_some() {
+                continue;
+            }
+            let title = head
+                .thread
+                .metadata
+                .extra
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            summaries.push(ThreadSummary {
+                id: id.clone(),
+                title,
+                updated_at: head.thread.metadata.updated_at,
+                created_at: head.thread.metadata.created_at,
+                message_count: head.thread.messages.len(),
+            });
+        }
+    }
+
+    // Sort by updated_at descending (None treated as 0 → sorts last)
+    summaries.sort_by(|a, b| {
+        b.updated_at
+            .unwrap_or(0)
+            .cmp(&a.updated_at.unwrap_or(0))
+    });
+
+    Ok(Json(summaries))
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,9 +467,7 @@ async fn push_run_inputs(
         }
 
         return Err(match check_run_liveness(&id).await? {
-            RunLookup::ExistsButInactive => {
-                ApiError::BadRequest("run is not active".to_string())
-            }
+            RunLookup::ExistsButInactive => ApiError::BadRequest("run is not active".to_string()),
             RunLookup::NotFound => ApiError::RunNotFound(id),
         });
     }

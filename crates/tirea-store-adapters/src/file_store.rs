@@ -2,11 +2,19 @@ use crate::file_utils;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_contract::storage::{
     Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError,
     ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 pub struct FileStore {
     base_path: PathBuf,
@@ -26,8 +34,7 @@ impl FileStore {
     }
 
     fn validate_thread_id(thread_id: &str) -> Result<(), ThreadStoreError> {
-        file_utils::validate_fs_id(thread_id, "thread id")
-            .map_err(ThreadStoreError::InvalidId)
+        file_utils::validate_fs_id(thread_id, "thread id").map_err(ThreadStoreError::InvalidId)
     }
 }
 
@@ -38,9 +45,14 @@ impl ThreadWriter for FileStore {
         if path.exists() {
             return Err(ThreadStoreError::AlreadyExists);
         }
-        // Serialize with version=0 embedded
+        let mut thread = thread.clone();
+        let now = now_millis();
+        if thread.metadata.created_at.is_none() {
+            thread.metadata.created_at = Some(now);
+        }
+        thread.metadata.updated_at = Some(now);
         let head = ThreadHead {
-            thread: thread.clone(),
+            thread,
             version: 0,
         };
         self.save_head(&head).await?;
@@ -69,6 +81,7 @@ impl ThreadWriter for FileStore {
 
         let mut thread = head.thread;
         delta.apply_to(&mut thread);
+        thread.metadata.updated_at = Some(now_millis());
         let new_version = head.version + 1;
         let new_head = ThreadHead {
             thread,
@@ -93,8 +106,14 @@ impl ThreadWriter for FileStore {
             .load_head(&thread.id)
             .await?
             .map_or(0, |head| head.version.saturating_add(1));
+        let mut thread = thread.clone();
+        let now = now_millis();
+        thread.metadata.updated_at = Some(now);
+        if thread.metadata.created_at.is_none() {
+            thread.metadata.created_at = Some(now);
+        }
         let head = ThreadHead {
-            thread: thread.clone(),
+            thread,
             version: next_version,
         };
         self.save_head(&head).await
@@ -422,6 +441,48 @@ mod tests {
             head.thread.messages[1].tool_call_id.as_deref(),
             Some("call_42")
         );
+    }
+
+    #[tokio::test]
+    async fn file_storage_timestamps_populated() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStore::new(temp_dir.path());
+
+        // create() populates both timestamps
+        store.create(&Thread::new("ts-1")).await.unwrap();
+        let head = store.load("ts-1").await.unwrap().unwrap();
+        assert!(head.thread.metadata.created_at.is_some());
+        assert!(head.thread.metadata.updated_at.is_some());
+        let created = head.thread.metadata.created_at.unwrap();
+        let updated = head.thread.metadata.updated_at.unwrap();
+        assert!(created > 0);
+        assert_eq!(created, updated);
+
+        // append() updates updated_at
+        let delta = ThreadChangeSet {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::UserMessage,
+            messages: vec![Arc::new(Message::user("hello"))],
+            patches: vec![],
+            actions: vec![],
+            snapshot: None,
+        };
+        store
+            .append("ts-1", &delta, VersionPrecondition::Exact(0))
+            .await
+            .unwrap();
+        let head = store.load("ts-1").await.unwrap().unwrap();
+        assert!(head.thread.metadata.updated_at.unwrap() >= updated);
+        assert_eq!(head.thread.metadata.created_at.unwrap(), created);
+
+        // save() populates created_at if missing, updates updated_at
+        let thread = Thread::new("ts-2");
+        assert!(thread.metadata.created_at.is_none());
+        store.save(&thread).await.unwrap();
+        let head = store.load("ts-2").await.unwrap().unwrap();
+        assert!(head.thread.metadata.created_at.is_some());
+        assert!(head.thread.metadata.updated_at.is_some());
     }
 
     #[test]
