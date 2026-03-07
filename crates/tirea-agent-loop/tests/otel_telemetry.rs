@@ -31,6 +31,13 @@ fn find_attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a opentelemetry
         .map(|kv| &kv.value)
 }
 
+fn find_latest_chat_span(spans: &[SpanData]) -> Option<&SpanData> {
+    spans
+        .iter()
+        .rev()
+        .find(|span| span.name.starts_with("chat "))
+}
+
 fn setup_otel_test() -> (
     tracing::subscriber::DefaultGuard,
     InMemorySpanExporter,
@@ -251,10 +258,7 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
-    let span = exported
-        .iter()
-        .find(|s| s.name.starts_with("chat "))
-        .expect("expected chat span");
+    let span = find_latest_chat_span(&exported).expect("expected chat span");
     assert_eq!(
         find_attribute(span, "gen_ai.usage.input_tokens"),
         Some(&opentelemetry::Value::I64(10))
@@ -315,10 +319,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
     // OTel export should include error.type and Error status.
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
-    let span = exported
-        .iter()
-        .find(|s| s.name.starts_with("chat "))
-        .expect("expected chat span");
+    let span = find_latest_chat_span(&exported).expect("expected chat span");
     let error_type = find_attribute(span, "error.type")
         .map(|v| v.as_str().to_string())
         .unwrap_or_default();
@@ -391,10 +392,7 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
-    let span = exported
-        .iter()
-        .find(|s| s.name.starts_with("chat "))
-        .expect("expected chat span");
+    let span = find_latest_chat_span(&exported).expect("expected chat span");
     if let Some(error_type) = find_attribute(span, "error.type").map(|v| v.as_str()) {
         assert!(
             error_type == "llm_stream_start_error" || error_type == "llm_stream_event_error",
@@ -468,10 +466,7 @@ async fn test_run_loop_stream_success_exports_tokens_to_otel() {
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
-    let span = exported
-        .iter()
-        .find(|s| s.name.starts_with("chat "))
-        .expect("expected chat span for streaming success");
+    let span = find_latest_chat_span(&exported).expect("expected chat span for streaming success");
 
     // Verify no error status.
     assert!(
@@ -562,10 +557,7 @@ async fn test_run_loop_stream_connection_refused_closes_inference_span() {
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
-    let span = exported
-        .iter()
-        .find(|s| s.name.starts_with("chat "))
-        .expect("expected chat span for connection refused");
+    let span = find_latest_chat_span(&exported).expect("expected chat span for connection refused");
     assert!(
         find_attribute(span, "error.type").is_some(),
         "error span must have error.type attribute"
@@ -679,10 +671,7 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
-    let span = exported
-        .iter()
-        .find(|s| s.name.starts_with("chat "))
-        .expect("expected chat span");
+    let span = find_latest_chat_span(&exported).expect("expected chat span");
     let error_type = find_attribute(span, "error.type")
         .map(|v| v.as_str().to_string())
         .unwrap_or_default();
@@ -761,10 +750,7 @@ async fn test_run_loop_stream_sse_error_payload_is_not_silent_success() {
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
-    let span = exported
-        .iter()
-        .find(|s| s.name.starts_with("chat "))
-        .expect("expected chat span");
+    let span = find_latest_chat_span(&exported).expect("expected chat span");
     if let Some(error_type) = find_attribute(span, "error.type").map(|v| v.as_str()) {
         assert!(
             error_type == "llm_stream_start_error" || error_type == "llm_stream_event_error",
