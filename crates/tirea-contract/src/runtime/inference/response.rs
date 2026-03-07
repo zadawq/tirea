@@ -44,7 +44,7 @@ pub struct StreamResult {
     /// Token usage from the LLM response.
     pub usage: Option<TokenUsage>,
     /// Why the model stopped generating. `None` when the backend cannot
-    /// determine the reason (e.g. genai which discards stop_reason).
+    /// determine or map the provider stop reason.
     pub stop_reason: Option<StopReason>,
 }
 

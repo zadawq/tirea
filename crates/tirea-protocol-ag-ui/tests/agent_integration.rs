@@ -4275,6 +4275,7 @@ fn test_stream_collector_end_event_with_captured_tool_calls() {
 
     let end = StreamEnd {
         captured_usage: None,
+        captured_stop_reason: None,
         captured_content: Some(MessageContent::from_tool_calls(vec![tool_call])),
         captured_reasoning_content: None,
     };
@@ -4312,6 +4313,7 @@ fn test_stream_collector_end_event_with_multiple_captured_tool_calls() {
 
     let end = StreamEnd {
         captured_usage: None,
+        captured_stop_reason: None,
         captured_content: Some(MessageContent::from_tool_calls(vec![tc1, tc2])),
         captured_reasoning_content: None,
     };
@@ -4360,6 +4362,7 @@ fn test_stream_collector_end_merges_chunk_and_captured_tool_calls() {
     };
     let end = StreamEnd {
         captured_usage: None,
+        captured_stop_reason: None,
         captured_content: Some(MessageContent::from_tool_calls(vec![captured_tc])),
         captured_reasoning_content: None,
     };

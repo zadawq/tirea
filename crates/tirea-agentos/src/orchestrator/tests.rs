@@ -1099,6 +1099,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
                 reasoning_content: None,
                 model_iden: model_iden.clone(),
                 provider_model_iden: model_iden,
+                stop_reason: None,
                 usage: genai::chat::Usage::default(),
                 captured_raw_body: None,
             })
@@ -3578,6 +3579,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
                 reasoning_content: None,
                 model_iden: model_iden.clone(),
                 provider_model_iden: model_iden,
+                stop_reason: None,
                 usage: genai::chat::Usage::default(),
                 captured_raw_body: None,
             })

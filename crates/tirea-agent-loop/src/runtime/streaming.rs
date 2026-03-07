@@ -30,6 +30,17 @@ pub(crate) fn token_usage_from_genai(u: &Usage) -> TokenUsage {
     }
 }
 
+pub(crate) fn map_genai_stop_reason(raw: &str) -> Option<StopReason> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "stop" | "end_turn" | "completed" => Some(StopReason::EndTurn),
+        "length" | "max_tokens" | "model_length" => Some(StopReason::MaxTokens),
+        "tool_calls" | "tool_use" => Some(StopReason::ToolUse),
+        "stop_sequence" => Some(StopReason::StopSequence),
+        _ => None,
+    }
+}
+
 /// Partial tool call being collected during streaming.
 #[derive(Debug, Clone)]
 struct PartialToolCall {
@@ -47,6 +58,7 @@ pub struct StreamCollector {
     tool_calls: HashMap<String, PartialToolCall>,
     tool_call_order: Vec<String>,
     usage: Option<Usage>,
+    stop_reason: Option<String>,
 }
 
 impl StreamCollector {
@@ -149,6 +161,7 @@ impl StreamCollector {
                 output
             }
             ChatStreamEvent::End(end) => {
+                self.stop_reason = end.captured_stop_reason.clone();
                 // Use captured tool calls from the End event as the source
                 // of truth, overriding any partial data accumulated during
                 // streaming (which may be incorrect if chunks carried
@@ -217,21 +230,27 @@ impl StreamCollector {
         }
 
         let usage = self.usage.as_ref().map(token_usage_from_genai);
-        let mut stop_reason = Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens);
+        let explicit_stop_reason = self.stop_reason.as_deref().and_then(map_genai_stop_reason);
+        let mut stop_reason = explicit_stop_reason
+            .or_else(|| Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens));
 
         // When hitting max_tokens, the last tool call may have been
         // truncated mid-name or have empty arguments. Drop it — the model
         // will re-issue on the next turn after seeing the other results.
-        if matches!(stop_reason, Some(StopReason::MaxTokens) | Some(StopReason::ToolUse)) {
+        if matches!(
+            stop_reason,
+            Some(StopReason::MaxTokens) | Some(StopReason::ToolUse)
+        ) {
             if let (Some(u), Some(max)) = (&usage, max_output_tokens) {
                 if u.completion_tokens == Some(max as i32) {
                     if let Some(last) = tool_calls.last() {
                         if last.arguments.is_null() {
                             tool_calls.pop();
-                            // Re-infer: may switch from ToolUse → MaxTokens
-                            // if this was the only tool call.
-                            stop_reason =
-                                Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens);
+                            // Re-infer: may switch ToolUse -> MaxTokens if
+                            // this was the only (incomplete) tool call.
+                            stop_reason = explicit_stop_reason.or_else(|| {
+                                Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens)
+                            });
                         }
                     }
                 }
@@ -331,6 +350,62 @@ mod tests {
         let collector = StreamCollector::new();
         assert!(collector.text().is_empty());
         assert!(!collector.has_tool_calls());
+    }
+
+    #[test]
+    fn test_map_genai_stop_reason_known_values() {
+        assert_eq!(map_genai_stop_reason("stop"), Some(StopReason::EndTurn));
+        assert_eq!(map_genai_stop_reason("END_TURN"), Some(StopReason::EndTurn));
+        assert_eq!(map_genai_stop_reason("length"), Some(StopReason::MaxTokens));
+        assert_eq!(
+            map_genai_stop_reason(" model_length "),
+            Some(StopReason::MaxTokens)
+        );
+        assert_eq!(
+            map_genai_stop_reason("tool_calls"),
+            Some(StopReason::ToolUse)
+        );
+        assert_eq!(
+            map_genai_stop_reason("stop_sequence"),
+            Some(StopReason::StopSequence)
+        );
+    }
+
+    #[test]
+    fn test_map_genai_stop_reason_unknown_value() {
+        assert_eq!(map_genai_stop_reason("content_filter"), None);
+    }
+
+    #[test]
+    fn test_stream_collector_finish_prefers_explicit_stop_reason() {
+        let mut collector = StreamCollector::new();
+        collector.process(ChatStreamEvent::End(genai::chat::StreamEnd {
+            captured_usage: Some(Usage {
+                completion_tokens: Some(128),
+                ..Default::default()
+            }),
+            captured_stop_reason: Some("stop_sequence".to_string()),
+            ..Default::default()
+        }));
+
+        let result = collector.finish(Some(128));
+        assert_eq!(result.stop_reason, Some(StopReason::StopSequence));
+    }
+
+    #[test]
+    fn test_stream_collector_finish_falls_back_when_explicit_stop_reason_unknown() {
+        let mut collector = StreamCollector::new();
+        collector.process(ChatStreamEvent::End(genai::chat::StreamEnd {
+            captured_usage: Some(Usage {
+                completion_tokens: Some(128),
+                ..Default::default()
+            }),
+            captured_stop_reason: Some("unknown_stop_reason".to_string()),
+            ..Default::default()
+        }));
+
+        let result = collector.finish(Some(128));
+        assert_eq!(result.stop_reason, Some(StopReason::MaxTokens));
     }
 
     #[test]

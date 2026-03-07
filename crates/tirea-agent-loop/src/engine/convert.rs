@@ -146,7 +146,7 @@ mod tests {
 
         let genai_tool = to_genai_tool(&desc);
 
-        assert_eq!(genai_tool.name, "calc");
+        assert_eq!(genai_tool.name.to_string(), "calc");
         assert_eq!(
             genai_tool.description.as_deref(),
             Some("Calculate expressions")
@@ -385,7 +385,7 @@ mod tests {
             }));
 
         let genai_tool = to_genai_tool(&desc);
-        assert_eq!(genai_tool.name, "api");
+        assert_eq!(genai_tool.name.to_string(), "api");
     }
 
     #[test]

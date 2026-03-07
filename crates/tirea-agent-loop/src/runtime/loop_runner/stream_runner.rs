@@ -152,6 +152,10 @@ fn stream_event_has_payload(event: &genai::chat::ChatStreamEvent) -> bool {
                 .as_ref()
                 .is_some_and(genai_usage_has_tokens)
                 || end
+                    .captured_stop_reason
+                    .as_ref()
+                    .is_some_and(|reason| !reason.is_empty())
+                || end
                     .captured_reasoning_content
                     .as_ref()
                     .is_some_and(|value| !value.is_empty())
@@ -992,4 +996,25 @@ pub(super) fn run_stream(
 
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_event_has_payload;
+    use genai::chat::{ChatStreamEvent, StreamEnd};
+
+    #[test]
+    fn stream_end_with_captured_stop_reason_counts_as_payload() {
+        let event = ChatStreamEvent::End(StreamEnd {
+            captured_stop_reason: Some("stop".to_string()),
+            ..Default::default()
+        });
+        assert!(stream_event_has_payload(&event));
+    }
+
+    #[test]
+    fn stream_end_without_any_captured_values_has_no_payload() {
+        let event = ChatStreamEvent::End(StreamEnd::default());
+        assert!(!stream_event_has_payload(&event));
+    }
 }

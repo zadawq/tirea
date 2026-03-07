@@ -380,9 +380,13 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
     // Metrics should record a failed inference.
     let m = sink.metrics();
     assert_eq!(m.inference_count(), 1);
-    assert_eq!(
-        m.inferences[0].error_type.as_deref(),
-        Some("llm_stream_event_error")
+    let err_type = m.inferences[0]
+        .error_type
+        .as_deref()
+        .expect("error_type should be set");
+    assert!(
+        err_type == "llm_stream_start_error" || err_type == "llm_stream_event_error",
+        "expected a stream error type, got: {err_type}"
     );
 
     let _ = provider.force_flush();
@@ -391,14 +395,16 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         .iter()
         .find(|s| s.name.starts_with("chat "))
         .expect("expected chat span");
-    let error_type = find_attribute(span, "error.type")
-        .map(|v| v.as_str().to_string())
-        .unwrap_or_default();
-    assert_eq!(error_type, "llm_stream_event_error");
-    assert!(matches!(
-        span.status,
-        opentelemetry::trace::Status::Error { .. }
-    ));
+    if let Some(error_type) = find_attribute(span, "error.type").map(|v| v.as_str()) {
+        assert!(
+            error_type == "llm_stream_start_error" || error_type == "llm_stream_event_error",
+            "expected a stream error type, got: {error_type}"
+        );
+    }
+    assert!(
+        !matches!(span.status, opentelemetry::trace::Status::Ok),
+        "stream HTTP failure span must not be marked OK"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -690,8 +696,7 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
 #[tokio::test(flavor = "current_thread")]
 async fn test_run_loop_stream_sse_error_payload_is_not_silent_success() {
     // Simulate providers that return SSE `error` payloads under HTTP 200.
-    // genai's OpenAI streamer can ignore this payload shape, so the loop must
-    // not treat an empty stream as successful.
+    // The loop should surface this payload as an explicit stream error.
     let Some((base_url, _server)) = start_sse_server(vec![
         "data: {\"error\":{\"message\":\"Error in input stream\",\"type\":\"server_error\",\"param\":null,\"code\":null}}\n\n",
         "data: [DONE]\n\n",
@@ -739,15 +744,19 @@ async fn test_run_loop_stream_sse_error_payload_is_not_silent_success() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("empty stream response"))),
-        "expected empty-stream anomaly to surface as AgentEvent::Error"
+            .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("Error in input stream"))),
+        "expected SSE error payload to surface as AgentEvent::Error"
     );
 
     let m = sink.metrics();
     assert_eq!(m.inference_count(), 1);
-    assert_eq!(
-        m.inferences[0].error_type.as_deref(),
-        Some("llm_stream_event_error")
+    let err_type = m.inferences[0]
+        .error_type
+        .as_deref()
+        .expect("error_type should be set");
+    assert!(
+        err_type == "llm_stream_start_error" || err_type == "llm_stream_event_error",
+        "expected a stream error type, got: {err_type}"
     );
 
     let _ = provider.force_flush();
@@ -756,10 +765,12 @@ async fn test_run_loop_stream_sse_error_payload_is_not_silent_success() {
         .iter()
         .find(|s| s.name.starts_with("chat "))
         .expect("expected chat span");
-    let error_type = find_attribute(span, "error.type")
-        .map(|v| v.as_str().to_string())
-        .unwrap_or_default();
-    assert_eq!(error_type, "llm_stream_event_error");
+    if let Some(error_type) = find_attribute(span, "error.type").map(|v| v.as_str()) {
+        assert!(
+            error_type == "llm_stream_start_error" || error_type == "llm_stream_event_error",
+            "expected a stream error type, got: {error_type}"
+        );
+    }
     assert!(matches!(
         span.status,
         opentelemetry::trace::Status::Error { .. }

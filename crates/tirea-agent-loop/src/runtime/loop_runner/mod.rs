@@ -680,12 +680,17 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
     let usage = Some(crate::runtime::streaming::token_usage_from_genai(
         &response.usage,
     ));
-    // genai does not expose stop_reason; infer from tool calls.
-    let stop_reason = if !tool_calls.is_empty() {
-        Some(tirea_contract::runtime::inference::StopReason::ToolUse)
-    } else {
-        Some(tirea_contract::runtime::inference::StopReason::EndTurn)
-    };
+    let stop_reason = response
+        .stop_reason
+        .as_deref()
+        .and_then(crate::runtime::streaming::map_genai_stop_reason)
+        .or_else(|| {
+            if !tool_calls.is_empty() {
+                Some(tirea_contract::runtime::inference::StopReason::ToolUse)
+            } else {
+                Some(tirea_contract::runtime::inference::StopReason::EndTurn)
+            }
+        });
     StreamResult {
         text,
         tool_calls,
