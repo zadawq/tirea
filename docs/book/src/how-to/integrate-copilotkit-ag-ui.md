@@ -102,6 +102,20 @@ function onAgUiEvent(event: any) {
 - `agent` in `CopilotKit` provider does not match runtime `agents` key.
 - Package version mismatch may require temporary `as any` cast for `HttpAgent`.
 
+## Related Example
+
+- `examples/copilotkit-starter/README.md` is the full-featured AG-UI + CopilotKit starter
+- `examples/travel-ui/README.md` is the smaller travel-specific CopilotKit scenario demo
+- `examples/research-ui/README.md` is the research-specific CopilotKit scenario demo
+
+## Key Files
+
+- `examples/copilotkit-starter/lib/copilotkit-app.ts`
+- `examples/copilotkit-starter/lib/persisted-http-agent.ts`
+- `examples/travel-ui/lib/copilotkit-app.ts`
+- `examples/research-ui/lib/copilotkit-app.ts`
+- `examples/copilotkit-starter/app/api/copilotkit/route.ts`
+
 ## Related
 
 - [AG-UI Protocol](../reference/protocols/ag-ui.md)

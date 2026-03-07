@@ -53,6 +53,16 @@ let add = add_reminder_action("Call Alice at 3pm");
 - Behavior registered but not attached to target agent.
 - Assuming reminders are per-run; reminder scope is thread-level state.
 
+## Related Example
+
+- No dedicated starter ships with reminders enabled by default; layer this plugin onto `examples/ai-sdk-starter/README.md` or `examples/copilotkit-starter/README.md`
+
+## Key Files
+
+- `crates/tirea-extension-reminder/src/lib.rs`
+- `crates/tirea-extension-reminder/src/actions.rs`
+- `crates/tirea-extension-reminder/src/state.rs`
+
 ## Related
 
 - [Add a Plugin](./add-a-plugin.md)

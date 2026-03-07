@@ -75,6 +75,18 @@ while let Some(event) = events.next().await {
 - Empty runs with no meaningful output:
   Confirm user message is appended in `RunRequest.messages`.
 
+## Related Example
+
+- `examples/ai-sdk-starter/README.md` is the fastest browser-facing backend integration
+- `examples/copilotkit-starter/README.md` shows the same runtime exposed through AG-UI with richer UI state
+
+## Key Files
+
+- `examples/src/starter_backend/mod.rs`
+- `crates/tirea-agentos/src/orchestrator/agent_definition.rs`
+- `crates/tirea-agentos/src/orchestrator/builder.rs`
+- `crates/tirea-agentos-server/src/main.rs`
+
 ## Related
 
 - [Expose HTTP SSE](./expose-http-sse.md)

@@ -46,8 +46,8 @@ Choose the path that matches what you want to do first:
 
 - `examples/ai-sdk-starter/`: AI SDK v6 starter, fastest browser-based demo path
 - `examples/copilotkit-starter/`: CopilotKit + AG-UI starter
-- `examples/travel-ui/`: travel planning UI example
-- `examples/research-ui/`: research workflow UI example
+- `examples/travel-ui/`: travel planning UI demo, see [`examples/travel-ui/README.md`](./examples/travel-ui/README.md)
+- `examples/research-ui/`: research workflow UI demo, see [`examples/research-ui/README.md`](./examples/research-ui/README.md)
 - `examples/src/`: shared Rust example backends and tools
 - `e2e/`: Playwright, Phoenix, and TensorZero integration tests
 
@@ -109,6 +109,18 @@ npm run dev
 ```
 
 See: [`examples/copilotkit-starter/README.md`](./examples/copilotkit-starter/README.md)
+
+### Travel UI
+
+Use this when you want a smaller CopilotKit + AG-UI scenario demo focused on map actions and approval-gated trip planning.
+
+See: [`examples/travel-ui/README.md`](./examples/travel-ui/README.md)
+
+### Research UI
+
+Use this when you want a CopilotKit + AG-UI scenario demo focused on resource collection, report writing, and approval-gated deletion.
+
+See: [`examples/research-ui/README.md`](./examples/research-ui/README.md)
 
 ## Documentation
 

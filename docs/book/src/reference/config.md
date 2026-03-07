@@ -48,6 +48,16 @@ Agent file fields:
 - `parallel_batch_approval`
 - `parallel_streaming`
 
+## Tool Execution Mode Semantics
+
+| Mode | Scheduler | Suspension handling | Use when |
+|---|---|---|---|
+| `sequential` | One tool call at a time | At most one call is actively executing at a time | Deterministic debugging and strict call ordering matter more than latency |
+| `parallel_batch_approval` | Parallel tool execution per round | Approval/suspension outcomes are applied after the tool round commits | Multiple tools may fan out, but you still want batch-style resume behavior |
+| `parallel_streaming` | Parallel tool execution per round | Stream mode can surface progress and apply resume decisions while tools are still in flight | Rich UIs need progress, activity events, and lower-latency approval loops |
+
+`parallel_streaming` is the default because it fits the frontend-oriented AG-UI / AI SDK starter flows well.
+
 `stop_condition_specs` (`StopConditionSpec`) values:
 
 - `max_rounds`
@@ -57,6 +67,26 @@ Agent file fields:
 - `stop_on_tool`
 - `content_match`
 - `loop_detection`
+
+## Stop Policy Wiring and Semantics
+
+Stop conditions are enforced by the internal `stop_policy` behavior. You do not register this behavior id manually; `AgentOsBuilder` wires it automatically when an agent resolves with stop specs or stop-condition ids.
+
+`max_rounds` is still the top-level ergonomic field on `AgentDefinition`, but it is lowered into `StopConditionSpec::MaxRounds` during wiring. If you already provide an explicit `max_rounds` stop spec, the implicit one is not added a second time.
+
+Built-in stop conditions:
+
+| Spec | What it measures | Use when |
+|---|---|---|
+| `max_rounds` | Completed tool/inference rounds | You want a hard upper bound on loop depth |
+| `timeout` | Wall-clock elapsed time | Long-running agents must terminate predictably |
+| `token_budget` | Cumulative prompt + completion tokens | Spend must stay inside a token budget |
+| `consecutive_errors` | Back-to-back failing tool rounds | You want to halt repeated tool failure cascades |
+| `stop_on_tool` | Specific tool id emitted by the model | A tool should act as an explicit finish/escape hatch |
+| `content_match` | Literal text pattern in model output | You need a simple semantic stop trigger without a dedicated tool |
+| `loop_detection` | Repeated tool-call name patterns | You want to cut off obvious repetitive tool loops |
+
+Stop-policy runtime bookkeeping lives in run-scoped state under `__kernel.stop_policy_runtime`, so it is reset on each new run.
 
 ## AgentDefinition Fields (Builder-Level)
 
@@ -70,6 +100,13 @@ Agent file fields:
   - tools: `allowed_tools`, `excluded_tools`
   - skills: `allowed_skills`, `excluded_skills`
   - delegated agents: `allowed_agents`, `excluded_agents`
+
+## Model Fallbacks and Retries
+
+- `fallback_models`: ordered fallback model ids that are tried after the primary `model`
+- `llm_retry_policy`: retry behavior for transient inference failures before the framework escalates to fallbacks or terminates
+
+Keep these fields close to your provider registry definitions so a single source of truth controls which model ids are valid in each environment.
 
 ## Scope Keys (RunConfig)
 

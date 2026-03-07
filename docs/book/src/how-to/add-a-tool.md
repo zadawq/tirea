@@ -57,6 +57,18 @@ impl Tool for MyTool {
 - Silent argument defaults: prefer explicit validation for required fields.
 - Non-deterministic side effects: hard to replay/debug and can break tests.
 
+## Related Example
+
+- `examples/ai-sdk-starter/README.md` is the shortest end-to-end path for adding tools to a browser demo
+- `examples/copilotkit-starter/README.md` shows tool rendering, approval, and persisted-thread integration
+
+## Key Files
+
+- `examples/src/starter_backend/tools.rs`
+- `examples/src/travel/tools.rs`
+- `examples/src/research/tools.rs`
+- `crates/tirea-contract/src/runtime/tool_call/tool.rs`
+
 ## Related
 
 - [First Tool](../tutorials/first-tool.md)

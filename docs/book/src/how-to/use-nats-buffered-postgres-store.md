@@ -71,6 +71,16 @@ let read_store: Arc<dyn ThreadReader> = postgres.clone();
 - Running without JetStream enabled on NATS server.
 - Expecting query endpoints to include not-yet-flushed in-run deltas.
 
+## Related Example
+
+- No dedicated UI starter ships for this storage path; use `crates/tirea-agentos-server/tests/e2e_nats_postgres.rs` as the end-to-end integration fixture
+
+## Key Files
+
+- `crates/tirea-store-adapters/src/nats_buffered.rs`
+- `crates/tirea-store-adapters/src/postgres_store.rs`
+- `crates/tirea-agentos-server/tests/e2e_nats_postgres.rs`
+
 ## Related
 
 - [Use Postgres Store](./use-postgres-store.md)

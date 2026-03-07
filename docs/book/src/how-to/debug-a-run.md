@@ -55,6 +55,17 @@ A fix is effective when:
 - Inspecting latest thread snapshot but not patch delta/version movement.
 - Mixing protocol-encoded events with canonical `AgentEvent` semantics.
 
+## Related Example
+
+- `examples/ai-sdk-starter/README.md` includes thread-history verification that is useful when debugging replay and persistence issues
+- `examples/copilotkit-starter/README.md` includes persisted-thread and canvas flows that surface event-ordering and approval issues quickly
+
+## Key Files
+
+- `crates/tirea-agent-loop/src/runtime/loop_runner/mod.rs`
+- `crates/tirea-agentos-server/src/http.rs`
+- `crates/tirea-agentos-server/tests/run_api.rs`
+
 ## Related
 
 - [Events](../reference/events.md)

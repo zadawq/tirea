@@ -45,6 +45,17 @@ nats req agentos.ag-ui.runs '{"agentId":"assistant","request":{"threadId":"threa
 - Invalid JSON payload or missing required fields.
 - Unknown `agentId` returns one error event on reply subject.
 
+## Related Example
+
+- No dedicated UI starter ships for NATS yet; use `crates/tirea-agentos-server/tests/nats_gateway.rs` as the end-to-end fixture
+
+## Key Files
+
+- `crates/tirea-agentos-server/src/protocol/ag_ui/nats.rs`
+- `crates/tirea-agentos-server/src/protocol/ai_sdk_v6/nats.rs`
+- `crates/tirea-agentos-server/src/transport/nats.rs`
+- `crates/tirea-agentos-server/tests/nats_gateway.rs`
+
 ## Related
 
 - [NATS Protocol](../reference/protocols/nats.md)

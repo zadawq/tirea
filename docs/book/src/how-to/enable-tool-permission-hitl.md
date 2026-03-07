@@ -73,6 +73,20 @@ curl -X POST \
 - Wrong behavior order (`permission` before `tool_policy`) makes out-of-scope checks less strict.
 - Missing `target_id` / malformed decisions prevents resume.
 
+## Related Example
+
+- `examples/copilotkit-starter/README.md` is the most complete approval-focused frontend integration
+- `examples/travel-ui/README.md` shows approval-gated trip creation
+- `examples/research-ui/README.md` shows approval-gated resource deletion
+
+## Key Files
+
+- `crates/tirea-extension-permission/src/plugin.rs`
+- `examples/src/starter_backend/mod.rs`
+- `examples/ai-sdk-starter/src/components/tools/permission-dialog.tsx`
+- `examples/travel-ui/hooks/useTripApproval.tsx`
+- `examples/research-ui/hooks/useDeleteApproval.tsx`
+
 ## Related
 
 - [Run API](../reference/run-api.md)

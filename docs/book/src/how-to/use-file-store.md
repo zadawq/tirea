@@ -45,6 +45,17 @@ let os = AgentOsBuilder::new()
 - Multiple writers on same files causing frequent conflicts.
 - Assuming file store is suitable for horizontally scaled production.
 
+## Related Example
+
+- `examples/ai-sdk-starter/README.md` and `examples/copilotkit-starter/README.md` both default to local file-backed storage for their starter backends
+
+## Key Files
+
+- `crates/tirea-store-adapters/src/file_store.rs`
+- `crates/tirea-store-adapters/src/file_run_store.rs`
+- `examples/src/lib.rs`
+- `examples/src/starter_backend/mod.rs`
+
 ## Related
 
 - [Use Postgres Store](./use-postgres-store.md)

@@ -10,6 +10,7 @@
 # How-to
 
 - [Build an Agent](./how-to/build-an-agent.md)
+- [Configure Stop Policies](./how-to/configure-stop-policies.md)
 - [Add a Tool](./how-to/add-a-tool.md)
 - [Add a Plugin](./how-to/add-a-plugin.md)
 - [Use File Store](./how-to/use-file-store.md)
@@ -52,6 +53,7 @@
 - [Architecture](./explanation/architecture.md)
 - [State and Patch Model](./explanation/state-and-patch-model.md)
 - [Run Lifecycle and Phases](./explanation/run-lifecycle-and-phases.md)
+- [HITL and Decision Flow](./explanation/hitl-and-decision-flow.md)
 - [Sub-Agent Delegation](./explanation/sub-agent-delegation.md)
 - [Persistence and Versioning](./explanation/persistence-and-versioning.md)
 - [Tool and Plugin Boundary](./explanation/tool-and-plugin-boundary.md)

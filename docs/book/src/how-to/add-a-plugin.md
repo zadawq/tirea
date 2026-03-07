@@ -52,6 +52,18 @@ impl AgentBehavior for AuditBehavior {
 - Using the wrong phase (effect appears too early or too late).
 - Unbounded mutations in a behavior, making runs hard to reason about.
 
+## Related Example
+
+- `examples/src/travel.rs` shows a production `LLMMetryPlugin` registration path
+- `examples/src/starter_backend/mod.rs` wires permission and tool-policy behaviors into multiple agents
+
+## Key Files
+
+- `crates/tirea-contract/src/runtime/behavior.rs`
+- `crates/tirea-agentos/src/orchestrator/builder.rs`
+- `crates/tirea-extension-reminder/src/lib.rs`
+- `crates/tirea-extension-permission/src/plugin.rs`
+
 ## Related
 
 - [Run Lifecycle and Phases](../explanation/run-lifecycle-and-phases.md)

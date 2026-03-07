@@ -72,6 +72,16 @@ let _stopped = manager.stop_periodic_refresh().await;
 - Duplicate tool id conflict when merging with existing tool map.
 - Periodic refresh started without Tokio runtime.
 
+## Related Example
+
+- `examples/ai-sdk-starter/README.md` can surface MCP tool cards when the starter backend is run with `MCP_SERVER_CMD`
+
+## Key Files
+
+- `crates/tirea-extension-mcp/src/lib.rs`
+- `crates/tirea-extension-mcp/src/client_transport.rs`
+- `examples/src/starter_backend/mod.rs`
+
 ## Related
 
 - [Capability Matrix](../reference/capability-matrix.md)

@@ -91,6 +91,20 @@ At run preparation (`prepare_run`), the framework:
 This guarantees `Run`-scoped state (e.g., `__run`, `__kernel.stop_policy_runtime`)
 starts from defaults on every new run, preventing cross-run leakage.
 
+### Choosing a scope when authoring state
+
+| State shape | Recommended scope | Why |
+|---|---|---|
+| User-visible business state (threads, notes, trips, reports) | `Thread` | Must survive across runs and reloads |
+| Execution bookkeeping (`__run`, stop-policy counters, per-run temp state) | `Run` | Useful only while one run is active and must not leak into the next run |
+| Pending approval / per-call scratch state | `ToolCall` | Bound to a single tool invocation and cleaned when that call resolves |
+
+In practice:
+
+- prefer `Thread` for state a user would expect to see after a page reload;
+- prefer `Run` for coordination state owned by plugins or the runtime;
+- prefer `ToolCall` when the data only makes sense while a specific suspended call exists.
+
 ## Why It Matters
 
 - Prevents silent lost updates under concurrent writers.

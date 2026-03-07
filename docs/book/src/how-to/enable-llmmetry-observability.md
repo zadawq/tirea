@@ -64,6 +64,16 @@ let os = AgentOsBuilder::new()
 - Registering plugin but not adding behavior id to agent.
 - Setting wrong model/provider labels, causing misleading metrics dimensions.
 
+## Related Example
+
+- `examples/src/travel.rs` wires `LLMMetryPlugin` into a real runnable backend
+
+## Key Files
+
+- `crates/tirea-extension-observability/src/lib.rs`
+- `examples/src/travel.rs`
+- `crates/tirea-agentos-server/tests/phoenix_observability_e2e.rs`
+
 ## Related
 
 - [Add a Plugin](./add-a-plugin.md)

@@ -62,6 +62,16 @@ let loaded = store.load_agent_state("thread-1").await?;
 - Feature not enabled:
   Confirm `postgres` feature is enabled on `tirea-store-adapters`.
 
+## Related Example
+
+- No dedicated starter ships with Postgres prewired; the closest full integration fixture is `crates/tirea-agentos-server/tests/e2e_nats_postgres.rs`
+
+## Key Files
+
+- `crates/tirea-store-adapters/src/postgres_store.rs`
+- `crates/tirea-agentos-server/tests/e2e_nats_postgres.rs`
+- `crates/tirea-agentos-server/src/main.rs`
+
 ## Related
 
 - [Use File Store](./use-file-store.md)

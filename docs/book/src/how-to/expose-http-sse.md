@@ -89,6 +89,18 @@ curl 'http://127.0.0.1:8080/v1/runs?thread_id=thread-1&limit=20'
 - `404` for unknown `agent_id`.
 - Run/A2A routes fail with internal error when run service is not initialized.
 
+## Related Example
+
+- `examples/ai-sdk-starter/README.md` exercises AI SDK HTTP streaming end to end
+- `examples/copilotkit-starter/README.md` exercises AG-UI streaming end to end
+
+## Key Files
+
+- `crates/tirea-agentos-server/src/http.rs`
+- `crates/tirea-agentos-server/src/protocol/ag_ui/http.rs`
+- `crates/tirea-agentos-server/src/protocol/ai_sdk_v6/http.rs`
+- `examples/src/starter_backend/mod.rs`
+
 ## Related
 
 - [HTTP API](../reference/http-api.md)

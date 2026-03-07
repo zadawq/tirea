@@ -55,6 +55,16 @@ Config flags:
 - Enabling skills mode without providing skills/registry.
 - Tool id conflict with existing `skill` tool names.
 
+## Related Example
+
+- No dedicated starter ships with skills enabled yet; the closest wiring surface is `examples/src/starter_backend/mod.rs` once you add skills discovery/config there
+
+## Key Files
+
+- `crates/tirea-extension-skills/src/subsystem.rs`
+- `crates/tirea-extension-skills/src/lib.rs`
+- `crates/tirea-agentos/src/orchestrator/tests.rs`
+
 ## Related
 
 - [Capability Matrix](../reference/capability-matrix.md)

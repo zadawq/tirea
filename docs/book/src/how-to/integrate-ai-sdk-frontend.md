@@ -124,6 +124,16 @@ export default function ChatPage() {
 - Missing `id` (thread id) in forwarded payload.
 - Missing stream headers, causing client parser failures.
 
+## Related Example
+
+- `examples/ai-sdk-starter/README.md` is the canonical AI SDK v6 integration in this repo
+
+## Key Files
+
+- `examples/ai-sdk-starter/src/lib/transport.ts`
+- `examples/ai-sdk-starter/src/pages/playground-page.tsx`
+- `examples/ai-sdk-starter/src/lib/api-client.ts`
+
 ## Related
 
 - [AI SDK v6 Protocol](../reference/protocols/ai-sdk-v6.md)

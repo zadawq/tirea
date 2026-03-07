@@ -58,6 +58,16 @@ let os = AgentOs::builder()
 - Worker agents accidentally retain delegation tools and recurse unexpectedly.
 - Background runs left running without `agent_stop`/resume policy.
 
+## Related Example
+
+- No dedicated UI starter focuses on sub-agents yet; use `crates/tirea-agentos/tests/real_multi_subagent_deepseek.rs` for the main end-to-end example
+
+## Key Files
+
+- `crates/tirea-agentos/src/orchestrator/agent_tools/manager.rs`
+- `crates/tirea-agentos/src/orchestrator/agent_tools/tools.rs`
+- `crates/tirea-agentos/tests/real_multi_subagent_deepseek.rs`
+
 ## Related
 
 - [Sub-Agent Delegation](../explanation/sub-agent-delegation.md)
