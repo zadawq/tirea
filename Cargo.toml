@@ -72,3 +72,6 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[patch.crates-io]
+genai = { git = "https://github.com/tirea-ai/rust-genai.git", rev = "11d5abf7509d6a3585c836052c7996995c0a2b90" }
