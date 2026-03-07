@@ -63,8 +63,8 @@ Choose the path that matches what you want to do first:
 
 ```bash
 cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --lib --bins --examples -- -D clippy::correctness
+cargo test --workspace --locked
+cargo clippy --workspace --lib --bins --examples --locked -- -D clippy::correctness
 ```
 
 ### Run the default server configuration
@@ -125,6 +125,13 @@ bash scripts/build-docs.sh
 ```
 
 Then open `target/book/index.html`.
+
+Publish docs from CI:
+
+- The `Docs` workflow always builds the book and Rust API docs on `main`.
+- GitHub Pages deployment requires the repository Pages source to be set to `GitHub Actions`.
+- GitHub Pages deployment is gated by the repository variable `ENABLE_GITHUB_PAGES_DOCS=true`.
+- The published site is available at <https://tirea-ai.github.io/tirea/>.
 
 ## Project source
 

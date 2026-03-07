@@ -1,11 +1,11 @@
 [package]
 name = "copilotkit-starter-agent"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 publish = false
 
 [dependencies]
-tirea-examples = { version = "0.2.0", path = "../../../examples" }
+tirea-examples.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 clap = { version = "4", features = ["derive", "env"] }
 

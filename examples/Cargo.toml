@@ -5,13 +5,13 @@ edition = "2021"
 publish = false
 
 [dependencies]
-tirea-agentos = { version = "0.2.0", path = "../crates/tirea-agentos", features = ["mcp"] }
-tirea-agentos-server = { version = "0.2.0", path = "../crates/tirea-agentos-server" }
-tirea-extension-permission = { version = "0.2.0", path = "../crates/tirea-extension-permission" }
-tirea-extension-mcp = { version = "0.2.0", path = "../crates/tirea-extension-mcp" }
-tirea-store-adapters = { version = "0.2.0", path = "../crates/tirea-store-adapters" }
-tirea-state = { version = "0.2.0", path = "../crates/tirea-state" }
-tirea-state-derive = { version = "0.2.0", path = "../crates/tirea-state-derive" }
+tirea-agentos = { workspace = true, features = ["mcp"] }
+tirea-agentos-server.workspace = true
+tirea-extension-permission.workspace = true
+tirea-extension-mcp.workspace = true
+tirea-store-adapters.workspace = true
+tirea-state.workspace = true
+tirea-state-derive.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { workspace = true }

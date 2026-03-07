@@ -16,6 +16,18 @@ bash scripts/build-docs.sh
 
 When using `scripts/build-docs.sh`, the API docs are available at `target/book/doc/`.
 
+## Publishing Docs
+
+The `Docs` GitHub Actions workflow builds the book and Rust API docs on pushes to `main`
+and on manual dispatch.
+
+GitHub Pages deployment is enabled only when both of the following are true:
+
+- The repository Pages source is set to `GitHub Actions`
+- The repository variable `ENABLE_GITHUB_PAGES_DOCS` is set to `true`
+
+The published site is available at <https://tirea-ai.github.io/tirea/>.
+
 ## Crate Index
 
 | Crate | Description | API Docs |

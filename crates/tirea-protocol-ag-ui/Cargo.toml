@@ -7,8 +7,8 @@ repository.workspace = true
 description = "AG-UI protocol types and adapters for tirea"
 
 [dependencies]
-tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
-tirea-state = { version = "0.2.0", path = "../tirea-state" }
+tirea-contract.workspace = true
+tirea-state.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 json-patch = "3"
@@ -16,11 +16,11 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
 
 [dev-dependencies]
-tirea-contract = { version = "0.2.0", path = "../tirea-contract", features = ["test-support"] }
-tirea-agentos = { version = "0.2.0", path = "../tirea-agentos" }
+tirea-contract = { workspace = true, features = ["test-support"] }
+tirea-agentos.workspace = true
 async-trait = "0.1"
-tirea-state = { version = "0.2.0", path = "../tirea-state", features = ["derive"] }
-tirea-store-adapters = { version = "0.2.0", path = "../tirea-store-adapters" }
+tirea-state = { workspace = true, features = ["derive"] }
+tirea-store-adapters.workspace = true
 futures = "0.3"
 genai = "0.6.0-beta.3"
 tempfile = "3"

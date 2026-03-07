@@ -4,7 +4,7 @@ Describe the change and the affected crates, examples, or workflows.
 
 ## Validation
 
-- [ ] `cargo test --workspace`
+- [ ] `cargo test --workspace --locked`
 - [ ] relevant targeted tests or builds passed
 - [ ] docs updated if API/schema/config behavior changed
 
