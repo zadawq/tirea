@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-tirea-agentos = { version = "0.2.0", path = "../crates/tirea-agentos" }
+tirea-agentos = { version = "0.2.0", path = "../crates/tirea-agentos", features = ["mcp"] }
 tirea-agentos-server = { version = "0.2.0", path = "../crates/tirea-agentos-server" }
 tirea-extension-permission = { version = "0.2.0", path = "../crates/tirea-extension-permission" }
 tirea-extension-mcp = { version = "0.2.0", path = "../crates/tirea-extension-mcp" }
@@ -22,6 +22,7 @@ genai = "0.5"
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 tower-http = { version = "0.6", features = ["cors"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 
 [[bin]]

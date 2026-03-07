@@ -12,7 +12,7 @@ use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_agentos::orchestrator::{
-    AgentDefinition, AgentOsBuilder, StopConditionSpec, ToolExecutionMode,
+    AgentDefinition, AgentOsBuilder, StopConditionSpec, ToolExecutionMode, ToolRegistry,
 };
 use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
 use tirea_agentos_server::http::{self, AppState};
@@ -78,6 +78,14 @@ impl StarterBackendConfig {
 }
 
 pub async fn serve_starter_backend(args: StarterBackendArgs, config: StarterBackendConfig) {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,genai=warn,tirea_agent_loop=info".parse().unwrap()),
+        )
+        .with_target(true)
+        .init();
+
     let base_prompt = format!(
         "{}\n\
 Tool routing contract for this demo:\n\
@@ -192,7 +200,8 @@ Deterministic compatibility directives:\n\
         Arc::new(DeleteResourcesTool),
         Arc::new(ExtractResourcesTool),
     ];
-    let mut tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
+    let tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
+    let mut mcp_tool_registry: Option<Arc<dyn ToolRegistry>> = None;
 
     let _mcp_manager = if let Some(ref cmd_str) = args.mcp_server_cmd {
         let parts: Vec<&str> = cmd_str.split_whitespace().collect();
@@ -206,9 +215,9 @@ Deterministic compatibility directives:\n\
         );
         match McpToolRegistryManager::connect([cfg]).await {
             Ok(manager) => {
-                let mcp_tools = manager.registry().snapshot();
-                eprintln!("MCP: connected, discovered {} tools", mcp_tools.len());
-                tool_map.extend(mcp_tools);
+                let registry = manager.registry();
+                eprintln!("MCP: connected, discovered {} tools", registry.len());
+                mcp_tool_registry = Some(Arc::new(registry));
                 Some(manager)
             }
             Err(e) => {
@@ -228,6 +237,9 @@ Deterministic compatibility directives:\n\
         .with_agent(&default_agent_id, default_agent)
         .with_tools(tool_map)
         .with_agent_state_store(file_store.clone() as Arc<dyn ThreadStore>);
+    if let Some(registry) = mcp_tool_registry {
+        builder = builder.with_tool_registry(registry);
+    }
 
     if default_id != "permission" {
         builder = builder.with_agent("permission", permission_agent);
