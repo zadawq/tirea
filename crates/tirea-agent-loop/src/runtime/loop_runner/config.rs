@@ -22,6 +22,11 @@ pub struct LlmRetryPolicy {
     pub max_backoff_ms: u64,
     /// Retry stream startup failures before any output is emitted.
     pub retry_stream_start: bool,
+    /// Max retryable mid-stream recovery attempts across a single run.
+    pub max_stream_event_retries: usize,
+    /// Consecutive mid-stream failures on one model before escalating to the
+    /// next fallback model.
+    pub stream_error_fallback_threshold: usize,
 }
 
 impl Default for LlmRetryPolicy {
@@ -31,6 +36,8 @@ impl Default for LlmRetryPolicy {
             initial_backoff_ms: 250,
             max_backoff_ms: 2_000,
             retry_stream_start: true,
+            max_stream_event_retries: 2,
+            stream_error_fallback_threshold: 2,
         }
     }
 }

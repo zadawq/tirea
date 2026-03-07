@@ -11,9 +11,6 @@ use crate::contracts::thread::{Message, Visibility};
 /// Maximum number of truncation recovery retries per run.
 const MAX_RETRIES: usize = 3;
 
-/// Maximum number of mid-stream error recovery retries per run.
-const MAX_STREAM_EVENT_RETRIES: usize = 2;
-
 /// Continuation prompt sent to the model after truncation.
 const CONTINUATION_PROMPT: &str =
     "Your response was cut off because it exceeded the output token limit. \
@@ -53,8 +50,11 @@ pub(super) fn continuation_message() -> Message {
 ///
 /// Returns `true` (and increments the retry counter) when:
 /// 1. Haven't exceeded max stream event retries
-pub(super) fn should_retry_stream_error(run_state: &mut LoopRunState) -> bool {
-    if run_state.stream_event_retries < MAX_STREAM_EVENT_RETRIES {
+pub(super) fn should_retry_stream_error(
+    run_state: &mut LoopRunState,
+    max_stream_event_retries: usize,
+) -> bool {
+    if run_state.stream_event_retries < max_stream_event_retries {
         run_state.stream_event_retries += 1;
         true
     } else {
@@ -346,28 +346,23 @@ mod tests {
     #[test]
     fn stream_error_retry_triggers_within_limit() {
         let mut state = LoopRunState::new();
-        assert!(should_retry_stream_error(&mut state));
+        assert!(should_retry_stream_error(&mut state, 2));
         assert_eq!(state.stream_event_retries, 1);
-        assert!(should_retry_stream_error(&mut state));
+        assert!(should_retry_stream_error(&mut state, 2));
         assert_eq!(state.stream_event_retries, 2);
     }
 
     #[test]
     fn stream_error_retry_respects_max() {
         let mut state = LoopRunState::new();
-        for _ in 0..MAX_STREAM_EVENT_RETRIES {
-            assert!(should_retry_stream_error(&mut state));
+        for _ in 0..3 {
+            assert!(should_retry_stream_error(&mut state, 3));
         }
         assert!(
-            !should_retry_stream_error(&mut state),
+            !should_retry_stream_error(&mut state, 3),
             "should not retry beyond max"
         );
-        assert_eq!(state.stream_event_retries, MAX_STREAM_EVENT_RETRIES);
-    }
-
-    #[test]
-    fn stream_error_max_retries_is_two() {
-        assert_eq!(MAX_STREAM_EVENT_RETRIES, 2);
+        assert_eq!(state.stream_event_retries, 3);
     }
 
     #[test]
@@ -390,7 +385,7 @@ mod tests {
         assert!(should_retry(&max_tokens_result(), &mut state));
         assert_eq!(state.truncation_retries, 1);
         // Stream error retries (independent counter)
-        assert!(should_retry_stream_error(&mut state));
+        assert!(should_retry_stream_error(&mut state, 2));
         assert_eq!(state.stream_event_retries, 1);
         assert_eq!(state.truncation_retries, 1);
     }

@@ -61,6 +61,13 @@ pub struct StreamCollector {
     stop_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StreamRecoveryCheckpoint {
+    NoPayload,
+    PartialText(String),
+    ToolCallObserved,
+}
+
 impl StreamCollector {
     /// Create a new stream collector.
     pub fn new() -> Self {
@@ -73,6 +80,17 @@ impl StreamCollector {
     /// (incomplete JSON arguments are not usable), but text is preserved.
     pub fn into_partial_text(self) -> String {
         self.text
+    }
+
+    /// Consume the collector and return the safest recovery checkpoint.
+    pub(crate) fn into_recovery_checkpoint(self) -> StreamRecoveryCheckpoint {
+        if !self.tool_calls.is_empty() {
+            StreamRecoveryCheckpoint::ToolCallObserved
+        } else if self.text.is_empty() {
+            StreamRecoveryCheckpoint::NoPayload
+        } else {
+            StreamRecoveryCheckpoint::PartialText(self.text)
+        }
     }
 
     /// Process a stream event and optionally return an output event.
@@ -1960,5 +1978,43 @@ mod tests {
     fn test_into_partial_text_empty_when_no_text() {
         let collector = StreamCollector::new();
         assert_eq!(collector.into_partial_text(), "");
+    }
+
+    #[test]
+    fn test_recovery_checkpoint_uses_partial_text_when_no_tool_call_seen() {
+        let mut collector = StreamCollector::new();
+        collector.process(ChatStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "Hello".to_string(),
+        }));
+        assert_eq!(
+            collector.into_recovery_checkpoint(),
+            StreamRecoveryCheckpoint::PartialText("Hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_recovery_checkpoint_marks_tool_call_observed() {
+        let mut collector = StreamCollector::new();
+        collector.process(ChatStreamEvent::ToolCallChunk(genai::chat::ToolChunk {
+            tool_call: genai::chat::ToolCall {
+                call_id: "call_1".to_string(),
+                fn_name: "echo".to_string(),
+                fn_arguments: Value::String("{\"message\":\"hi".to_string()),
+                thought_signatures: None,
+            },
+        }));
+        assert_eq!(
+            collector.into_recovery_checkpoint(),
+            StreamRecoveryCheckpoint::ToolCallObserved
+        );
+    }
+
+    #[test]
+    fn test_recovery_checkpoint_marks_no_payload_when_stream_is_empty() {
+        let collector = StreamCollector::new();
+        assert_eq!(
+            collector.into_recovery_checkpoint(),
+            StreamRecoveryCheckpoint::NoPayload
+        );
     }
 }

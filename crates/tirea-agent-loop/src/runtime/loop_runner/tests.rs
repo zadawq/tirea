@@ -22,7 +22,8 @@ use crate::contracts::{RunContext, Suspension, ToolCallContext};
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
 use genai::chat::{
-    ChatOptions, ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage,
+    ChatOptions, ChatRequest, ChatRole, ChatStreamEvent, MessageContent, StreamChunk, StreamEnd,
+    ToolChunk, Usage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -887,6 +888,8 @@ fn test_agent_config_with_fallback_models_and_retry_policy() {
         initial_backoff_ms: 100,
         max_backoff_ms: 500,
         retry_stream_start: true,
+        max_stream_event_retries: 4,
+        stream_error_fallback_threshold: 2,
     };
     let config = BaseAgent::new("primary")
         .with_fallback_models(vec!["fallback-a".to_string()])
@@ -902,6 +905,8 @@ fn test_agent_config_with_fallback_models_and_retry_policy() {
     assert_eq!(config.llm_retry_policy.initial_backoff_ms, 100);
     assert_eq!(config.llm_retry_policy.max_backoff_ms, 500);
     assert!(config.llm_retry_policy.retry_stream_start);
+    assert_eq!(config.llm_retry_policy.max_stream_event_retries, 4);
+    assert_eq!(config.llm_retry_policy.stream_error_fallback_threshold, 2);
 }
 
 #[test]
@@ -928,10 +933,50 @@ fn test_agent_loop_error_display() {
 
 #[test]
 fn test_llm_retry_error_classification() {
-    assert!(is_retryable_llm_error("429 too many requests"));
-    assert!(is_retryable_llm_error("gateway timeout"));
-    assert!(!is_retryable_llm_error("401 unauthorized"));
-    assert!(!is_retryable_llm_error("400 bad request"));
+    let rate_limit = genai::Error::HttpError {
+        status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+        canonical_reason: "Too Many Requests".to_string(),
+        body: String::new(),
+    };
+    assert_eq!(classify_llm_error(&rate_limit), LlmErrorClass::RateLimit);
+    assert!(is_retryable_llm_error(&rate_limit));
+
+    let timeout = genai::Error::Internal("gateway timeout".to_string());
+    assert_eq!(classify_llm_error(&timeout), LlmErrorClass::Timeout);
+    assert!(is_retryable_llm_error(&timeout));
+
+    let connection_reset = genai::Error::WebStream {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+        cause: "transport interrupted".to_string(),
+        error: Box::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset by peer",
+        )),
+    };
+    assert_eq!(
+        classify_llm_error(&connection_reset),
+        LlmErrorClass::Connection
+    );
+    assert!(is_retryable_llm_error(&connection_reset));
+
+    let unauthorized = genai::Error::HttpError {
+        status: reqwest::StatusCode::UNAUTHORIZED,
+        canonical_reason: "Unauthorized".to_string(),
+        body: String::new(),
+    };
+    assert_eq!(classify_llm_error(&unauthorized), LlmErrorClass::Auth);
+    assert!(!is_retryable_llm_error(&unauthorized));
+
+    let bad_request = genai::Error::HttpError {
+        status: reqwest::StatusCode::BAD_REQUEST,
+        canonical_reason: "Bad Request".to_string(),
+        body: String::new(),
+    };
+    assert_eq!(
+        classify_llm_error(&bad_request),
+        LlmErrorClass::ClientRequest
+    );
+    assert!(!is_retryable_llm_error(&bad_request));
 }
 
 #[test]
@@ -5494,6 +5539,7 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
             initial_backoff_ms: 1,
             max_backoff_ms: 10,
             retry_stream_start: true,
+            ..LlmRetryPolicy::default()
         })
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
@@ -5622,6 +5668,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             initial_backoff_ms: 1,
             max_backoff_ms: 1,
             retry_stream_start: true,
+            ..LlmRetryPolicy::default()
         });
     let provider = Arc::new(MockChatProvider::new(vec![Err(genai::Error::Internal(
         "429 rate limit".to_string(),
@@ -5839,6 +5886,7 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
             initial_backoff_ms: 1,
             max_backoff_ms: 1,
             retry_stream_start: true,
+            ..LlmRetryPolicy::default()
         })
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("error-stats").with_message(Message::user("go"));
@@ -6842,6 +6890,123 @@ impl MockStreamProvider {
     }
 }
 
+/// Provider that returns a scripted stream result for each invocation and
+/// records both model routing and the reconstructed chat request.
+struct ScriptedStreamProvider {
+    attempts: Mutex<Vec<Vec<genai::Result<ChatStreamEvent>>>>,
+    models_seen: Mutex<Vec<String>>,
+    requests_seen: Mutex<Vec<ChatRequest>>,
+}
+
+impl ScriptedStreamProvider {
+    fn new(attempts: Vec<Vec<genai::Result<ChatStreamEvent>>>) -> Self {
+        Self {
+            attempts: Mutex::new(attempts),
+            models_seen: Mutex::new(Vec::new()),
+            requests_seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn seen_models(&self) -> Vec<String> {
+        self.models_seen.lock().expect("lock poisoned").clone()
+    }
+
+    fn seen_requests(&self) -> Vec<ChatRequest> {
+        self.requests_seen.lock().expect("lock poisoned").clone()
+    }
+}
+
+#[async_trait]
+impl LlmExecutor for ScriptedStreamProvider {
+    async fn exec_chat_response(
+        &self,
+        _model: &str,
+        _chat_req: ChatRequest,
+        _options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse> {
+        unimplemented!("stream-only provider")
+    }
+
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        chat_req: ChatRequest,
+        _options: Option<&ChatOptions>,
+    ) -> genai::Result<super::LlmEventStream> {
+        self.models_seen
+            .lock()
+            .expect("lock poisoned")
+            .push(model.to_string());
+        self.requests_seen
+            .lock()
+            .expect("lock poisoned")
+            .push(chat_req);
+        let events = {
+            let mut attempts = self.attempts.lock().expect("lock poisoned");
+            if attempts.is_empty() {
+                vec![
+                    Ok(ChatStreamEvent::Start),
+                    Ok(ChatStreamEvent::Chunk(StreamChunk {
+                        content: "done".to_string(),
+                    })),
+                    Ok(ChatStreamEvent::End(StreamEnd::default())),
+                ]
+            } else {
+                attempts.remove(0)
+            }
+        };
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
+
+    fn name(&self) -> &'static str {
+        "scripted_stream"
+    }
+}
+
+fn web_stream_io_error(kind: std::io::ErrorKind, message: &str) -> genai::Error {
+    genai::Error::WebStream {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+        cause: message.to_string(),
+        error: Box::new(std::io::Error::new(kind, message)),
+    }
+}
+
+fn request_texts(request: &ChatRequest) -> Vec<(ChatRole, String)> {
+    request
+        .messages
+        .iter()
+        .filter_map(|message| {
+            message
+                .content
+                .first_text()
+                .map(|text| (message.role.clone(), text.to_string()))
+        })
+        .collect()
+}
+
+fn text_stream_error_attempt(
+    text: &str,
+    error: genai::Error,
+) -> Vec<genai::Result<ChatStreamEvent>> {
+    vec![
+        Ok(ChatStreamEvent::Start),
+        Ok(ChatStreamEvent::Chunk(StreamChunk {
+            content: text.to_string(),
+        })),
+        Err(error),
+    ]
+}
+
+fn text_stream_success_attempt(text: &str) -> Vec<genai::Result<ChatStreamEvent>> {
+    vec![
+        Ok(ChatStreamEvent::Start),
+        Ok(ChatStreamEvent::Chunk(StreamChunk {
+            content: text.to_string(),
+        })),
+        Ok(ChatStreamEvent::End(StreamEnd::default())),
+    ]
+}
+
 #[async_trait]
 impl LlmExecutor for MockStreamProvider {
     async fn exec_chat_response(
@@ -6975,6 +7140,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
         initial_backoff_ms: 1,
         max_backoff_ms: 10,
         retry_stream_start: true,
+        ..LlmRetryPolicy::default()
     });
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
@@ -7002,6 +7168,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
             initial_backoff_ms: 1,
             max_backoff_ms: 10,
             retry_stream_start: true,
+            ..LlmRetryPolicy::default()
         });
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
@@ -7022,6 +7189,215 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
             "primary".to_string(),
             "primary".to_string(),
             "fallback".to_string()
+        ]
+    );
+    assert_eq!(
+        extract_inference_model(&events),
+        Some("fallback".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_stream_midstream_text_error_retries_with_continuation_context() {
+    let provider = Arc::new(ScriptedStreamProvider::new(vec![
+        text_stream_error_attempt(
+            "hel",
+            web_stream_io_error(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ),
+        ),
+        text_stream_success_attempt("lo"),
+    ]));
+    let config = BaseAgent::new("mock")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+            retry_stream_start: true,
+            max_stream_event_retries: 1,
+            stream_error_fallback_threshold: 2,
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events = collect_stream_events(run_loop_stream(
+        Arc::new(config),
+        HashMap::new(),
+        run_ctx,
+        None,
+        None,
+        None,
+    ))
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert_eq!(
+        provider.seen_models(),
+        vec!["mock".to_string(), "mock".to_string()]
+    );
+
+    let requests = provider.seen_requests();
+    assert_eq!(requests.len(), 2, "expected retry request to be captured");
+    let second_request_texts = request_texts(&requests[1]);
+    assert!(
+        second_request_texts
+            .iter()
+            .any(|(role, text)| *role == ChatRole::Assistant && text == "hel"),
+        "partial assistant text should be replayed into continuation request: {second_request_texts:?}"
+    );
+    assert!(
+        second_request_texts.iter().any(|(role, text)| {
+            *role == ChatRole::User && text.contains("interrupted due to a network error")
+        }),
+        "continuation prompt should be injected for text-only recovery: {second_request_texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_midstream_tool_call_error_restarts_step_without_continuation_prompt() {
+    let partial_tool_call = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "echo".to_string(),
+        fn_arguments: Value::String("{\"message\":\"hel".to_string()),
+        thought_signatures: None,
+    };
+    let complete_tool_call = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "echo".to_string(),
+        fn_arguments: Value::String("{\"message\":\"hello\"}".to_string()),
+        thought_signatures: None,
+    };
+    let provider = Arc::new(ScriptedStreamProvider::new(vec![
+        vec![
+            Ok(ChatStreamEvent::Start),
+            Ok(ChatStreamEvent::Chunk(StreamChunk {
+                content: "thinking ".to_string(),
+            })),
+            Ok(ChatStreamEvent::ToolCallChunk(ToolChunk {
+                tool_call: partial_tool_call,
+            })),
+            Err(web_stream_io_error(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            )),
+        ],
+        vec![
+            Ok(ChatStreamEvent::Start),
+            Ok(ChatStreamEvent::ToolCallChunk(ToolChunk {
+                tool_call: complete_tool_call,
+            })),
+            Ok(ChatStreamEvent::End(StreamEnd::default())),
+        ],
+        text_stream_success_attempt("done"),
+    ]));
+    let config = BaseAgent::new("mock")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+            retry_stream_start: true,
+            max_stream_event_retries: 1,
+            stream_error_fallback_threshold: 2,
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let tools = tool_map([EchoTool]);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events = collect_stream_events(run_loop_stream(
+        Arc::new(config),
+        tools,
+        run_ctx,
+        None,
+        None,
+        None,
+    ))
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_1"
+        )),
+        "tool call should complete after restart: {events:?}"
+    );
+
+    let requests = provider.seen_requests();
+    assert_eq!(requests.len(), 3, "expected restart + post-tool inference");
+    let second_request_texts = request_texts(&requests[1]);
+    assert!(
+        !second_request_texts
+            .iter()
+            .any(|(_, text)| text.contains("thinking")),
+        "partial text from tool-bearing stream should not be replayed: {second_request_texts:?}"
+    );
+    assert!(
+        !second_request_texts
+            .iter()
+            .any(|(_, text)| { text.contains("interrupted due to a network error") }),
+        "tool-bearing restart should not inject continuation prompt: {second_request_texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_midstream_repeated_errors_escalate_to_fallback_model() {
+    let provider = Arc::new(ScriptedStreamProvider::new(vec![
+        text_stream_error_attempt(
+            "A",
+            web_stream_io_error(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ),
+        ),
+        text_stream_error_attempt(
+            "B",
+            web_stream_io_error(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ),
+        ),
+        text_stream_success_attempt("C"),
+    ]));
+    let config = BaseAgent::new("primary")
+        .with_fallback_model("fallback")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+            retry_stream_start: true,
+            max_stream_event_retries: 2,
+            stream_error_fallback_threshold: 2,
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events = collect_stream_events(run_loop_stream(
+        Arc::new(config),
+        HashMap::new(),
+        run_ctx,
+        None,
+        None,
+        None,
+    ))
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert_eq!(
+        provider.seen_models(),
+        vec![
+            "primary".to_string(),
+            "primary".to_string(),
+            "fallback".to_string(),
         ]
     );
     assert_eq!(
@@ -9408,6 +9784,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             initial_backoff_ms: 1,
             max_backoff_ms: 1,
             retry_stream_start: true,
+            ..LlmRetryPolicy::default()
         });
 
     let initial_thread =

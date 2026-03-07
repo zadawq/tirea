@@ -112,6 +112,18 @@ impl AgentBehavior for LLMMetryPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
+        // A retryable stream failure can restart inference without an
+        // `after_inference` phase. Close the abandoned tracing span here so it
+        // is exported as an errored attempt instead of a silent success.
+        if let Some(previous_span) = lock_unpoison(&self.inference_tracing_span).take() {
+            let message = "A previous inference attempt was retried before completion.";
+            previous_span.record("error.type", "inference_retry_interrupted");
+            previous_span.record("error.message", message);
+            previous_span.record("otel.status_code", "ERROR");
+            previous_span.record("otel.status_description", message);
+            drop(previous_span);
+        }
+
         *lock_unpoison(&self.inference_start) = Some(Instant::now());
         let model = lock_unpoison(&self.model).clone();
         let provider = lock_unpoison(&self.provider).clone();

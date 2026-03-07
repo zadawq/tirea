@@ -1,6 +1,7 @@
 use super::state_commit::PendingDeltaCommitContext;
 use super::stream_core::{preallocate_tool_result_message_ids, resolve_stream_run_identity};
 use super::*;
+use crate::runtime::streaming::StreamRecoveryCheckpoint;
 use std::collections::HashSet;
 
 // Stream adapter layer:
@@ -202,6 +203,8 @@ pub(super) fn run_stream(
     let executor = llm_executor_for_run(agent.as_ref());
     let mut run_state = LoopRunState::new();
     let mut last_text = String::new();
+    let mut stream_retry_model_preference: Option<String> = None;
+    let mut stream_error_counts_by_model: HashMap<String, usize> = HashMap::new();
     let run_cancellation_token = cancellation_token;
     let step_tool_provider = step_tool_provider_for_run(agent.as_ref(), tools);
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -454,6 +457,7 @@ pub(super) fn run_stream(
                 agent.as_ref(),
                 run_cancellation_token.as_ref(),
                 agent.llm_retry_policy().retry_stream_start,
+                stream_retry_model_preference.as_deref(),
                 "unknown llm stream start error",
                 |model| {
                     let request =
@@ -621,25 +625,50 @@ pub(super) fn run_stream(
                     }
                     Err(e) => {
                         let error_message = e.to_string();
-                        // Check if we can recover via continuation retry.
-                        if is_retryable_llm_error(&error_message)
-                            && truncation_recovery::should_retry_stream_error(&mut run_state)
+                        let error_class = classify_llm_error(&e);
+                        let max_stream_retries = agent.llm_retry_policy().max_stream_event_retries;
+                        if error_class.is_retryable()
+                            && truncation_recovery::should_retry_stream_error(
+                                &mut run_state,
+                                max_stream_retries,
+                            )
                         {
+                            let failure_count = stream_error_counts_by_model
+                                .entry(inference_model.clone())
+                                .or_insert(0);
+                            *failure_count += 1;
+                            let fallback_threshold = agent
+                                .llm_retry_policy()
+                                .stream_error_fallback_threshold
+                                .max(1);
+                            let escalate_to_fallback = *failure_count >= fallback_threshold;
+                            stream_retry_model_preference = if escalate_to_fallback {
+                                next_llm_model_after(agent.as_ref(), &inference_model)
+                                    .or_else(|| Some(inference_model.clone()))
+                            } else {
+                                Some(inference_model.clone())
+                            };
+                            let recovery_checkpoint = collector.into_recovery_checkpoint();
                             tracing::warn!(
                                 error = %error_message,
+                                class = ?error_class,
                                 retry = run_state.stream_event_retries,
-                                "mid-stream error, recovering with continuation"
+                                recovery = ?recovery_checkpoint,
+                                next_model = %stream_retry_model_preference.clone().unwrap_or_else(|| inference_model.clone()),
+                                "mid-stream error, recovering stream"
                             );
-                            // Save partial text as assistant message (discard incomplete tool calls).
-                            let partial_text = collector.into_partial_text();
-                            if !partial_text.is_empty() {
-                                let msg = assistant_message(&partial_text);
-                                run_ctx.add_message(Arc::new(msg));
-                                last_text = partial_text;
+                            match recovery_checkpoint {
+                                StreamRecoveryCheckpoint::NoPayload => {}
+                                StreamRecoveryCheckpoint::PartialText(partial_text) => {
+                                    let msg = assistant_message(&partial_text);
+                                    run_ctx.add_message(Arc::new(msg));
+                                    last_text = partial_text;
+                                    let continuation =
+                                        truncation_recovery::stream_error_continuation_message();
+                                    run_ctx.add_message(Arc::new(continuation));
+                                }
+                                StreamRecoveryCheckpoint::ToolCallObserved => {}
                             }
-                            // Inject continuation prompt.
-                            let continuation = truncation_recovery::stream_error_continuation_message();
-                            run_ctx.add_message(Arc::new(continuation));
                             // Close the failed step and re-enter the outer loop.
                             yield emitter.step_end();
                             mark_step_completed(&mut run_state);
@@ -674,6 +703,8 @@ pub(super) fn run_stream(
 
             let max_output_tokens = chat_options.as_ref().and_then(|o| o.max_tokens);
             let result = collector.finish(max_output_tokens);
+            stream_retry_model_preference = None;
+            stream_error_counts_by_model.clear();
             if !saw_stream_payload
                 && result.text.is_empty()
                 && result.tool_calls.is_empty()

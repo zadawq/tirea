@@ -233,45 +233,177 @@ pub(super) fn effective_llm_models(agent: &dyn Agent) -> Vec<String> {
     models
 }
 
+pub(super) fn effective_llm_models_from(
+    agent: &dyn Agent,
+    start_model: Option<&str>,
+) -> Vec<String> {
+    let models = effective_llm_models(agent);
+    let Some(start_model) = start_model.map(str::trim).filter(|model| !model.is_empty()) else {
+        return models;
+    };
+    let Some(index) = models.iter().position(|model| model == start_model) else {
+        return models;
+    };
+    models.into_iter().skip(index).collect()
+}
+
+pub(super) fn next_llm_model_after(agent: &dyn Agent, current_model: &str) -> Option<String> {
+    let models = effective_llm_models(agent);
+    let current_index = models.iter().position(|model| model == current_model)?;
+    models.into_iter().nth(current_index + 1)
+}
+
 pub(super) fn llm_retry_attempts(agent: &dyn Agent) -> usize {
     agent.llm_retry_policy().max_attempts_per_model.max(1)
 }
 
-pub(super) fn is_retryable_llm_error(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    let non_retryable = [
-        "401",
-        "403",
-        "404",
-        "400",
-        "422",
-        "unauthorized",
-        "forbidden",
-        "invalid api key",
-        "invalid_request",
-        "bad request",
-    ];
-    if non_retryable.iter().any(|p| lower.contains(p)) {
-        return false;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LlmErrorClass {
+    RateLimit,
+    Timeout,
+    Connection,
+    ServerUnavailable,
+    ServerError,
+    Auth,
+    ClientRequest,
+    Unknown,
+}
+
+impl LlmErrorClass {
+    pub(super) fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            LlmErrorClass::RateLimit
+                | LlmErrorClass::Timeout
+                | LlmErrorClass::Connection
+                | LlmErrorClass::ServerUnavailable
+                | LlmErrorClass::ServerError
+        )
     }
-    let retryable = [
-        "429",
-        "too many requests",
-        "rate limit",
-        "timeout",
-        "timed out",
-        "temporar",
+}
+
+fn classify_llm_error_message(message: &str) -> LlmErrorClass {
+    let lower = message.to_ascii_lowercase();
+    if ["429", "too many requests", "rate limit"]
+        .iter()
+        .any(|p| lower.contains(p))
+    {
+        return LlmErrorClass::RateLimit;
+    }
+    if ["timeout", "timed out"].iter().any(|p| lower.contains(p)) {
+        return LlmErrorClass::Timeout;
+    }
+    if [
         "connection",
         "network",
-        "unavailable",
-        "server error",
-        "502",
-        "503",
-        "504",
         "reset by peer",
+        "broken pipe",
         "eof",
-    ];
-    retryable.iter().any(|p| lower.contains(p))
+        "connection refused",
+        "error sending request for url",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+    {
+        return LlmErrorClass::Connection;
+    }
+    if ["503", "service unavailable", "unavailable", "temporar"]
+        .iter()
+        .any(|p| lower.contains(p))
+    {
+        return LlmErrorClass::ServerUnavailable;
+    }
+    if [
+        "500",
+        "502",
+        "504",
+        "server error",
+        "bad gateway",
+        "gateway timeout",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+    {
+        return LlmErrorClass::ServerError;
+    }
+    if ["401", "403", "unauthorized", "forbidden", "invalid api key"]
+        .iter()
+        .any(|p| lower.contains(p))
+    {
+        return LlmErrorClass::Auth;
+    }
+    if ["400", "404", "422", "invalid_request", "bad request"]
+        .iter()
+        .any(|p| lower.contains(p))
+    {
+        return LlmErrorClass::ClientRequest;
+    }
+    LlmErrorClass::Unknown
+}
+
+fn classify_status_code(status_code: u16) -> LlmErrorClass {
+    match status_code {
+        408 => LlmErrorClass::Timeout,
+        429 => LlmErrorClass::RateLimit,
+        401 | 403 => LlmErrorClass::Auth,
+        400 | 404 | 422 => LlmErrorClass::ClientRequest,
+        503 => LlmErrorClass::ServerUnavailable,
+        500 | 502 | 504 | 500..=599 => LlmErrorClass::ServerError,
+        400..=499 => LlmErrorClass::ClientRequest,
+        _ => LlmErrorClass::Unknown,
+    }
+}
+
+fn classify_error_chain(error: &(dyn std::error::Error + 'static)) -> Option<LlmErrorClass> {
+    let mut current = Some(error);
+    while let Some(err) = current {
+        if let Some(io_error) = err.downcast_ref::<std::io::Error>() {
+            use std::io::ErrorKind;
+
+            let class = match io_error.kind() {
+                ErrorKind::TimedOut => Some(LlmErrorClass::Timeout),
+                ErrorKind::ConnectionAborted
+                | ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionReset
+                | ErrorKind::BrokenPipe
+                | ErrorKind::NotConnected
+                | ErrorKind::UnexpectedEof => Some(LlmErrorClass::Connection),
+                _ => None,
+            };
+            if class.is_some() {
+                return class;
+            }
+        }
+        current = err.source();
+    }
+    None
+}
+
+fn classify_webc_error(error: &genai::webc::Error) -> LlmErrorClass {
+    match error {
+        genai::webc::Error::ResponseFailedStatus { status, .. } => {
+            classify_status_code(status.as_u16())
+        }
+        genai::webc::Error::Reqwest(err) => classify_error_chain(err)
+            .unwrap_or_else(|| classify_llm_error_message(&err.to_string())),
+        _ => classify_llm_error_message(&error.to_string()),
+    }
+}
+
+pub(super) fn classify_llm_error(error: &genai::Error) -> LlmErrorClass {
+    match error {
+        genai::Error::HttpError { status, .. } => classify_status_code(status.as_u16()),
+        genai::Error::WebStream { cause, error, .. } => classify_error_chain(error.as_ref())
+            .unwrap_or_else(|| classify_llm_error_message(cause)),
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => classify_webc_error(webc_error),
+        genai::Error::Internal(message) => classify_llm_error_message(message),
+        other => classify_llm_error_message(&other.to_string()),
+    }
+}
+
+pub(super) fn is_retryable_llm_error(error: &genai::Error) -> bool {
+    classify_llm_error(error).is_retryable()
 }
 
 pub(super) fn retry_backoff_ms(agent: &dyn Agent, retry_index: usize) -> u64 {
@@ -369,6 +501,7 @@ pub(super) async fn run_llm_with_retry_and_fallback<T, Invoke, Fut>(
     agent: &dyn Agent,
     run_cancellation_token: Option<&RunCancellationToken>,
     retry_current_model: bool,
+    start_model: Option<&str>,
     unknown_error: &str,
     mut invoke: Invoke,
 ) -> LlmAttemptOutcome<T>
@@ -377,7 +510,7 @@ where
     Fut: std::future::Future<Output = genai::Result<T>>,
 {
     let mut last_llm_error = unknown_error.to_string();
-    let model_candidates = effective_llm_models(agent);
+    let model_candidates = effective_llm_models_from(agent, start_model);
     let max_attempts = llm_retry_attempts(agent);
     let mut total_attempts = 0usize;
 
@@ -402,9 +535,8 @@ where
                     let message = e.to_string();
                     last_llm_error =
                         format!("model='{model}' attempt={attempt}/{max_attempts}: {message}");
-                    let can_retry_same_model = retry_current_model
-                        && attempt < max_attempts
-                        && is_retryable_llm_error(&message);
+                    let can_retry_same_model =
+                        retry_current_model && attempt < max_attempts && is_retryable_llm_error(&e);
                     if can_retry_same_model {
                         let cancelled =
                             wait_retry_backoff(agent, attempt, run_cancellation_token).await;
@@ -1608,6 +1740,7 @@ pub async fn run_loop(
             agent,
             run_cancellation_token.as_ref(),
             true,
+            None,
             "unknown llm error",
             |model| {
                 let request = build_request_for_filtered_tools(
