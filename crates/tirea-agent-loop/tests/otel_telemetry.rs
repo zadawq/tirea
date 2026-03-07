@@ -686,3 +686,82 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         opentelemetry::trace::Status::Error { .. }
     ));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_run_loop_stream_sse_error_payload_is_not_silent_success() {
+    // Simulate providers that return SSE `error` payloads under HTTP 200.
+    // genai's OpenAI streamer can ignore this payload shape, so the loop must
+    // not treat an empty stream as successful.
+    let Some((base_url, _server)) = start_sse_server(vec![
+        "data: {\"error\":{\"message\":\"Error in input stream\",\"type\":\"server_error\",\"param\":null,\"code\":null}}\n\n",
+        "data: [DONE]\n\n",
+    ])
+    .await
+    else {
+        eprintln!("skipping test: sandbox does not permit local TCP listeners");
+        return;
+    };
+
+    let (_guard, exporter, provider) = setup_otel_test();
+
+    let sink = InMemorySink::new();
+    let plugin = Arc::new(
+        LLMMetryPlugin::new(sink.clone())
+            .with_model("gpt-4")
+            .with_provider("test-provider"),
+    ) as Arc<dyn AgentBehavior>;
+
+    let client = genai::Client::builder()
+        .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
+            t.endpoint = genai::resolver::Endpoint::from_owned(base_url.clone());
+            t.auth = genai::resolver::AuthData::from_single("test-key");
+            Ok(t)
+        })
+        .build();
+
+    let config = BaseAgent::new("gpt-4")
+        .with_behavior(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let events: Vec<_> = run_loop_stream(
+        Arc::new(config) as Arc<dyn Agent>,
+        HashMap::new(),
+        run_ctx,
+        None,
+        None,
+        None,
+    )
+    .collect()
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("empty stream response"))),
+        "expected empty-stream anomaly to surface as AgentEvent::Error"
+    );
+
+    let m = sink.metrics();
+    assert_eq!(m.inference_count(), 1);
+    assert_eq!(
+        m.inferences[0].error_type.as_deref(),
+        Some("llm_stream_event_error")
+    );
+
+    let _ = provider.force_flush();
+    let exported = exporter.get_finished_spans().unwrap();
+    let span = exported
+        .iter()
+        .find(|s| s.name.starts_with("chat "))
+        .expect("expected chat span");
+    let error_type = find_attribute(span, "error.type")
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_default();
+    assert_eq!(error_type, "llm_stream_event_error");
+    assert!(matches!(
+        span.status,
+        opentelemetry::trace::Status::Error { .. }
+    ));
+}

@@ -111,6 +111,58 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
     }
 }
 
+fn genai_usage_has_tokens(usage: &genai::chat::Usage) -> bool {
+    usage.prompt_tokens.is_some()
+        || usage.completion_tokens.is_some()
+        || usage.total_tokens.is_some()
+        || usage
+            .prompt_tokens_details
+            .as_ref()
+            .is_some_and(|details| !details.is_empty())
+        || usage
+            .completion_tokens_details
+            .as_ref()
+            .is_some_and(|details| !details.is_empty())
+}
+
+fn stream_result_has_usage(result: &StreamResult) -> bool {
+    result.usage.as_ref().is_some_and(|usage| {
+        usage.prompt_tokens.is_some()
+            || usage.completion_tokens.is_some()
+            || usage.total_tokens.is_some()
+            || usage.cache_read_tokens.is_some()
+            || usage.cache_creation_tokens.is_some()
+    })
+}
+
+fn stream_event_has_payload(event: &genai::chat::ChatStreamEvent) -> bool {
+    match event {
+        genai::chat::ChatStreamEvent::Start => false,
+        genai::chat::ChatStreamEvent::Chunk(chunk)
+        | genai::chat::ChatStreamEvent::ReasoningChunk(chunk)
+        | genai::chat::ChatStreamEvent::ThoughtSignatureChunk(chunk) => !chunk.content.is_empty(),
+        genai::chat::ChatStreamEvent::ToolCallChunk(tool_chunk) => {
+            let tool_call = &tool_chunk.tool_call;
+            !tool_call.call_id.is_empty()
+                || !tool_call.fn_name.is_empty()
+                || !matches!(tool_call.fn_arguments, serde_json::Value::Null)
+        }
+        genai::chat::ChatStreamEvent::End(end) => {
+            end.captured_usage
+                .as_ref()
+                .is_some_and(genai_usage_has_tokens)
+                || end
+                    .captured_reasoning_content
+                    .as_ref()
+                    .is_some_and(|value| !value.is_empty())
+                || end
+                    .captured_content
+                    .as_ref()
+                    .is_some_and(|content| !content.is_empty())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PendingEventKey {
     kind: &'static str,
@@ -455,6 +507,7 @@ pub(super) fn run_stream(
             let inference_start = std::time::Instant::now();
             let mut collector = StreamCollector::new();
             let mut chat_stream = chat_stream_events;
+            let mut saw_stream_payload = false;
 
             loop {
                 let next_event = if let Some(ref token) = run_cancellation_token {
@@ -535,6 +588,9 @@ pub(super) fn run_stream(
 
                 match event_result {
                     Ok(event) => {
+                        if stream_event_has_payload(&event) {
+                            saw_stream_payload = true;
+                        }
                         if let Some(output) = collector.process(event) {
                             match output {
                                 crate::runtime::streaming::StreamOutput::TextDelta(delta) => {
@@ -610,6 +666,31 @@ pub(super) fn run_stream(
 
             let max_output_tokens = chat_options.as_ref().and_then(|o| o.max_tokens);
             let result = collector.finish(max_output_tokens);
+            if !saw_stream_payload
+                && result.text.is_empty()
+                && result.tool_calls.is_empty()
+                && !stream_result_has_usage(&result)
+            {
+                let error_message = format!(
+                    "empty stream response from model='{inference_model}' (no content, tool calls, or usage); possible upstream SSE error payload was ignored"
+                );
+                match apply_llm_error_cleanup(
+                    &mut run_ctx,
+                    &active_tool_descriptors,
+                    agent.as_ref(),
+                    "llm_stream_event_error",
+                    error_message.clone(),
+                )
+                .await
+                {
+                    Ok(()) => {}
+                    Err(phase_error) => {
+                        let message = phase_error.to_string();
+                        terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                    }
+                }
+                terminate_stream_error!(outcome::LoopFailure::Llm(error_message.clone()), error_message);
+            }
             last_text = result.text.clone();
             run_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
