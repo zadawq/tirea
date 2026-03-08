@@ -32,6 +32,8 @@
 
 - [Overview](./reference/overview.md)
 - [Capability Matrix](./reference/capability-matrix.md)
+- [Actions](./reference/actions.md)
+- [Typed Tool](./reference/typed-tool.md)
 - [API Documentation](./reference/api.md)
 - [Derive Macro](./reference/derive-macro.md)
 - [State Ops](./reference/state-ops.md)

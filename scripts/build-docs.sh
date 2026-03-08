@@ -13,6 +13,9 @@ if ! command -v mdbook-mermaid >/dev/null 2>&1; then
     exit 1
 fi
 
+echo "==> Checking crate versions in docs..."
+bash "$WORKSPACE_ROOT/scripts/sync-doc-crate-versions.sh" --check
+
 echo "==> Building cargo doc..."
 cargo doc --workspace --no-deps --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
 

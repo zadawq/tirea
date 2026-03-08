@@ -2,6 +2,32 @@
 
 This page summarizes common AG-UI and AI SDK integration patterns and maps them to this project.
 
+## Which Frontend Path To Choose
+
+Use this quick rule:
+
+| Need | Preferred path |
+|---|---|
+| Fastest chat-style integration with `useChat` | AI SDK v6 |
+| Rich shared state, frontend tools, generative UI, HITL | AG-UI / CopilotKit |
+| Backend-only tools with a thin frontend adapter | AI SDK v6 |
+| Frontend-executed tools that suspend and resume runs | AG-UI / CopilotKit |
+| Canvas-style or co-agent-like UX | AG-UI / CopilotKit |
+
+Repo-specific mapping:
+
+| Integration | Backend endpoint | Frontend runtime shape | Best for |
+|---|---|---|---|
+| AI SDK v6 | `POST /v1/ai-sdk/agents/:agent_id/runs` | `useChat` + SSE adapter route | plain chat, minimal glue, backend-centric tools |
+| AG-UI / CopilotKit | `POST /v1/ag-ui/agents/:agent_id/runs` | CopilotKit runtime proxy + `HttpAgent` | shared state, frontend tools, approvals, canvas UX |
+
+## In-Repo Shortest Paths
+
+- AI SDK: `examples/ai-sdk-starter/`
+- CopilotKit / AG-UI: `examples/copilotkit-starter/`
+
+These are the primary references when you need full working frontend integrations rather than protocol reference alone.
+
 ## CopilotKit Integration Patterns
 
 ### Pattern A: Runtime Proxy + `HttpAgent` (remote backend)
@@ -101,6 +127,35 @@ For `@ai-sdk/react`, the common pattern is:
 1. `useChat` in the browser.
 2. Next.js `/api/chat` route adapts UI messages to backend request body.
 3. Route passes through SSE stream and AI SDK headers.
+
+Best in this repository when:
+
+- frontend is mostly a chat shell
+- the backend remains the only place tools execute
+- you want the smallest integration surface
+
+Related how-to:
+
+- [Integrate AI SDK Frontend](../how-to/integrate-ai-sdk-frontend.md)
+
+## AG-UI / CopilotKit Frontend Pattern
+
+For CopilotKit and AG-UI, the common pattern is:
+
+1. CopilotKit runtime runs behind a same-origin Next.js route.
+2. `HttpAgent` points at Tirea's AG-UI endpoint.
+3. AG-UI SSE events drive chat, shared state, activity updates, and frontend tool suspensions.
+4. Frontend decisions are sent back to resume pending interactions.
+
+Best in this repository when:
+
+- frontend must participate in tool execution
+- you need richer HITL flows
+- you want persisted thread hydration plus shared state UI
+
+Related how-to:
+
+- [Integrate CopilotKit (AG-UI)](../how-to/integrate-copilotkit-ag-ui.md)
 
 Related docs:
 

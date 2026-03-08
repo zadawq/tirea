@@ -68,6 +68,28 @@ while let Some(event) = events.next().await {
 - `RunFinish.termination` matches your expectation (`NaturalEnd`, `Stopped`, `Error`, etc.).
 - If persistence is enabled, thread can be reloaded from store after run.
 
+## After The Agent Is Built
+
+Once you have:
+
+```rust,ignore
+let os = AgentOsBuilder::new()
+    .with_tools(...)
+    .with_agent(...)
+    .build()?;
+```
+
+you normally choose one of these runtime modes:
+
+1. In-process execution: call `os.run_stream(RunRequest { ... }).await?`
+2. Long-lived backend service: put `Arc<AgentOs>` into server state and expose HTTP protocol routes
+3. Example/starter backend: reuse the same builder pattern in a dedicated binary and let frontend clients connect over AI SDK or AG-UI
+
+The important point is that `AgentDefinition` creation alone does not "start" anything. The run starts only when:
+
+- your code calls `run_stream(...)`, or
+- an HTTP route receives a request and delegates to `AgentOs`
+
 ## Common Errors
 
 - Model/provider mismatch:
@@ -93,4 +115,6 @@ while let Some(event) = events.next().await {
 
 - [Expose HTTP SSE](./expose-http-sse.md)
 - [Expose NATS](./expose-nats.md)
+- [Integrate AI SDK Frontend](./integrate-ai-sdk-frontend.md)
+- [Integrate CopilotKit (AG-UI)](./integrate-copilotkit-ag-ui.md)
 - [Run Lifecycle and Phases](../explanation/run-lifecycle-and-phases.md)

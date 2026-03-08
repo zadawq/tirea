@@ -4,15 +4,21 @@
 
 Implement one tool that reads and updates typed state.
 
+This page uses the low-level `Tool` trait so you can see the full mechanics. For most fixed-schema tools in real projects, prefer [`TypedTool`](../reference/typed-tool.md).
+
 ## Prerequisites
 
 - Complete [First Agent](./first-agent.md) first.
+- Reuse the runtime dependencies from [First Agent](./first-agent.md).
 - `State` derive is available in your dependencies:
 
 ```toml
 [dependencies]
+async-trait = "0.1"
+serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-tirea-state-derive = "0.2"
+tirea = "0.3.0-dev"
+tirea-state-derive = "0.3.0-dev"
 ```
 
 ## 1. Define Typed State
@@ -54,7 +60,9 @@ impl Tool for IncrementCounter {
         let amount = args["amount"].as_i64().unwrap_or(1);
         let counter = ctx.state::<Counter>("counter");
         let current = counter.value().unwrap_or(0);
-        counter.set_value(current + amount);
+        counter
+            .set_value(current + amount)
+            .map_err(|err| ToolError::ExecutionFailed(err.to_string()))?;
 
         Ok(ToolResult::success(
             "increment_counter",
@@ -88,9 +96,11 @@ Run one request that triggers `increment_counter`, then verify:
 - Missing derive macro import: ensure `use tirea_state_derive::State;` exists.
 - Wrong state path: `ctx.state::<Counter>("counter")` must match where you read/write.
 - Numeric parse fallback hides bugs: validate `amount` if strict input is required.
+- Reaching for raw `Value` parsing too early: if your arguments map cleanly to one struct, switch to [`TypedTool`](../reference/typed-tool.md).
 
 ## Next
 
 - [Build an Agent](../how-to/build-an-agent.md)
 - [Add a Tool](../how-to/add-a-tool.md)
+- [Typed Tool Reference](../reference/typed-tool.md)
 - [State Ops Reference](../reference/state-ops.md)

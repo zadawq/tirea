@@ -66,6 +66,7 @@ impl AgentBehavior for AuditBehavior {
 
 ## Related
 
+- [Actions](../reference/actions.md)
 - [Run Lifecycle and Phases](../explanation/run-lifecycle-and-phases.md)
 - [Build an Agent](./build-an-agent.md)
 - [Debug a Run](./debug-a-run.md)

@@ -7,7 +7,7 @@ This matrix maps each framework capability to the authoritative docs and concret
 | Agent composition (`AgentDefinition`, behaviors, stop specs) | `reference/config.md`, `how-to/build-an-agent.md` | `crates/tirea-agentos/src/orchestrator/agent_definition.rs`, `examples/src/starter_backend/mod.rs` |
 | Stop policies and termination controls | `how-to/configure-stop-policies.md`, `reference/config.md`, `explanation/run-lifecycle-and-phases.md` | `crates/tirea-agentos/src/orchestrator/stop_policy_plugin.rs`, `examples/src/starter_backend/mod.rs`, `crates/tirea-agentos/src/orchestrator/tests.rs` |
 | Tool execution modes | `reference/config.md`, `explanation/hitl-and-decision-flow.md` | `crates/tirea-agentos/src/orchestrator/agent_definition.rs`, `examples/src/starter_backend/mod.rs` |
-| Tool authoring and registration | `tutorials/first-tool.md`, `how-to/add-a-tool.md` | `examples/src/starter_backend/tools.rs` |
+| Tool authoring and registration | `tutorials/first-tool.md`, `how-to/add-a-tool.md`, `reference/typed-tool.md` | `examples/src/starter_backend/tools.rs`, `examples/src/travel/tools.rs` |
 | Plugin authoring and registration | `how-to/add-a-plugin.md`, `reference/derive-macro.md` | `crates/tirea-extension-reminder/src/lib.rs`, `crates/tirea-extension-permission/src/plugin.rs` |
 | State patch operations + conflict model | `reference/state-ops.md`, `explanation/state-and-patch-model.md` | `crates/tirea-state/src/op.rs`, `crates/tirea-state/src/apply.rs` |
 | Typed state derive (`#[derive(State)]`) | `reference/derive-macro.md` | `crates/tirea-state-derive/src/` |

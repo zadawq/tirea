@@ -5,6 +5,8 @@ This section is normative and lookup-oriented.
 Use these pages by question type:
 
 - Capability-to-doc/example mapping: [Capability Matrix](./capability-matrix.md)
+- Runtime and plugin action types: [Actions](./actions.md)
+- Tool authoring with typed arguments: [Typed Tool](./typed-tool.md)
 - State operations and patch semantics: [State Ops](./state-ops.md)
 - Runtime objects and data model: [Thread Model](./thread-model.md), [Run Context](./run-context.md)
 - Event schema and termination semantics: [Events](./events.md)

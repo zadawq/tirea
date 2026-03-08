@@ -55,4 +55,30 @@ State' = apply_patch(State, Patch)
 - **Reference** — API, protocol, config, and schema lookup pages
 - **Explanation** — Architecture and design rationale
 
+## Recommended Reading Path
+
+If you are new to the repository, use this order:
+
+1. Read [First Agent](./tutorials/first-agent.md) to see the smallest runnable flow.
+2. Read [First Tool](./tutorials/first-tool.md) to understand state reads and writes.
+3. Read [Typed Tool Reference](./reference/typed-tool.md) before writing production tools.
+4. Use [Build an Agent](./how-to/build-an-agent.md) and [Add a Tool](./how-to/add-a-tool.md) as implementation checklists.
+5. Return to [Architecture](./explanation/architecture.md) and [Run Lifecycle and Phases](./explanation/run-lifecycle-and-phases.md) when you need the full execution model.
+
+## Repository Map
+
+These paths matter most when you move from docs into code:
+
+| Path | Purpose |
+|------|---------|
+| `crates/tirea-contract/` | Core runtime contracts: tools, events, state/runtime interfaces |
+| `crates/tirea-agent-loop/` | Loop execution, phases, streaming, tool execution |
+| `crates/tirea-agentos/` | Orchestration, agent wiring, extension integration |
+| `crates/tirea-agentos-server/` | HTTP/SSE/NATS server surfaces |
+| `crates/tirea-state/` | Immutable state patch/apply/conflict engine |
+| `examples/src/` | Small backend examples for tools, agents, and state |
+| `examples/ai-sdk-starter/` | Shortest browser-facing end-to-end example |
+| `examples/copilotkit-starter/` | Richer end-to-end UI example with approvals and persistence |
+| `docs/book/src/` | This documentation source |
+
 For the full Rust API documentation, see the [API Reference](./reference/api.md).
