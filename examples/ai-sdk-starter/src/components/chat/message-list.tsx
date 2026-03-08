@@ -11,7 +11,8 @@ import { PermissionDialog } from "@/components/tools/permission-dialog";
 import { AskUserDialog } from "@/components/tools/ask-user-dialog";
 import { WeatherCard } from "@/components/tools/weather-card";
 import { getMcpUiContent, McpAppFrame } from "@/components/tools/mcp-app-frame";
-import { A2uiSurface } from "@/components/tools/a2ui-surface";
+import { A2uiSurface, extractSurfaceId, type A2uiMessage } from "@/components/tools/a2ui-surface";
+import { useMemo } from "react";
 
 type MessageListProps = {
   messages: UIMessage[];
@@ -50,6 +51,32 @@ export function MessageList({
   const loadingClass = isDark ? "text-slate-400" : "text-slate-400";
   const isConversation = layout === "conversation";
 
+  // Build a registry that merges all render_a2ui tool calls by surfaceId.
+  // Only the last tool call for each surfaceId renders the actual surface.
+  const a2uiRegistry = useMemo(() => {
+    const registry = new Map<string, { allMessages: A2uiMessage[]; lastToolCallId: string }>();
+    for (const m of messages) {
+      for (const p of m.parts) {
+        const tp = p as { type: string; toolName?: string; toolCallId?: string; output?: unknown };
+        const name = tp.toolName ?? (typeof tp.type === "string" ? tp.type.replace("tool-", "") : "");
+        if (name !== "render_a2ui" || tp.output == null) continue;
+        const output = tp.output as { data?: { a2ui?: unknown[] } };
+        const a2uiMsgs = output.data?.a2ui;
+        if (!Array.isArray(a2uiMsgs) || a2uiMsgs.length === 0) continue;
+        const sid = extractSurfaceId(a2uiMsgs as A2uiMessage[]);
+        if (!sid || !tp.toolCallId) continue;
+        const existing = registry.get(sid);
+        if (existing) {
+          existing.allMessages = [...existing.allMessages, ...(a2uiMsgs as A2uiMessage[])];
+          existing.lastToolCallId = tp.toolCallId;
+        } else {
+          registry.set(sid, { allMessages: [...(a2uiMsgs as A2uiMessage[])], lastToolCallId: tp.toolCallId });
+        }
+      }
+    }
+    return registry;
+  }, [messages]);
+
   return (
     <div className="chat-messages flex-1 overflow-y-auto px-4 py-3">
       {messages.map((m) => (
@@ -74,6 +101,7 @@ export function MessageList({
                       onFrontendToolSubmit={onFrontendToolSubmit}
                       onSendMessage={onSendMessage}
                       themeMode={themeMode}
+                      a2uiRegistry={a2uiRegistry}
                     />
                   ))}
                 </>
@@ -96,6 +124,7 @@ export function MessageList({
                   onAskSubmit={onAskSubmit}
                   onFrontendToolSubmit={onFrontendToolSubmit}
                   themeMode={themeMode}
+                  a2uiRegistry={a2uiRegistry}
                 />
               ))}
             </>
@@ -135,6 +164,8 @@ function ConversationItem({
   );
 }
 
+type A2uiRegistryMap = Map<string, { allMessages: A2uiMessage[]; lastToolCallId: string }>;
+
 function PartRenderer({
   part,
   isLoading,
@@ -146,6 +177,7 @@ function PartRenderer({
   onFrontendToolSubmit,
   onSendMessage,
   themeMode,
+  a2uiRegistry,
 }: {
   part: Record<string, unknown>;
   isLoading: boolean;
@@ -161,6 +193,7 @@ function PartRenderer({
   ) => Promise<void> | void;
   onSendMessage?: (text: string) => void;
   themeMode: "light" | "dark";
+  a2uiRegistry?: A2uiRegistryMap;
 }) {
   const p = part as { type: string; text?: string; state?: string; url?: string; title?: string; filename?: string; mediaType?: string };
   if (p.type === "text") {
@@ -191,6 +224,7 @@ function PartRenderer({
         onFrontendToolSubmit={onFrontendToolSubmit}
         onSendMessage={onSendMessage}
         themeMode={themeMode}
+        a2uiRegistry={a2uiRegistry}
       />
     );
   }
@@ -208,6 +242,7 @@ function ToolPartRenderer({
   onFrontendToolSubmit,
   onSendMessage,
   themeMode,
+  a2uiRegistry,
 }: {
   part: Record<string, unknown>;
   isLoading: boolean;
@@ -223,6 +258,7 @@ function ToolPartRenderer({
   ) => Promise<void> | void;
   onSendMessage?: (text: string) => void;
   themeMode: "light" | "dark";
+  a2uiRegistry?: A2uiRegistryMap;
 }) {
   const tool = part as {
     type: string;
@@ -248,6 +284,11 @@ function ToolPartRenderer({
     const output = tool.output as { data?: { a2ui?: unknown[] } };
     const a2uiMessages = output.data?.a2ui;
     if (Array.isArray(a2uiMessages) && a2uiMessages.length > 0) {
+      const sid = extractSurfaceId(a2uiMessages as A2uiMessage[]);
+      const entry = sid && a2uiRegistry ? a2uiRegistry.get(sid) : null;
+      // Only render the surface at the last tool call for this surfaceId
+      const isLastForSurface = !entry || entry.lastToolCallId === tool.toolCallId;
+      const surfaceMessages = entry ? entry.allMessages : (a2uiMessages as A2uiMessage[]);
       return (
         <div>
           <ToolCard
@@ -257,17 +298,19 @@ function ToolPartRenderer({
             output={tool.output}
             errorText={tool.errorText}
           />
-          <A2uiSurface
-            messages={a2uiMessages as never[]}
-            onEvent={(surfaceId, eventName, context) => {
-              if (onSendMessage) {
-                const ctx = JSON.stringify(context);
-                onSendMessage(
-                  `[A2UI event on surface "${surfaceId}": ${eventName}] ${ctx}`,
-                );
-              }
-            }}
-          />
+          {isLastForSurface && (
+            <A2uiSurface
+              messages={surfaceMessages as never[]}
+              onEvent={(surfaceId, eventName, context) => {
+                if (onSendMessage) {
+                  const ctx = JSON.stringify(context);
+                  onSendMessage(
+                    `[A2UI event on surface "${surfaceId}": ${eventName}] ${ctx}`,
+                  );
+                }
+              }}
+            />
+          )}
         </div>
       );
     }

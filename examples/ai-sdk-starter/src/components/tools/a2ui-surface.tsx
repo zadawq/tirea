@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 
 // --- Types ---
 
@@ -17,13 +17,24 @@ type A2uiComponent = {
 
 type DataBinding = { path: string };
 
-type A2uiMessage = {
+export type A2uiMessage = {
   version: string;
   createSurface?: { surfaceId: string; catalogId: string };
   updateComponents?: { surfaceId: string; components: A2uiComponent[] };
   updateDataModel?: { surfaceId: string; path: string; value: unknown };
   deleteSurface?: { surfaceId: string };
 };
+
+/** Extract the surfaceId from an array of A2UI messages. */
+export function extractSurfaceId(messages: A2uiMessage[]): string | null {
+  for (const msg of messages) {
+    if (msg.createSurface) return msg.createSurface.surfaceId;
+    if (msg.updateComponents) return msg.updateComponents.surfaceId;
+    if (msg.updateDataModel) return msg.updateDataModel.surfaceId;
+    if (msg.deleteSurface) return msg.deleteSurface.surfaceId;
+  }
+  return null;
+}
 
 // --- Props ---
 
@@ -90,6 +101,11 @@ export function A2uiSurface({ messages, onEvent }: A2uiSurfaceProps) {
   }, [messages]);
 
   const [dataModel, setDataModel] = useState<Record<string, unknown>>(initialDataModel);
+
+  // Sync local dataModel when LLM sends new data (e.g. after an interaction event)
+  useEffect(() => {
+    setDataModel(initialDataModel);
+  }, [initialDataModel]);
 
   const handleFieldChange = useCallback((path: string, value: string) => {
     setDataModel((prev) => setByPath(prev, path, value));

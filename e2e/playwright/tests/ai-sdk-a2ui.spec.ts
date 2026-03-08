@@ -85,4 +85,52 @@ test.describe("A2UI Tool Integration", () => {
       fullPage: true,
     });
   });
+
+  test("surface update: second render_a2ui for same surfaceId replaces first", async ({
+    page,
+  }) => {
+    await openChat(page, "a2ui");
+
+    // Ask for a form with a button that triggers an event
+    await sendPrompt(
+      page,
+      'Use render_a2ui to create a form surface (surfaceId "counter") with: ' +
+        'a Card root, a Column child, a Text (id "count_text", text bound to "/count"), ' +
+        'and a Button (id "inc_btn", text "Increment", action event name "increment"). ' +
+        'Set initial data model at "/" with {"count": "0"}.',
+    );
+    await waitForRunComplete(page);
+
+    const surface = page.getByTestId("a2ui-surface");
+    await expect(surface).toBeVisible({ timeout: 60_000 });
+
+    // There should be exactly one A2UI surface
+    const surfacesBefore = await page.getByTestId("a2ui-surface").count();
+    expect(surfacesBefore).toBe(1);
+
+    // Screenshot focused on the surface element before interaction
+    await surface.scrollIntoViewIfNeeded();
+    await surface.screenshot({ path: "/tmp/a2ui-surface-before.png" });
+
+    // Click the button to trigger an event
+    const incBtn = page.getByTestId("a2ui-button-inc_btn");
+    await expect(incBtn).toBeVisible({ timeout: 10_000 });
+    await incBtn.click();
+
+    // Wait for the LLM to respond (it should call render_a2ui again)
+    await waitForRunComplete(page);
+
+    // After the LLM responds, there should still be only ONE A2UI surface
+    // (the old one should be replaced, not duplicated)
+    const surfacesAfter = await page.getByTestId("a2ui-surface").count();
+    expect(surfacesAfter).toBe(1);
+
+    // Screenshot focused on the surface element after interaction
+    const surfaceAfter = page.getByTestId("a2ui-surface");
+    await surfaceAfter.scrollIntoViewIfNeeded();
+    await surfaceAfter.screenshot({ path: "/tmp/a2ui-surface-after.png" });
+
+    // Also capture the full conversation for context
+    await page.screenshot({ path: "/tmp/a2ui-test-update-after.png", fullPage: true });
+  });
 });
