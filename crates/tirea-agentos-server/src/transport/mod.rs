@@ -292,7 +292,24 @@ where
         .await
         .map_err(|e| TransportError::Internal(e.to_string()))?;
     cancel.cancel();
-    ingress.abort();
+
+    let ingress_res = if ingress.is_finished() {
+        Some(
+            ingress
+                .await
+                .map_err(|e| TransportError::Internal(e.to_string()))?,
+        )
+    } else {
+        ingress.abort();
+        None
+    };
+
+    if let Some(result) = ingress_res {
+        if let Err(err) = normalize_relay_result(result) {
+            return Err(err);
+        }
+    }
+
     normalize_relay_result(egress_res)
 }
 
@@ -325,6 +342,53 @@ mod tests {
                 recv_rx: tokio::sync::Mutex::new(Some(recv_rx)),
                 send_tx,
             }
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingSendEndpoint<Recv>
+    where
+        Recv: std::marker::Send + 'static,
+    {
+        recv_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<Recv>>>,
+        error: &'static str,
+    }
+
+    impl<Recv> FailingSendEndpoint<Recv>
+    where
+        Recv: std::marker::Send + 'static,
+    {
+        fn new(recv_rx: mpsc::UnboundedReceiver<Recv>, error: &'static str) -> Self {
+            Self {
+                recv_rx: tokio::sync::Mutex::new(Some(recv_rx)),
+                error,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl<Recv> Endpoint<Recv, u32> for FailingSendEndpoint<Recv>
+    where
+        Recv: std::marker::Send + 'static,
+    {
+        async fn recv(&self) -> Result<BoxStream<Recv>, TransportError> {
+            let mut guard = self.recv_rx.lock().await;
+            let rx = guard.take().ok_or(TransportError::Closed)?;
+            let stream = async_stream::stream! {
+                let mut rx = rx;
+                while let Some(item) = rx.recv().await {
+                    yield Ok(item);
+                }
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn send(&self, _item: u32) -> Result<(), TransportError> {
+            Err(TransportError::Io(self.error.to_string()))
+        }
+
+        async fn close(&self) -> Result<(), TransportError> {
+            Ok(())
         }
     }
 
@@ -625,7 +689,7 @@ mod tests {
     async fn relay_with_cancel_before_messages() {
         let (_up_tx, up_rx) = mpsc::unbounded_channel::<u32>();
         let (up_send_tx, _up_send_rx) = mpsc::unbounded_channel::<String>();
-        let (_down_tx, down_rx) = mpsc::unbounded_channel::<String>();
+        let (down_tx, down_rx) = mpsc::unbounded_channel::<String>();
         let (down_send_tx, _down_send_rx) = mpsc::unbounded_channel::<u32>();
 
         let upstream = Arc::new(ChannelEndpoint::new(up_rx, up_send_tx));
@@ -644,7 +708,7 @@ mod tests {
         cancel.cancel();
         // Close sources so streams end
         drop(_up_tx);
-        drop(_down_tx);
+        drop(down_tx);
 
         let result = relay_binding(binding, cancel).await;
         assert!(result.is_ok());
@@ -691,5 +755,37 @@ mod tests {
         drop(up_tx);
         drop(down_tx);
         assert!(relay.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn relay_binding_propagates_ingress_error_even_if_egress_closes_cleanly() {
+        let (up_tx, up_rx) = mpsc::unbounded_channel::<u32>();
+        let (up_send_tx, _up_send_rx) = mpsc::unbounded_channel::<String>();
+        let (down_tx, down_rx) = mpsc::unbounded_channel::<String>();
+
+        let upstream = Arc::new(ChannelEndpoint::new(up_rx, up_send_tx));
+        let downstream = Arc::new(FailingSendEndpoint::<String>::new(
+            down_rx,
+            "starter failed before streaming",
+        ));
+
+        let binding = TransportBinding {
+            session: SessionId {
+                thread_id: "ingress-error".to_string(),
+            },
+            caps: TransportCapabilities::default(),
+            upstream,
+            downstream,
+        };
+
+        up_tx.send(7).unwrap();
+        drop(up_tx);
+        drop(down_tx);
+
+        let result = relay_binding(binding, RelayCancellation::new()).await;
+        assert!(matches!(
+            result,
+            Err(TransportError::Io(message)) if message == "starter failed before streaming"
+        ));
     }
 }
