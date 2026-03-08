@@ -168,7 +168,9 @@ let req = RunRequest {
     thread_id: Some("thread_1".into()),
     run_id: None,
     parent_run_id: None,  // new
+    parent_thread_id: None,
     resource_id: None,
+    origin: RunOrigin::default(),
     state: None,
     messages: vec![user_message],
     initial_decisions: vec![],  // new, required

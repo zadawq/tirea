@@ -6,7 +6,7 @@ Use this when clients consume run events over HTTP streaming.
 
 - `AgentOs` is wired with tools and agents.
 - `ThreadReader` is available for query routes.
-- Run service is initialized when using Run API/A2A (`init_run_service(...)`).
+- `ThreadReader` is wired to the same state store used by run/query APIs.
 
 ## Endpoints
 

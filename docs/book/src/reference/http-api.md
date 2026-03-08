@@ -12,7 +12,7 @@ This page lists the complete HTTP surface exposed by `tirea-agentos-server`.
 
 - Stream responses use `text/event-stream`.
 - Query `limit` is clamped to `1..=200`.
-- Canonical Run API and A2A task APIs require run-store initialization (`init_run_service(...)`).
+- Canonical Run API and A2A task APIs rely on the configured `ThreadReader`/state store.
 
 ## Endpoint Map
 

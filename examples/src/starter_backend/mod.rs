@@ -17,9 +17,8 @@ use tirea_agentos::orchestrator::{
 use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
-use tirea_agentos_server::run_service::init_run_service;
 use tirea_extension_mcp::McpToolRegistryManager;
-use tirea_store_adapters::{FileRunStore, FileStore};
+use tirea_store_adapters::FileStore;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::research::tools::{
@@ -229,9 +228,7 @@ Deterministic compatibility directives:\n\
         None
     };
 
-    let run_store_dir = args.storage_dir.join("runs");
     let file_store = Arc::new(FileStore::new(args.storage_dir));
-    let _ = init_run_service(Arc::new(FileRunStore::new(run_store_dir)));
     let default_agent_id = default_agent.id.clone();
     let mut builder = AgentOsBuilder::new()
         .with_agent(&default_agent_id, default_agent)

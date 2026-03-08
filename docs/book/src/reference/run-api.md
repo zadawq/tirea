@@ -6,7 +6,6 @@ Unlike protocol adapters (`ag-ui`, `ai-sdk`, `a2a`), this API exposes a stable t
 
 ## Prerequisites
 
-- Run service must be initialized via `init_run_service(...)`.
 - Server must include `http::run_routes()`.
 
 ## Endpoints
