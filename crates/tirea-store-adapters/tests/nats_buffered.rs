@@ -626,6 +626,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
 }
 
 #[tokio::test]
+#[ignore = "timing-sensitive benchmark; not suitable for CI"]
 async fn test_buffered_vs_direct_write_latency_and_amplification() {
     let Some((_container, url)) = start_nats_js().await else {
         return;

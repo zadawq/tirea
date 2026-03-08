@@ -247,7 +247,7 @@ fn bind_execution_context_to_run_config(
         RunExecutionContext::AGENT_ID_KEY,
         execution_ctx.agent_id.clone(),
     );
-    if let Ok(origin_value) = serde_json::to_value(execution_ctx.origin.clone()) {
+    if let Ok(origin_value) = serde_json::to_value(execution_ctx.origin) {
         let _ = run_ctx
             .run_config
             .set(RunExecutionContext::ORIGIN_KEY, origin_value);
@@ -445,7 +445,7 @@ fn classify_status_code(status_code: u16) -> LlmErrorClass {
         401 | 403 => LlmErrorClass::Auth,
         400 | 404 | 422 => LlmErrorClass::ClientRequest,
         503 => LlmErrorClass::ServerUnavailable,
-        500 | 502 | 504 | 500..=599 => LlmErrorClass::ServerError,
+        500..=599 => LlmErrorClass::ServerError,
         400..=499 => LlmErrorClass::ClientRequest,
         _ => LlmErrorClass::Unknown,
     }

@@ -66,6 +66,7 @@ impl NatsTransport {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_and_publish<E, ErrEvent, BuildEncoder, BuildErrorEvent>(
         &self,
         os: &AgentOs,

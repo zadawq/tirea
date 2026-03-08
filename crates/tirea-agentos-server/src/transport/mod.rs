@@ -305,9 +305,7 @@ where
     };
 
     if let Some(result) = ingress_res {
-        if let Err(err) = normalize_relay_result(result) {
-            return Err(err);
-        }
+        normalize_relay_result(result)?
     }
 
     normalize_relay_result(egress_res)

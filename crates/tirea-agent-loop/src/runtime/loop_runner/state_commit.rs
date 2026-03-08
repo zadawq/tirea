@@ -83,7 +83,7 @@ pub(super) async fn commit_pending_delta(
     // orchestration layer's StateCommitter policy.
     if let Some(termination) = termination {
         let agent_id = execution_ctx.agent_id.clone();
-        let origin: RunOrigin = execution_ctx.origin.clone();
+        let origin: RunOrigin = execution_ctx.origin;
         let parent_thread_id = None; // Already set on the initial changeset.
         let (status, termination_code, termination_detail) = map_termination(termination);
         changeset.run_meta = Some(RunMeta {

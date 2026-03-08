@@ -137,16 +137,10 @@ fn clear_suspended_tool_call_state(state: &serde_json::Value) -> Option<serde_js
     }
 
     let mut cleaned_state = state.clone();
-    let Some(root) = cleaned_state.as_object_mut() else {
-        return None;
-    };
-
-    let Some(scope_obj) = root
+    let root = cleaned_state.as_object_mut()?;
+    let scope_obj = root
         .get_mut("__tool_call_scope")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return None;
-    };
+        .and_then(serde_json::Value::as_object_mut)?;
 
     let mut removed_any = false;
     for call_id in suspended.keys() {

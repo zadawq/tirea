@@ -72,7 +72,7 @@ impl AgUiEventContext {
         self
     }
 
-    fn outward_run_id<'a>(&self, internal_run_id: &'a str) -> String {
+    fn outward_run_id(&self, internal_run_id: &str) -> String {
         self.frontend_run_id
             .as_ref()
             .cloned()
