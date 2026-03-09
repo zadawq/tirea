@@ -3,10 +3,8 @@ mod builder;
 mod bundle;
 mod config;
 mod errors;
-mod registry;
-mod registry_set;
+pub mod registry;
 mod stop_condition;
-mod stop_policy_registry;
 mod wiring;
 
 pub use agent_definition::{AgentDefinition, ToolExecutionMode};
@@ -20,14 +18,15 @@ pub use registry::{
     InMemoryBehaviorRegistry, InMemoryModelRegistry, InMemoryProviderRegistry,
     InMemoryToolRegistry,
 };
-pub use registry_set::{
+pub use registry::{
     AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError, ModelDefinition,
     ModelRegistry, ModelRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle,
     StopPolicyRegistry, ToolRegistry, ToolRegistryError,
 };
 pub use stop_condition::StopConditionSpec;
-pub use stop_policy_registry::{
+pub use registry::{
     CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistryError,
 };
 pub use wiring::{SystemWiring, WiringContext};
-pub use bundle::{RegistrySet, ToolBehaviorBundle};
+pub use bundle::ToolBehaviorBundle;
+pub use registry::RegistrySet;

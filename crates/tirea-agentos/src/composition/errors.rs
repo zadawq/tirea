@@ -1,10 +1,9 @@
 use super::{
     bundle::BundleComposeError,
-    registry_set::{
+    registry::{
         AgentRegistryError, BehaviorRegistryError, ModelRegistryError, ProviderRegistryError,
-        ToolRegistryError,
+        StopPolicyRegistryError, ToolRegistryError,
     },
-    stop_policy_registry::StopPolicyRegistryError,
 };
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{SkillError, SkillRegistryError, SkillRegistryManagerError};

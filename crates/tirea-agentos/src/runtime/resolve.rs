@@ -3,9 +3,9 @@ use super::agent_tools::{
     AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };
 use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
-use super::stop_policy_plugin::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
+use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use super::{
-    composite_behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy,
+    behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy,
 };
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{

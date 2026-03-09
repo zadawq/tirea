@@ -1,51 +1,13 @@
-use super::{
-    registry_set::{AgentRegistry, BehaviorRegistry, ModelRegistry, ProviderRegistry, RegistryBundle, StopPolicyRegistry, ToolRegistry},
-    registry_set::ModelDefinition,
+use super::registry::{
+    AgentRegistry, BehaviorRegistry, ModelDefinition, ModelRegistry, ProviderRegistry,
+    RegistryBundle, ToolRegistry,
 };
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
 use crate::composition::AgentDefinition;
-#[cfg(feature = "skills")]
-use crate::extensions::skills::SkillRegistry;
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-/// Aggregated registry set used by [`super::super::AgentOs`] after build-time composition.
-#[derive(Clone)]
-pub struct RegistrySet {
-    pub agents: Arc<dyn AgentRegistry>,
-    pub tools: Arc<dyn ToolRegistry>,
-    pub behaviors: Arc<dyn BehaviorRegistry>,
-    pub providers: Arc<dyn ProviderRegistry>,
-    pub models: Arc<dyn ModelRegistry>,
-    pub stop_policies: Arc<dyn StopPolicyRegistry>,
-    #[cfg(feature = "skills")]
-    pub skills: Option<Arc<dyn SkillRegistry>>,
-}
-
-impl RegistrySet {
-    pub fn new(
-        agents: Arc<dyn AgentRegistry>,
-        tools: Arc<dyn ToolRegistry>,
-        behaviors: Arc<dyn BehaviorRegistry>,
-        providers: Arc<dyn ProviderRegistry>,
-        models: Arc<dyn ModelRegistry>,
-        stop_policies: Arc<dyn StopPolicyRegistry>,
-        #[cfg(feature = "skills")] skills: Option<Arc<dyn SkillRegistry>>,
-    ) -> Self {
-        Self {
-            agents,
-            tools,
-            behaviors,
-            providers,
-            models,
-            stop_policies,
-            #[cfg(feature = "skills")]
-            skills,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BundleRegistryKind {

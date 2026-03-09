@@ -6,7 +6,6 @@ use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub use super::stop_policy_registry::StopPolicyRegistry;
 #[derive(Debug, thiserror::Error)]
 pub enum ToolRegistryError {
     #[error("tool id already registered: {0}")]

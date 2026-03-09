@@ -1,4 +1,4 @@
-use super::AgentDefinition;
+use crate::composition::AgentDefinition;
 use crate::contracts::runtime::tool_call::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;

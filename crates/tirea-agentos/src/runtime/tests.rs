@@ -3,12 +3,15 @@ use crate::composition::*;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
 use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction, LifecycleAction};
 use crate::contracts::runtime::state::AnyStateAction;
-use crate::contracts::runtime::tool_call::ToolDescriptor;
+use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
 use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
 use crate::contracts::storage::{RunOrigin, ThreadReader, ThreadWriter};
-use crate::contracts::thread::Thread;
-use crate::contracts::AgentBehavior;
+use crate::contracts::thread::{Message, Thread};
+use crate::contracts::{AgentBehavior, AgentEvent, RunRequest};
 use crate::contracts::ToolCallContext;
+use genai::Client;
+use std::collections::HashMap;
+use std::sync::Arc;
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,

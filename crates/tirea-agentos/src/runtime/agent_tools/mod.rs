@@ -1,5 +1,6 @@
 use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY};
-use super::{AgentOs, AgentRegistry};
+use super::AgentOs;
+use crate::composition::AgentRegistry;
 use crate::contracts::runtime::tool_call::{
     Tool, ToolDescriptor, ToolResult, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
 };

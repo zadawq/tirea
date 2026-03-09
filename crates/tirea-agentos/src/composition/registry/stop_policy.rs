@@ -1,12 +1,7 @@
+use super::sorted_registry_ids;
 use crate::runtime::StopPolicy;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-fn sorted_registry_ids<T>(entries: &HashMap<String, T>) -> Vec<String> {
-    let mut ids: Vec<String> = entries.keys().cloned().collect();
-    ids.sort();
-    ids
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StopPolicyRegistryError {
