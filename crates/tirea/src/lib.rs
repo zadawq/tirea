@@ -31,15 +31,7 @@ pub use tirea_contract as contracts;
 /// Typed JSON state engine (patches, ops, paths, state manager).
 pub use tirea_state as state;
 
-// ── Core (default): loop + orchestrator ─────────────────────────────────
-
-/// Low-level agent execution engine (inference, tool execution, stop policies).
-#[cfg(feature = "core")]
-pub use tirea_agent_loop::engine;
-
-/// Agent loop runtime (loop runner, streaming, activity tracking).
-#[cfg(feature = "core")]
-pub use tirea_agent_loop::runtime;
+// ── Core (default): orchestrator ────────────────────────────────────────
 
 /// AgentOS orchestrator extensions (permission, reminder, interaction, etc.).
 #[cfg(feature = "core")]

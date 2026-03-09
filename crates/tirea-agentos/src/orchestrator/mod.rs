@@ -66,7 +66,7 @@ pub use thread_run::ForwardedDecision;
 
 pub use system_wiring::{SystemWiring, WiringContext};
 
-pub use crate::runtime::loop_runner::ResolvedRun;
+pub use crate::runtime::loop_runner::{tool_map, tool_map_from_arc, ResolvedRun};
 
 #[derive(Clone)]
 struct AgentStateStoreStateCommitter {

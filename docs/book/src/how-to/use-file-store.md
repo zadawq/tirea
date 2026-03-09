@@ -21,8 +21,7 @@ let store = Arc::new(FileStore::new("./threads"));
 2. Inject into `AgentOsBuilder`.
 
 ```rust,ignore
-use tirea::orchestrator::{AgentDefinition, AgentOsBuilder};
-use tirea::runtime::loop_runner::tool_map;
+use tirea::orchestrator::{tool_map, AgentDefinition, AgentOsBuilder};
 
 let os = AgentOsBuilder::new()
     .with_tools(tool_map([MyTool]))

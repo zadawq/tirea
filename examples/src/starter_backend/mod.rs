@@ -12,9 +12,9 @@ use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_agentos::orchestrator::{
-    AgentDefinition, AgentOsBuilder, StopConditionSpec, ToolExecutionMode, ToolRegistry,
+    tool_map_from_arc, AgentDefinition, AgentOsBuilder, StopConditionSpec, ToolExecutionMode,
+    ToolRegistry,
 };
-use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
 use tirea_extension_mcp::McpToolRegistryManager;
