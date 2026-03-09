@@ -63,6 +63,9 @@ pub struct InferenceError {
     pub error_type: String,
     /// Human-readable error message.
     pub message: String,
+    /// Classified error category (e.g. `rate_limit`, `timeout`, `connection`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<String>,
 }
 
 /// LLM response extension: set after inference completes (success or error).

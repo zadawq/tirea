@@ -149,6 +149,7 @@ impl AgentBehavior for LLMMetryPlugin {
             "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
             "error.type" = tracing::field::Empty,
             "error.message" = tracing::field::Empty,
+            "gen_ai.error.class" = tracing::field::Empty,
         );
         if let Some(t) = *lock_unpoison(&self.temperature) {
             span.record("gen_ai.request.temperature", t);
@@ -196,6 +197,7 @@ impl AgentBehavior for LLMMetryPlugin {
             response_id: None,
             finish_reasons: Vec::new(),
             error_type: error.as_ref().map(|e| e.error_type.clone()),
+            error_class: error.as_ref().and_then(|e| e.error_class.clone()),
             input_tokens,
             output_tokens,
             total_tokens,
@@ -238,6 +240,9 @@ impl AgentBehavior for LLMMetryPlugin {
                 tracing_span.record("error.message", err.message.as_str());
                 tracing_span.record("otel.status_code", "ERROR");
                 tracing_span.record("otel.status_description", err.message.as_str());
+                if let Some(ref class) = err.error_class {
+                    tracing_span.record("gen_ai.error.class", class.as_str());
+                }
             }
             drop(tracing_span);
         }

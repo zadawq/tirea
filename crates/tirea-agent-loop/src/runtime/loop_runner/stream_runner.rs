@@ -488,6 +488,7 @@ pub(super) fn run_stream(
                 }
                 LlmAttemptOutcome::Exhausted {
                     last_error,
+                    last_error_class,
                     attempts,
                 } => {
                     run_state.record_llm_attempts(attempts);
@@ -497,6 +498,7 @@ pub(super) fn run_stream(
                             agent.as_ref(),
                             "llm_stream_start_error",
                             last_error.clone(),
+                            last_error_class,
                     )
                     .await
                     {
@@ -685,6 +687,7 @@ pub(super) fn run_stream(
                                         agent.as_ref(),
                                         "llm_stream_event_error",
                                         error_message.clone(),
+                                        Some(error_class.as_str()),
                                     )
                                     .await
                                     {
@@ -733,6 +736,7 @@ pub(super) fn run_stream(
                             agent.as_ref(),
                             "llm_stream_event_error",
                             error_message.clone(),
+                            Some(error_class.as_str()),
                         )
                         .await
                         {
@@ -801,6 +805,7 @@ pub(super) fn run_stream(
                                 agent.as_ref(),
                                 "llm_stream_event_error",
                                 error_message.clone(),
+                                None,
                             )
                             .await
                             {
@@ -834,6 +839,7 @@ pub(super) fn run_stream(
                     agent.as_ref(),
                     "llm_stream_event_error",
                     error_message.clone(),
+                    None,
                 )
                 .await
                 {

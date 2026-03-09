@@ -2671,6 +2671,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
         &agent,
         "llm_stream_start_error",
         "boom".to_string(),
+        Some("server_error"),
     )
     .await
     .expect("cleanup phases should succeed");

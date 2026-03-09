@@ -17,6 +17,8 @@ pub struct GenAISpan {
     pub finish_reasons: Vec<String>,
     /// OTel: `error.type`.
     pub error_type: Option<String>,
+    /// Classified error category (e.g. `rate_limit`, `timeout`).
+    pub error_class: Option<String>,
     /// OTel: `gen_ai.usage.input_tokens`.
     pub input_tokens: Option<i32>,
     /// OTel: `gen_ai.usage.output_tokens`.

@@ -287,10 +287,12 @@ pub(super) async fn emit_cleanup_phases(
     agent: &dyn super::Agent,
     error_type: &'static str,
     message: String,
+    error_class: Option<&str>,
 ) -> Result<(), AgentLoopError> {
     let error = InferenceError {
         error_type: error_type.to_string(),
         message,
+        error_class: error_class.map(|s| s.to_string()),
     };
 
     let (pending, actions) = emit_phase_block(

@@ -377,6 +377,20 @@ impl LlmErrorClass {
                 | LlmErrorClass::ServerError
         )
     }
+
+    /// Stable string label for telemetry and structured logging.
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            LlmErrorClass::RateLimit => "rate_limit",
+            LlmErrorClass::Timeout => "timeout",
+            LlmErrorClass::Connection => "connection",
+            LlmErrorClass::ServerUnavailable => "server_unavailable",
+            LlmErrorClass::ServerError => "server_error",
+            LlmErrorClass::Auth => "auth",
+            LlmErrorClass::ClientRequest => "client_request",
+            LlmErrorClass::Unknown => "unknown",
+        }
+    }
 }
 
 fn classify_llm_error_message(message: &str) -> LlmErrorClass {
@@ -585,6 +599,7 @@ pub(super) fn classify_llm_error(error: &genai::Error) -> LlmErrorClass {
     }
 }
 
+#[cfg(test)]
 pub(super) fn is_retryable_llm_error(error: &genai::Error) -> bool {
     classify_llm_error(error).is_retryable()
 }
@@ -693,6 +708,12 @@ pub(super) async fn wait_retry_backoff(
     ) else {
         return RetryBackoffOutcome::BudgetExhausted;
     };
+    tracing::debug!(
+        attempt = retry_attempt,
+        backoff_ms = wait_ms,
+        elapsed_ms = elapsed_ms,
+        "waiting before LLM retry"
+    );
     match await_or_cancel(
         run_cancellation_token,
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms)),
@@ -713,6 +734,7 @@ pub(super) enum LlmAttemptOutcome<T> {
     Cancelled,
     Exhausted {
         last_error: String,
+        last_error_class: Option<&'static str>,
         attempts: usize,
     },
 }
@@ -798,6 +820,7 @@ where
     Fut: std::future::Future<Output = genai::Result<T>>,
 {
     let mut last_llm_error = unknown_error.to_string();
+    let mut last_error_class: Option<&'static str> = None;
     let model_candidates = effective_llm_models_from(agent, start_model);
     let max_attempts = llm_retry_attempts(agent);
     let mut total_attempts = 0usize;
@@ -814,6 +837,13 @@ where
 
             match response_res {
                 Ok(value) => {
+                    if total_attempts > 1 {
+                        tracing::info!(
+                            model = %model,
+                            attempts = total_attempts,
+                            "LLM call succeeded after retries"
+                        );
+                    }
                     return LlmAttemptOutcome::Success {
                         value,
                         model,
@@ -821,11 +851,22 @@ where
                     };
                 }
                 Err(e) => {
+                    let error_class = classify_llm_error(&e);
+                    last_error_class = Some(error_class.as_str());
                     let message = e.to_string();
                     last_llm_error =
                         format!("model='{model}' attempt={attempt}/{max_attempts}: {message}");
                     let can_retry_same_model =
-                        retry_current_model && attempt < max_attempts && is_retryable_llm_error(&e);
+                        retry_current_model && attempt < max_attempts && error_class.is_retryable();
+                    tracing::warn!(
+                        model = %model,
+                        attempt = attempt,
+                        max_attempts = max_attempts,
+                        error_class = error_class.as_str(),
+                        retryable = can_retry_same_model,
+                        error = %message,
+                        "LLM call failed"
+                    );
                     if can_retry_same_model {
                         match wait_retry_backoff(
                             agent,
@@ -840,6 +881,11 @@ where
                                 return LlmAttemptOutcome::Cancelled;
                             }
                             RetryBackoffOutcome::BudgetExhausted => {
+                                tracing::warn!(
+                                    model = %model,
+                                    attempt = attempt,
+                                    "LLM retry budget exhausted"
+                                );
                                 last_llm_error =
                                     format!("{last_llm_error} (retry budget exhausted)");
                                 break 'models;
@@ -854,6 +900,7 @@ where
 
     LlmAttemptOutcome::Exhausted {
         last_error: last_llm_error,
+        last_error_class,
         attempts: total_attempts,
     }
 }
@@ -927,8 +974,17 @@ pub(super) async fn apply_llm_error_cleanup(
     agent: &dyn Agent,
     error_type: &'static str,
     message: String,
+    error_class: Option<&str>,
 ) -> Result<(), AgentLoopError> {
-    plugin_runtime::emit_cleanup_phases(run_ctx, tool_descriptors, agent, error_type, message).await
+    plugin_runtime::emit_cleanup_phases(
+        run_ctx,
+        tool_descriptors,
+        agent,
+        error_type,
+        message,
+        error_class,
+    )
+    .await
 }
 
 pub(super) async fn complete_step_after_inference(
@@ -2104,6 +2160,7 @@ pub async fn run_loop_with_context(
             }
             LlmAttemptOutcome::Exhausted {
                 last_error,
+                last_error_class,
                 attempts,
             } => {
                 run_state.record_llm_attempts(attempts);
@@ -2113,6 +2170,7 @@ pub async fn run_loop_with_context(
                     agent,
                     "llm_exec_error",
                     last_error.clone(),
+                    last_error_class,
                 )
                 .await
                 {

@@ -121,6 +121,7 @@ mod tests {
             response_id: None,
             finish_reasons: Vec::new(),
             error_type: None,
+            error_class: None,
             input_tokens: Some(10),
             output_tokens: Some(20),
             total_tokens: Some(30),
@@ -414,6 +415,7 @@ mod tests {
         step.llm_response = Some(LLMResponse::error(InferenceError {
             error_type: "rate_limited".to_string(),
             message: "429".to_string(),
+            error_class: Some("rate_limit".to_string()),
         }));
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -933,6 +935,7 @@ mod tests {
             step.llm_response = Some(LLMResponse::error(InferenceError {
                 error_type: "rate_limited".to_string(),
                 message: "429".to_string(),
+                error_class: Some("rate_limit".to_string()),
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 

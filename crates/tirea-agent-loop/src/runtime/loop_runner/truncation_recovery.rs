@@ -33,6 +33,11 @@ pub(super) fn should_retry(result: &StreamResult, run_state: &mut LoopRunState) 
         && run_state.truncation_retries < MAX_RETRIES
     {
         run_state.truncation_retries += 1;
+        tracing::info!(
+            retry = run_state.truncation_retries,
+            max = MAX_RETRIES,
+            "truncation recovery: retrying after MaxTokens without tool calls"
+        );
         true
     } else {
         false
