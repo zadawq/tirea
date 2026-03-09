@@ -10,13 +10,20 @@
 pub struct DeltaTracked<T> {
     items: Vec<T>,
     cursor: usize,
+    /// Snapshot of items.len() at construction time. Unlike `cursor`, this
+    /// value is never mutated by `take_delta()`.
+    initial_len: usize,
 }
 
 impl<T> DeltaTracked<T> {
     /// Create from existing items with cursor at the end (no pending delta).
     pub fn new(items: Vec<T>) -> Self {
-        let cursor = items.len();
-        Self { items, cursor }
+        let len = items.len();
+        Self {
+            items,
+            cursor: len,
+            initial_len: len,
+        }
     }
 
     /// Create an empty tracker with cursor at 0.
@@ -24,6 +31,7 @@ impl<T> DeltaTracked<T> {
         Self {
             items: Vec::new(),
             cursor: 0,
+            initial_len: 0,
         }
     }
 
@@ -58,8 +66,9 @@ impl<T> DeltaTracked<T> {
     }
 
     /// Number of items that existed before any push/extend (the initial set).
+    /// Stable across `take_delta()` calls.
     pub fn initial_count(&self) -> usize {
-        self.cursor
+        self.initial_len
     }
 
     /// Whether there are items after the cursor.
@@ -163,5 +172,40 @@ mod tests {
         let dt = DeltaTracked::<String>::default();
         assert!(dt.is_empty());
         assert!(!dt.has_delta());
+    }
+
+    #[test]
+    fn initial_count_stable_after_take_delta() {
+        let mut dt = DeltaTracked::new(vec![1, 2, 3]);
+        assert_eq!(dt.initial_count(), 3);
+
+        dt.push(4);
+        dt.push(5);
+        assert_eq!(dt.initial_count(), 3, "push must not change initial_count");
+
+        dt.take_delta();
+        assert_eq!(
+            dt.initial_count(),
+            3,
+            "take_delta must not change initial_count"
+        );
+
+        dt.push(6);
+        dt.take_delta();
+        assert_eq!(
+            dt.initial_count(),
+            3,
+            "multiple take_delta cycles must not change initial_count"
+        );
+    }
+
+    #[test]
+    fn initial_count_zero_for_empty() {
+        let mut dt = DeltaTracked::empty();
+        assert_eq!(dt.initial_count(), 0);
+        dt.push(1);
+        assert_eq!(dt.initial_count(), 0);
+        dt.take_delta();
+        assert_eq!(dt.initial_count(), 0);
     }
 }

@@ -579,6 +579,150 @@ mod tests {
         assert_eq!(stats.last_tool_calls[0].id, "c1");
     }
 
+    /// Empty run (no prior messages, text-only response with no tools).
+    #[test]
+    fn stats_text_only_response_counts_step_but_no_tools() {
+        let messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("hello"))];
+        let response = StreamResult {
+            text: "hi there".to_string(),
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: None,
+        };
+        let stats = derive_stats_from_messages_with_response(&messages, &response);
+        assert_eq!(stats.step, 1, "text-only response still counts as a step");
+        assert_eq!(stats.step_tool_call_count, 0);
+        assert_eq!(stats.total_tool_call_count, 0);
+        assert_eq!(stats.last_text, "hi there");
+        assert!(stats.tool_call_history.is_empty());
+    }
+
+    /// No messages at all — response is the only thing.
+    #[test]
+    fn stats_empty_messages_with_response() {
+        let messages: Vec<Arc<Message>> = vec![];
+        let response = StreamResult {
+            text: "hi".to_string(),
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: None,
+        };
+        let stats = derive_stats_from_messages_with_response(&messages, &response);
+        assert_eq!(stats.step, 1);
+        assert_eq!(stats.total_tool_call_count, 0);
+        assert_eq!(stats.consecutive_errors, 0);
+    }
+
+    /// Consecutive errors reset to 0 when a round has no tool calls.
+    #[test]
+    fn consecutive_errors_reset_on_no_tool_round() {
+        let fail_call = ToolCall::new("f1", "broken", json!({}));
+        let messages = vec![
+            // Round 1: tool fails
+            Arc::new(Message::assistant_with_tool_calls(
+                "r1",
+                vec![fail_call.clone()],
+            )),
+            Arc::new(Message::tool(
+                &fail_call.id,
+                serde_json::to_string(&ToolResult::error("broken", "boom")).unwrap(),
+            )),
+            // Round 2: text-only (no tools) — resets consecutive errors
+            Arc::new(Message::assistant("text only")),
+        ];
+        let stats = derive_stats_from_messages(&messages);
+        assert_eq!(
+            stats.consecutive_errors, 0,
+            "text-only round resets consecutive errors"
+        );
+        assert_eq!(stats.step, 2);
+    }
+
+    /// tool_call_history caps at 20 entries (sliding window).
+    #[test]
+    fn tool_call_history_caps_at_twenty() {
+        let mut messages: Vec<Arc<Message>> = Vec::new();
+        for i in 0..25 {
+            let call = ToolCall::new(&format!("c{i}"), &format!("tool_{i}"), json!({}));
+            messages.push(Arc::new(Message::assistant_with_tool_calls(
+                format!("r{i}"),
+                vec![call.clone()],
+            )));
+            messages.push(Arc::new(Message::tool(
+                &call.id,
+                serde_json::to_string(&ToolResult::success(
+                    &format!("tool_{i}"),
+                    json!({"ok": true}),
+                ))
+                .unwrap(),
+            )));
+        }
+        let stats = derive_stats_from_messages(&messages);
+        assert_eq!(stats.step, 25);
+        assert_eq!(
+            stats.tool_call_history.len(),
+            20,
+            "history must be capped at 20"
+        );
+        // Oldest entries are dropped — first entry should be tool_5 (index 5).
+        assert_eq!(stats.tool_call_history[0], vec!["tool_5".to_string()]);
+    }
+
+    /// Multiple tool calls in one round are sorted and tracked together.
+    #[test]
+    fn multi_tool_round_sorted_in_history() {
+        let calls = vec![
+            ToolCall::new("c1", "zebra", json!({})),
+            ToolCall::new("c2", "alpha", json!({})),
+        ];
+        let messages = vec![
+            Arc::new(Message::assistant_with_tool_calls("r1", calls.clone())),
+            Arc::new(Message::tool(
+                "c1",
+                serde_json::to_string(&ToolResult::success("zebra", json!({}))).unwrap(),
+            )),
+            Arc::new(Message::tool(
+                "c2",
+                serde_json::to_string(&ToolResult::success("alpha", json!({}))).unwrap(),
+            )),
+        ];
+        let stats = derive_stats_from_messages(&messages);
+        assert_eq!(stats.step, 1);
+        assert_eq!(stats.step_tool_call_count, 2);
+        assert_eq!(stats.total_tool_call_count, 2);
+        assert_eq!(
+            stats.tool_call_history[0],
+            vec!["alpha".to_string(), "zebra".to_string()],
+            "tool names must be sorted within a round"
+        );
+    }
+
+    /// Partial tool failure: only when ALL tools fail does consecutive_errors increment.
+    #[test]
+    fn consecutive_errors_only_on_all_tools_failing() {
+        let ok_call = ToolCall::new("c1", "ok_tool", json!({}));
+        let fail_call = ToolCall::new("c2", "bad_tool", json!({}));
+        let messages = vec![
+            Arc::new(Message::assistant_with_tool_calls(
+                "r1",
+                vec![ok_call.clone(), fail_call.clone()],
+            )),
+            Arc::new(Message::tool(
+                &ok_call.id,
+                serde_json::to_string(&ToolResult::success("ok_tool", json!({}))).unwrap(),
+            )),
+            Arc::new(Message::tool(
+                &fail_call.id,
+                serde_json::to_string(&ToolResult::error("bad_tool", "fail")).unwrap(),
+            )),
+        ];
+        let stats = derive_stats_from_messages(&messages);
+        assert_eq!(
+            stats.consecutive_errors, 0,
+            "mixed success/fail does not count as all-error"
+        );
+    }
+
     #[test]
     fn stop_condition_spec_serialization_roundtrip() {
         let specs = vec![
