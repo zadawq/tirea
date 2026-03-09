@@ -697,32 +697,378 @@ mod tests {
         assert_eq!(stats.consecutive_errors, 0);
     }
 
+    /// Prior run's consecutive tool errors must not carry over into a new run.
     #[test]
-    fn stopped_reason_payload() {
-        let stopped = StopOnTool("finish".to_string());
-        let run_ctx = RunContext::new(
-            "test",
-            json!({}),
-            vec![],
-            crate::contracts::RunConfig::default(),
+    fn consecutive_errors_do_not_leak_across_runs() {
+        // Prior run: 3 rounds all failing.
+        let mut messages: Vec<Arc<Message>> = Vec::new();
+        for i in 0..3 {
+            let call = ToolCall::new(&format!("fail-{i}"), "broken", json!({}));
+            messages.push(Arc::new(Message::user(format!("u{i}"))));
+            messages.push(Arc::new(Message::assistant_with_tool_calls(
+                format!("a{i}"),
+                vec![call.clone()],
+            )));
+            messages.push(Arc::new(Message::tool(
+                &call.id,
+                serde_json::to_string(&ToolResult::error("broken", "boom")).unwrap(),
+            )));
+        }
+
+        // New run boundary.
+        let run_start = messages.len();
+        messages.push(Arc::new(Message::user("new-turn")));
+
+        // New run: first response succeeds.
+        let response = StreamResult {
+            text: "ok".to_string(),
+            tool_calls: vec![ToolCall::new("ok-1", "echo", json!({}))],
+            usage: None,
+            stop_reason: None,
+        };
+
+        let stats = derive_stats_from_messages_with_response(&messages[run_start..], &response);
+        assert_eq!(
+            stats.consecutive_errors, 0,
+            "errors from prior run must not leak"
         );
-        let input = StopPolicyInput {
-            run_ctx: &run_ctx,
-            stats: StopPolicyStats {
-                step: 1,
-                step_tool_call_count: 1,
-                total_tool_call_count: 1,
+        assert_eq!(stats.step, 1);
+    }
+
+    /// Prior run's tool call history must not trigger loop detection in a new run.
+    #[test]
+    fn tool_call_history_does_not_leak_across_runs() {
+        // Prior run: 3 rounds calling the same tool "echo".
+        let mut messages: Vec<Arc<Message>> = Vec::new();
+        for i in 0..3 {
+            let call = ToolCall::new(&format!("old-{i}"), "echo", json!({}));
+            messages.push(Arc::new(Message::user(format!("u{i}"))));
+            messages.push(Arc::new(Message::assistant_with_tool_calls(
+                format!("a{i}"),
+                vec![call.clone()],
+            )));
+            messages.push(Arc::new(Message::tool(
+                &call.id,
+                serde_json::to_string(&ToolResult::success("echo", json!({"ok": true}))).unwrap(),
+            )));
+        }
+
+        let run_start = messages.len();
+        messages.push(Arc::new(Message::user("new-turn")));
+
+        // New run: first response also calls "echo" — should NOT trigger loop.
+        let response = StreamResult {
+            text: "".to_string(),
+            tool_calls: vec![ToolCall::new("new-1", "echo", json!({}))],
+            usage: None,
+            stop_reason: None,
+        };
+
+        let stats = derive_stats_from_messages_with_response(&messages[run_start..], &response);
+        assert_eq!(
+            stats.tool_call_history.len(),
+            1,
+            "only 1 round in the new run"
+        );
+    }
+
+    /// Prior run's total_tool_call_count must not accumulate into the new run.
+    #[test]
+    fn total_tool_call_count_does_not_leak_across_runs() {
+        let mut messages: Vec<Arc<Message>> = Vec::new();
+        for i in 0..4 {
+            let call = ToolCall::new(&format!("old-{i}"), "echo", json!({}));
+            messages.push(Arc::new(Message::user(format!("u{i}"))));
+            messages.push(Arc::new(Message::assistant_with_tool_calls(
+                format!("a{i}"),
+                vec![call.clone()],
+            )));
+            messages.push(Arc::new(Message::tool(
+                &call.id,
+                serde_json::to_string(&ToolResult::success("echo", json!({"ok": true}))).unwrap(),
+            )));
+        }
+
+        let run_start = messages.len();
+        messages.push(Arc::new(Message::user("new-turn")));
+
+        let response = StreamResult {
+            text: "".to_string(),
+            tool_calls: vec![
+                ToolCall::new("n1", "a", json!({})),
+                ToolCall::new("n2", "b", json!({})),
+            ],
+            usage: None,
+            stop_reason: None,
+        };
+
+        let stats = derive_stats_from_messages_with_response(&messages[run_start..], &response);
+        assert_eq!(
+            stats.total_tool_call_count, 2,
+            "only 2 tool calls in the new run, not 6"
+        );
+    }
+
+    /// Fresh thread (run_start=0): all messages belong to the current run.
+    #[test]
+    fn fresh_thread_counts_all_messages() {
+        let messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("hello"))];
+        let run_start = 0;
+
+        let response = StreamResult {
+            text: "hi".to_string(),
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
+            usage: None,
+            stop_reason: None,
+        };
+
+        let stats =
+            derive_stats_from_messages_with_response(&messages[run_start..], &response);
+        assert_eq!(stats.step, 1);
+        assert_eq!(stats.total_tool_call_count, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Built-in policy evaluate tests
+    // -----------------------------------------------------------------------
+
+    /// Construct a `StopPolicyInput` with defaults and evaluate the given policy.
+    /// Override fields via assignment after construction to avoid duplicate-field errors.
+    macro_rules! eval_policy {
+        ($policy:expr, { $($field:ident : $val:expr),* $(,)? }) => {{
+            let run_ctx = RunContext::new(
+                "t", json!({}), vec![], crate::contracts::RunConfig::default(),
+            );
+            let empty_history = VecDeque::new();
+            let no_tools: &[ToolCall] = &[];
+            #[allow(unused_mut, unused_assignments)]
+            let mut stats = StopPolicyStats {
+                step: 0,
+                step_tool_call_count: 0,
+                total_tool_call_count: 0,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
                 consecutive_errors: 0,
                 elapsed: std::time::Duration::ZERO,
-                last_tool_calls: &[ToolCall::new("c1", "finish", json!({}))],
+                last_tool_calls: no_tools,
                 last_text: "",
-                tool_call_history: &VecDeque::new(),
-            },
-        };
-        let result = stopped.evaluate(&input).unwrap();
-        assert_eq!(result.code, "tool_called");
-        assert_eq!(result.detail.as_deref(), Some("finish"));
+                tool_call_history: &empty_history,
+            };
+            $(stats.$field = $val;)*
+            let input = StopPolicyInput { run_ctx: &run_ctx, stats };
+            $policy.evaluate(&input)
+        }};
+    }
+
+    #[test]
+    fn max_rounds_does_not_fire_below_limit() {
+        assert!(eval_policy!(MaxRounds(5), { step: 4 }).is_none());
+    }
+
+    #[test]
+    fn max_rounds_fires_at_limit() {
+        let r = eval_policy!(MaxRounds(5), { step: 5 }).unwrap();
+        assert_eq!(r.code, "max_rounds_reached");
+    }
+
+    #[test]
+    fn max_rounds_fires_above_limit() {
+        assert!(eval_policy!(MaxRounds(5), { step: 10 }).is_some());
+    }
+
+    #[test]
+    fn max_rounds_step_zero_does_not_fire() {
+        assert!(eval_policy!(MaxRounds(5), {}).is_none());
+    }
+
+    #[test]
+    fn consecutive_errors_fires_at_threshold() {
+        let r = eval_policy!(ConsecutiveErrors(3), { consecutive_errors: 3 }).unwrap();
+        assert_eq!(r.code, "consecutive_errors_exceeded");
+    }
+
+    #[test]
+    fn consecutive_errors_does_not_fire_below_threshold() {
+        assert!(eval_policy!(ConsecutiveErrors(3), { consecutive_errors: 2 }).is_none());
+    }
+
+    #[test]
+    fn consecutive_errors_zero_max_never_fires() {
+        assert!(
+            eval_policy!(ConsecutiveErrors(0), { consecutive_errors: 100 }).is_none(),
+            "max=0 means disabled"
+        );
+    }
+
+    #[test]
+    fn loop_detection_fires_on_repeated_tool_pattern() {
+        let mut h = VecDeque::new();
+        h.push_back(vec!["read".into(), "write".into()]);
+        h.push_back(vec!["read".into(), "write".into()]);
+        let r = eval_policy!(LoopDetection { window: 3 }, { tool_call_history: &h }).unwrap();
+        assert_eq!(r.code, "loop_detected");
+    }
+
+    #[test]
+    fn loop_detection_does_not_fire_on_different_patterns() {
+        let mut h = VecDeque::new();
+        h.push_back(vec!["read".into()]);
+        h.push_back(vec!["write".into()]);
+        assert!(eval_policy!(LoopDetection { window: 3 }, { tool_call_history: &h }).is_none());
+    }
+
+    #[test]
+    fn loop_detection_needs_at_least_two_rounds() {
+        let mut h = VecDeque::new();
+        h.push_back(vec!["read".into()]);
+        assert!(
+            eval_policy!(LoopDetection { window: 2 }, { tool_call_history: &h }).is_none(),
+            "single round cannot form a loop"
+        );
+    }
+
+    #[test]
+    fn loop_detection_window_clamps_to_minimum_two() {
+        let mut h = VecDeque::new();
+        h.push_back(vec!["x".into()]);
+        h.push_back(vec!["x".into()]);
+        assert!(
+            eval_policy!(LoopDetection { window: 1 }, { tool_call_history: &h }).is_some(),
+            "window clamped to 2 still detects the pair"
+        );
+    }
+
+    #[test]
+    fn content_match_empty_pattern_never_fires() {
+        assert!(
+            eval_policy!(ContentMatch(String::new()), { last_text: "anything here" }).is_none(),
+            "empty pattern must not match"
+        );
+    }
+
+    #[test]
+    fn content_match_fires_on_substring() {
+        let r = eval_policy!(ContentMatch("DONE".into()), { last_text: "work is DONE now" })
+            .unwrap();
+        assert_eq!(r.code, "content_matched");
+        assert_eq!(r.detail.as_deref(), Some("DONE"));
+    }
+
+    #[test]
+    fn content_match_no_match() {
+        assert!(
+            eval_policy!(ContentMatch("DONE".into()), { last_text: "still working" }).is_none()
+        );
+    }
+
+    #[test]
+    fn token_budget_zero_never_fires() {
+        assert!(
+            eval_policy!(TokenBudget { max_total: 0 }, {
+                total_input_tokens: 999_999, total_output_tokens: 999_999
+            })
+            .is_none(),
+            "max_total=0 means unlimited"
+        );
+    }
+
+    #[test]
+    fn token_budget_fires_at_limit() {
+        let r = eval_policy!(TokenBudget { max_total: 1000 }, {
+            total_input_tokens: 600, total_output_tokens: 400
+        })
+        .unwrap();
+        assert_eq!(r.code, "token_budget_exceeded");
+    }
+
+    #[test]
+    fn token_budget_does_not_fire_below_limit() {
+        assert!(eval_policy!(TokenBudget { max_total: 1000 }, {
+            total_input_tokens: 400, total_output_tokens: 500
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn stop_on_tool_no_match() {
+        let calls = [ToolCall::new("c1", "echo", json!({}))];
+        assert!(
+            eval_policy!(StopOnTool("finish".into()), { last_tool_calls: &calls }).is_none()
+        );
+    }
+
+    #[test]
+    fn stopped_reason_payload() {
+        let calls = [ToolCall::new("c1", "finish", json!({}))];
+        let r = eval_policy!(StopOnTool("finish".into()), {
+            step: 1,
+            step_tool_call_count: 1,
+            total_tool_call_count: 1,
+            last_tool_calls: &calls
+        })
+        .unwrap();
+        assert_eq!(r.code, "tool_called");
+        assert_eq!(r.detail.as_deref(), Some("finish"));
+    }
+
+    // -----------------------------------------------------------------------
+    // condition_from_spec factory
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn condition_from_spec_max_rounds() {
+        let c = condition_from_spec(StopConditionSpec::MaxRounds { rounds: 7 });
+        assert_eq!(c.id(), "max_rounds");
+        assert!(eval_policy!(&*c, { step: 7 }).is_some());
+    }
+
+    #[test]
+    fn condition_from_spec_timeout() {
+        let c = condition_from_spec(StopConditionSpec::Timeout { seconds: 10 });
+        assert_eq!(c.id(), "timeout");
+        assert!(eval_policy!(&*c, { elapsed: std::time::Duration::from_secs(10) }).is_some());
+    }
+
+    #[test]
+    fn condition_from_spec_token_budget() {
+        let c = condition_from_spec(StopConditionSpec::TokenBudget { max_total: 500 });
+        assert_eq!(c.id(), "token_budget");
+        assert!(eval_policy!(&*c, { total_input_tokens: 300, total_output_tokens: 200 }).is_some());
+    }
+
+    #[test]
+    fn condition_from_spec_consecutive_errors() {
+        let c = condition_from_spec(StopConditionSpec::ConsecutiveErrors { max: 2 });
+        assert_eq!(c.id(), "consecutive_errors");
+        assert!(eval_policy!(&*c, { consecutive_errors: 2 }).is_some());
+    }
+
+    #[test]
+    fn condition_from_spec_stop_on_tool() {
+        let c = condition_from_spec(StopConditionSpec::StopOnTool {
+            tool_name: "done".into(),
+        });
+        assert_eq!(c.id(), "stop_on_tool");
+        let calls = [ToolCall::new("c1", "done", json!({}))];
+        assert!(eval_policy!(&*c, { last_tool_calls: &calls }).is_some());
+    }
+
+    #[test]
+    fn condition_from_spec_content_match() {
+        let c = condition_from_spec(StopConditionSpec::ContentMatch {
+            pattern: "END".into(),
+        });
+        assert_eq!(c.id(), "content_match");
+        assert!(eval_policy!(&*c, { last_text: "THE END" }).is_some());
+    }
+
+    #[test]
+    fn condition_from_spec_loop_detection() {
+        let c = condition_from_spec(StopConditionSpec::LoopDetection { window: 3 });
+        assert_eq!(c.id(), "loop_detection");
+        let mut h = VecDeque::new();
+        h.push_back(vec!["x".to_string()]);
+        h.push_back(vec!["x".to_string()]);
+        assert!(eval_policy!(&*c, { tool_call_history: &h }).is_some());
     }
 }
