@@ -281,6 +281,123 @@ impl StateSpec for ResumeToolCallsState {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TestBoolState(bool);
+
+struct TestBoolStateRef;
+
+impl State for TestBoolState {
+    type Ref<'a> = TestBoolStateRef;
+
+    fn state_ref<'a>(
+        _: &'a tirea_state::DocCell,
+        _: tirea_state::Path,
+        _: tirea_state::PatchSink<'a>,
+    ) -> Self::Ref<'a> {
+        TestBoolStateRef
+    }
+
+    fn from_value(value: &Value) -> tirea_state::TireaResult<Self> {
+        if value.is_null() {
+            return Ok(Self::default());
+        }
+        serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+    }
+
+    fn to_value(&self) -> tirea_state::TireaResult<Value> {
+        serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+    }
+}
+
+impl StateSpec for TestBoolState {
+    type Action = bool;
+
+    fn reduce(&mut self, action: Self::Action) {
+        self.0 = action;
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TestI64State(i64);
+
+struct TestI64StateRef;
+
+impl State for TestI64State {
+    type Ref<'a> = TestI64StateRef;
+
+    fn state_ref<'a>(
+        _: &'a tirea_state::DocCell,
+        _: tirea_state::Path,
+        _: tirea_state::PatchSink<'a>,
+    ) -> Self::Ref<'a> {
+        TestI64StateRef
+    }
+
+    fn from_value(value: &Value) -> tirea_state::TireaResult<Self> {
+        if value.is_null() {
+            return Ok(Self::default());
+        }
+        serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+    }
+
+    fn to_value(&self) -> tirea_state::TireaResult<Value> {
+        serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+    }
+}
+
+impl StateSpec for TestI64State {
+    type Action = i64;
+
+    fn reduce(&mut self, action: Self::Action) {
+        self.0 = action;
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TestJsonValueState(Value);
+
+struct TestJsonValueStateRef;
+
+impl State for TestJsonValueState {
+    type Ref<'a> = TestJsonValueStateRef;
+
+    fn state_ref<'a>(
+        _: &'a tirea_state::DocCell,
+        _: tirea_state::Path,
+        _: tirea_state::PatchSink<'a>,
+    ) -> Self::Ref<'a> {
+        TestJsonValueStateRef
+    }
+
+    fn from_value(value: &Value) -> tirea_state::TireaResult<Self> {
+        Ok(Self(value.clone()))
+    }
+
+    fn to_value(&self) -> tirea_state::TireaResult<Value> {
+        Ok(self.0.clone())
+    }
+}
+
+impl StateSpec for TestJsonValueState {
+    type Action = Value;
+
+    fn reduce(&mut self, action: Self::Action) {
+        self.0 = action;
+    }
+}
+
+fn test_bool_state_action(path: impl Into<String>, value: bool) -> AnyStateAction {
+    AnyStateAction::new_at::<TestBoolState>(path.into(), value)
+}
+
+fn test_i64_state_action(path: impl Into<String>, value: i64) -> AnyStateAction {
+    AnyStateAction::new_at::<TestI64State>(path.into(), value)
+}
+
+fn test_json_state_action(path: impl Into<String>, value: Value) -> AnyStateAction {
+    AnyStateAction::new_at::<TestJsonValueState>(path.into(), value)
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 enum ResponseRouting {
@@ -426,6 +543,16 @@ fn set_single_suspended_call(
         .into_iter()
         .next()
         .unwrap_or_else(|| TrackedPatch::new(Patch::new()).with_source("test")))
+}
+
+fn single_suspended_call_state_action(
+    suspension: Suspension,
+    invocation: Option<FrontendToolInvocation>,
+) -> AnyStateAction {
+    let invocation = invocation.unwrap_or_else(|| test_frontend_invocation(&suspension));
+    let call_id = invocation.call_id.clone();
+    let tool_name = invocation.tool_name.clone();
+    build_suspended_call(call_id, tool_name, suspension, invocation).into_state_action()
 }
 
 fn build_suspended_call(
@@ -2512,12 +2639,10 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeToolExecuteAction> {
-            let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                tirea_state::path!("debug", "seen_tool_execute"),
-                json!(true),
+            ActionSet::single(BeforeToolExecuteAction::State(test_bool_state_action(
+                "debug.seen_tool_execute",
+                true,
             )))
-            .with_source("test:state_channel");
-            ActionSet::single(BeforeToolExecuteAction::State(AnyStateAction::Patch(patch)))
         }
 
         async fn before_inference_actions(
@@ -2531,12 +2656,10 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if seen_tool_execute {
-                let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                    tirea_state::path!("debug", "before_inference_observed"),
-                    json!(true),
+                ActionSet::single(BeforeInferenceAction::State(test_bool_state_action(
+                    "debug.before_inference_observed",
+                    true,
                 )))
-                .with_source("test:state_channel");
-                ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch)))
             } else {
                 ActionSet::empty()
             }
@@ -2591,11 +2714,6 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
             self.phases.lock().unwrap().push(Phase::BeforeInference);
-            let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                tirea_state::path!("debug", "phase_block"),
-                json!(true),
-            )))
-            .with_source("test:phase_block");
             ActionSet::single(BeforeInferenceAction::AddSystemContext(
                 "from_before_inference".into(),
             ))
@@ -2603,7 +2721,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
                 TerminationReason::BehaviorRequested,
             )))
             .and(ActionSet::single(BeforeInferenceAction::State(
-                AnyStateAction::Patch(patch),
+                test_bool_state_action("debug.phase_block", true),
             )))
         }
         async fn after_inference(
@@ -2681,12 +2799,10 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
 
         async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::StepEnd);
-            let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                tirea_state::path!("debug", "cleanup_ran"),
-                json!(true),
+            ActionSet::single(LifecycleAction::State(test_bool_state_action(
+                "debug.cleanup_ran",
+                true,
             )))
-            .with_source("test:cleanup");
-            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
         }
     }
 
@@ -2747,12 +2863,10 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<LifecycleAction> {
             if phase == Phase::RunStart {
-                let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                    tirea_state::path!("debug", "temp_counter"),
-                    json!(1),
-                )))
-                .with_source("test:run_scoped_state");
-                return ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)));
+                return ActionSet::single(LifecycleAction::State(test_i64_state_action(
+                    "debug.temp_counter",
+                    1,
+                )));
             }
 
             if phase == Phase::StepStart {
@@ -2762,12 +2876,10 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     .and_then(|a| a.get("temp_counter"))
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                    tirea_state::path!("debug", "temp_counter"),
-                    json!(current + 1),
-                )))
-                .with_source("test:run_scoped_state");
-                return ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)));
+                return ActionSet::single(LifecycleAction::State(test_i64_state_action(
+                    "debug.temp_counter",
+                    current + 1,
+                )));
             }
 
             if phase != Phase::RunEnd {
@@ -2791,22 +2903,16 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(-1);
 
-            let patch = Patch::new()
-                .with_op(Op::set(
-                    tirea_state::path!("debug", "run_count"),
-                    json!(run_count),
-                ))
-                .with_op(Op::set(
-                    tirea_state::path!("debug", "last_temp_counter"),
-                    json!(counter),
-                ))
-                .with_op(Op::set(
-                    tirea_state::path!("debug", "temp_counter"),
-                    Value::Null,
-                ));
             let _ = current; // keep parity with previous evaluation order for debug state read
-            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(
-                TrackedPatch::new(patch).with_source("test:run_scoped_state"),
+            ActionSet::single(LifecycleAction::State(test_i64_state_action(
+                "debug.run_count",
+                run_count,
+            )))
+            .and(ActionSet::single(LifecycleAction::State(
+                test_i64_state_action("debug.last_temp_counter", counter),
+            )))
+            .and(ActionSet::single(LifecycleAction::State(
+                test_json_state_action("debug.temp_counter", Value::Null),
             )))
         }
     }
@@ -3688,13 +3794,13 @@ fn test_suspended_call_action_persists_all_entries() {
 }
 
 #[test]
-fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
-    struct FirstCallIntermediatePatchPlugin;
+fn test_execute_tools_sequential_rejects_raw_patch_plugin_state_actions() {
+    struct RawPatchPlugin;
 
     #[async_trait]
-    impl AgentBehavior for FirstCallIntermediatePatchPlugin {
+    impl AgentBehavior for RawPatchPlugin {
         fn id(&self) -> &str {
-            "first_call_intermediate_patch"
+            "raw_patch_plugin"
         }
 
         async fn after_tool_execute(
@@ -3705,13 +3811,10 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
                 return ActionSet::empty();
             }
 
-            // This increment fails when applied between call_1 and call_2 because
-            // `counter` doesn't exist yet. Swallowing that failure hides a broken
-            // intermediate state transition.
             let patch = TrackedPatch::new(
                 Patch::new().with_op(Op::increment(tirea_state::path!("counter"), 1_i64)),
             )
-            .with_source("test:intermediate_apply_error");
+            .with_source("test:raw_patch_plugin");
             ActionSet::single(AfterToolExecuteAction::State(AnyStateAction::Patch(patch)))
         }
     }
@@ -3737,13 +3840,14 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
         tools.insert("echo".to_string(), Arc::new(EchoTool));
         tools.insert("counter".to_string(), Arc::new(CounterTool));
         let agent = BaseAgent::new("m")
-            .with_behavior(Arc::new(FirstCallIntermediatePatchPlugin) as Arc<dyn AgentBehavior>)
+            .with_behavior(Arc::new(RawPatchPlugin) as Arc<dyn AgentBehavior>)
             .with_tool_executor(Arc::new(SequentialToolExecutor));
 
         let err = execute_tools_with_config(thread, &result, &tools, &agent)
             .await
-            .expect_err("sequential apply errors should surface");
-        assert!(matches!(err, AgentLoopError::StateError(_)));
+            .expect_err("raw patch plugin actions should be rejected");
+        assert!(matches!(err, AgentLoopError::StateError(message)
+            if message.contains("raw patch state actions are disabled in plugin phases")));
     });
 }
 
@@ -3975,21 +4079,17 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
 
         async fn before_inference(
             &self,
-            ctx: &ReadOnlyContext<'_>,
+            _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            let state = ctx.snapshot();
-            let patch = set_single_suspended_call(
-                &state,
-                Suspension::new("agent_recovery_run-1", "recover_agent_run")
-                    .with_message("resume?"),
-                None,
-            )
-            .expect("failed to set suspended interaction");
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::Suspended,
             ))
             .and(ActionSet::single(BeforeInferenceAction::State(
-                AnyStateAction::Patch(patch),
+                single_suspended_call_state_action(
+                    Suspension::new("agent_recovery_run-1", "recover_agent_run")
+                        .with_message("resume?"),
+                    None,
+                ),
             )))
         }
     }
@@ -5022,8 +5122,8 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
             if phase != Phase::RunStart {
                 return ActionSet::empty();
             }
-            let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                tirea_state::path!("__resume_tool_calls", "calls"),
+            ActionSet::single(LifecycleAction::State(test_json_state_action(
+                "__resume_tool_calls.calls",
                 json!([
                     {
                         "id": "replay_call_1",
@@ -5037,8 +5137,6 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
                     }
                 ]),
             )))
-            .with_source("test:legacy_resume_replay_queue");
-            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
         }
     }
 
@@ -5094,22 +5192,18 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
 
         async fn before_inference(
             &self,
-            ctx: &ReadOnlyContext<'_>,
+            _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
             self.phases.lock().unwrap().push(Phase::BeforeInference);
-            let state = ctx.snapshot();
-            let patch = set_single_suspended_call(
-                &state,
-                Suspension::new("agent_recovery_run-1", "recover_agent_run")
-                    .with_message("resume?"),
-                None,
-            )
-            .expect("failed to set suspended interaction");
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
             .and(ActionSet::single(BeforeInferenceAction::State(
-                AnyStateAction::Patch(patch),
+                single_suspended_call_state_action(
+                    Suspension::new("agent_recovery_run-1", "recover_agent_run")
+                        .with_message("resume?"),
+                    None,
+                ),
             )))
         }
         async fn after_inference(
@@ -6761,20 +6855,17 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
 
         async fn before_inference(
             &self,
-            ctx: &ReadOnlyContext<'_>,
+            _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            let state = ctx.snapshot();
-            let patch = set_single_suspended_call(
-                &state,
-                Suspension::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
-                None,
-            )
-            .expect("failed to set suspended interaction");
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::Suspended,
             ))
             .and(ActionSet::single(BeforeInferenceAction::State(
-                AnyStateAction::Patch(patch),
+                single_suspended_call_state_action(
+                    Suspension::new("golden_resume_1", "recover_agent_run")
+                        .with_message("resume me"),
+                    None,
+                ),
             )))
         }
     }
@@ -10150,21 +10241,17 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
 
         async fn before_inference(
             &self,
-            ctx: &ReadOnlyContext<'_>,
+            _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            let state = ctx.snapshot();
-            let patch = set_single_suspended_call(
-                &state,
-                Suspension::new("agent_recovery_step-1", "recover_agent_run")
-                    .with_message("resume step?"),
-                None,
-            )
-            .expect("failed to set suspended interaction");
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
             .and(ActionSet::single(BeforeInferenceAction::State(
-                AnyStateAction::Patch(patch),
+                single_suspended_call_state_action(
+                    Suspension::new("agent_recovery_step-1", "recover_agent_run")
+                        .with_message("resume step?"),
+                    None,
+                ),
             )))
         }
     }
@@ -10307,12 +10394,9 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::StepEnd);
-            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(
-                TrackedPatch::new(Patch::new().with_op(Op::set(
-                    tirea_state::path!("debug", "cleanup_ran"),
-                    json!(true),
-                )))
-                .with_source("test:cleanup_on_start_error"),
+            ActionSet::single(LifecycleAction::State(test_bool_state_action(
+                "debug.cleanup_ran",
+                true,
             )))
         }
         async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
@@ -12150,14 +12234,11 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
         }
 
         async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-            let state = ctx.snapshot();
-            let patch = set_single_suspended_call(
-                &state,
+            let _ = ctx;
+            ActionSet::single(LifecycleAction::State(single_suspended_call_state_action(
                 Suspension::new("recover_1", "recover_agent_run").with_message("resume?"),
                 None,
-            )
-            .expect("failed to set suspended interaction");
-            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
+            )))
         }
     }
 
@@ -12195,14 +12276,11 @@ async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference()
         }
 
         async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-            let state = ctx.snapshot();
-            let patch = set_single_suspended_call(
-                &state,
+            let _ = ctx;
+            ActionSet::single(LifecycleAction::State(single_suspended_call_state_action(
                 Suspension::new("recover_1", "recover_agent_run").with_message("resume?"),
                 None,
-            )
-            .expect("failed to set suspended interaction");
-            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
+            )))
         }
     }
 
@@ -12504,16 +12582,11 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                tirea_state::path!("debug", "before_inference_effect"),
-                json!(true),
-            )))
-            .with_source("test:state_effect_before_inference");
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
             .and(ActionSet::single(BeforeInferenceAction::State(
-                AnyStateAction::Patch(patch),
+                test_bool_state_action("debug.before_inference_effect", true),
             )))
         }
     }
@@ -12545,12 +12618,10 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
             ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<AfterToolExecuteAction> {
             if ctx.tool_call_id() == Some("call_1") {
-                let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                    tirea_state::path!("debug", "after_tool_effect"),
-                    json!(true),
+                ActionSet::single(AfterToolExecuteAction::State(test_bool_state_action(
+                    "debug.after_tool_effect",
+                    true,
                 )))
-                .with_source("test:state_effect_after_tool_execute");
-                ActionSet::single(AfterToolExecuteAction::State(AnyStateAction::Patch(patch)))
             } else {
                 ActionSet::empty()
             }
