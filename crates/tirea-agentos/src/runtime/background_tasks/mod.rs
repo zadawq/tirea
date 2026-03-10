@@ -10,7 +10,6 @@
 //! - [`BackgroundExecutable`] — trait for tools that support context-free background execution
 //! - [`BackgroundCapable<T>`] — decorator that adds `run_in_background` parameter to a tool
 //! - [`TaskStatusTool`] / [`TaskCancelTool`] / [`TaskOutputTool`] — built-in tools for LLM interaction
-//! - [`TaskCompletionNotifier`] — pluggable callback for completion delivery (e.g. mailbox)
 //!
 //! Tasks are thread-scoped and outlive individual runs.
 
@@ -21,9 +20,9 @@ mod tools;
 mod types;
 mod wrapper;
 
-pub use manager::{BackgroundTaskManager, TaskCompletionNotifier};
+pub use manager::BackgroundTaskManager;
 pub use plugin::{BackgroundTasksPlugin, BACKGROUND_TASKS_PLUGIN_ID};
-pub use store::{NewTaskSpec, TaskPersistenceNotifier, TaskStore, TaskStoreError};
+pub use store::{NewTaskSpec, TaskStore, TaskStoreError};
 pub use tools::{
     TaskCancelTool, TaskOutputTool, TaskStatusTool, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID,
     TASK_STATUS_TOOL_ID,

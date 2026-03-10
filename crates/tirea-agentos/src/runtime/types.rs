@@ -18,7 +18,7 @@ use crate::loop_runtime::loop_runner::{
     Agent, RunCancellationToken, StateCommitError, StateCommitter,
 };
 
-use super::background_tasks::{BackgroundTaskManager, TaskPersistenceNotifier, TaskStore};
+use super::background_tasks::{BackgroundTaskManager, TaskStore};
 use super::thread_run;
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
@@ -113,9 +113,7 @@ impl AgentOs {
         let background_task_manager =
             if let Some(agent_state_store) = services.agent_state_store.clone() {
                 let task_store = Arc::new(TaskStore::new(agent_state_store));
-                Arc::new(BackgroundTaskManager::with_notifier(Arc::new(
-                    TaskPersistenceNotifier::new(task_store),
-                )))
+                Arc::new(BackgroundTaskManager::with_task_store(Some(task_store)))
             } else {
                 Arc::new(BackgroundTaskManager::new())
             };

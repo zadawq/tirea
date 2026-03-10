@@ -127,6 +127,8 @@ pub struct TaskSummary {
         skip_serializing_if = "is_null_or_empty_object"
     )]
     pub metadata: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence_error: Option<String>,
 }
 
 /// Lightweight derived projection for prompt injection and UI summaries on the
@@ -249,6 +251,7 @@ impl TaskState {
             supports_resume: self.supports_resume,
             attempt: self.attempt,
             metadata: self.metadata.clone(),
+            persistence_error: None,
         }
     }
 }

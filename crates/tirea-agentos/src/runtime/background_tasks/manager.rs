@@ -1,8 +1,12 @@
 //! In-memory background task handle table and spawner.
 //!
 //! Manages the lifecycle of background tasks: spawn, track, cancel, query.
-//! Epoch-based stale-completion guards prevent double updates.
+//! Epoch-based stale-completion guards prevent double updates. When a durable
+//! [`TaskStore`] is configured, terminal summaries are persisted directly from
+//! the manager and persistence failures remain visible on the live handle until
+//! they are retried successfully.
 
+use super::store::TaskStore;
 use super::types::*;
 use crate::loop_runtime::loop_runner::RunCancellationToken;
 use serde_json::Value;
@@ -36,23 +40,7 @@ struct TaskHandle {
     completed_at_ms: Option<u64>,
     parent_task_id: Option<TaskId>,
     metadata: Value,
-}
-
-/// Callback invoked after a background task completes.
-///
-/// Implementations deliver the completion notification (e.g. via mailbox).
-/// The trait is object-safe so different notification strategies can be plugged in.
-#[async_trait::async_trait]
-pub trait TaskCompletionNotifier: Send + Sync {
-    async fn notify(&self, owner_thread_id: &str, summary: &TaskSummary);
-}
-
-/// No-op notifier used when no notification channel is configured.
-pub(super) struct NoopNotifier;
-
-#[async_trait::async_trait]
-impl TaskCompletionNotifier for NoopNotifier {
-    async fn notify(&self, _: &str, _: &TaskSummary) {}
+    persistence_error: Option<String>,
 }
 
 /// Thread-scoped background task manager.
@@ -62,7 +50,7 @@ impl TaskCompletionNotifier for NoopNotifier {
 #[derive(Clone)]
 pub struct BackgroundTaskManager {
     handles: Arc<Mutex<HashMap<TaskId, TaskHandle>>>,
-    notifier: Arc<dyn TaskCompletionNotifier>,
+    task_store: Option<Arc<TaskStore>>,
 }
 
 impl std::fmt::Debug for BackgroundTaskManager {
@@ -83,14 +71,14 @@ impl BackgroundTaskManager {
     pub fn new() -> Self {
         Self {
             handles: Arc::new(Mutex::new(HashMap::new())),
-            notifier: Arc::new(NoopNotifier),
+            task_store: None,
         }
     }
 
-    pub fn with_notifier(notifier: Arc<dyn TaskCompletionNotifier>) -> Self {
+    pub fn with_task_store(task_store: Option<Arc<TaskStore>>) -> Self {
         Self {
             handles: Arc::new(Mutex::new(HashMap::new())),
-            notifier,
+            task_store,
         }
     }
 
@@ -191,15 +179,15 @@ impl BackgroundTaskManager {
                     completed_at_ms: None,
                     parent_task_id,
                     metadata,
+                    persistence_error: None,
                 },
             );
             epoch
         };
 
         let handles = self.handles.clone();
-        let notifier = self.notifier.clone();
+        let task_store = self.task_store.clone();
         let tid = task_id.clone();
-        let thread_id = owner_thread_id.to_string();
 
         tokio::spawn(async move {
             let result = task(cancel_token).await;
@@ -230,14 +218,27 @@ impl BackgroundTaskManager {
                 }
             }
 
-            // Deliver completion notification using the final effective summary.
-            let maybe_summary = {
-                let map = handles.lock().await;
-                map.get(&tid)
-                    .map(|handle| summary_from_handle(&tid, handle))
-            };
-            if let Some(summary) = maybe_summary {
-                notifier.notify(&thread_id, &summary).await;
+            if let Some(task_store) = task_store {
+                let maybe_summary = {
+                    let map = handles.lock().await;
+                    map.get(&tid)
+                        .filter(|handle| handle.epoch == epoch)
+                        .map(|handle| summary_from_handle(&tid, handle))
+                };
+                if let Some(summary) = maybe_summary {
+                    let persistence_error = task_store
+                        .persist_summary(&summary)
+                        .await
+                        .err()
+                        .map(|e| e.to_string());
+                    let mut map = handles.lock().await;
+                    if let Some(handle) = map.get_mut(&tid) {
+                        if handle.epoch != epoch {
+                            return;
+                        }
+                        handle.persistence_error = persistence_error;
+                    }
+                }
             }
         });
 
@@ -266,6 +267,7 @@ impl BackgroundTaskManager {
 
     /// Get a summary of a single task.
     pub async fn get(&self, owner_thread_id: &str, task_id: &str) -> Option<TaskSummary> {
+        self.retry_persistence(owner_thread_id, Some(task_id)).await;
         let handles = self.handles.lock().await;
         let handle = handles.get(task_id)?;
         if handle.owner_thread_id != owner_thread_id {
@@ -280,6 +282,7 @@ impl BackgroundTaskManager {
         owner_thread_id: &str,
         status_filter: Option<TaskStatus>,
     ) -> Vec<TaskSummary> {
+        self.retry_persistence(owner_thread_id, None).await;
         let handles = self.handles.lock().await;
         let mut out: Vec<TaskSummary> = handles
             .iter()
@@ -301,9 +304,14 @@ impl BackgroundTaskManager {
 
     /// Remove completed/terminal task entries from the in-memory table.
     pub async fn gc_terminal(&self, owner_thread_id: &str) -> usize {
+        self.retry_persistence(owner_thread_id, None).await;
         let mut handles = self.handles.lock().await;
         let before = handles.len();
-        handles.retain(|_, h| h.owner_thread_id != owner_thread_id || !h.status.is_terminal());
+        handles.retain(|_, h| {
+            h.owner_thread_id != owner_thread_id
+                || !h.status.is_terminal()
+                || h.persistence_error.is_some()
+        });
         before - handles.len()
     }
 
@@ -412,6 +420,41 @@ impl BackgroundTaskManager {
         out.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms));
         out
     }
+
+    async fn retry_persistence(&self, owner_thread_id: &str, task_id: Option<&str>) {
+        let Some(task_store) = self.task_store.as_ref().cloned() else {
+            return;
+        };
+
+        let candidates: Vec<(TaskId, u64, TaskSummary)> = {
+            let handles = self.handles.lock().await;
+            handles
+                .iter()
+                .filter(|(id, handle)| {
+                    handle.owner_thread_id == owner_thread_id
+                        && handle.status.is_terminal()
+                        && handle.persistence_error.is_some()
+                        && task_id.is_none_or(|wanted| wanted == id.as_str())
+                })
+                .map(|(id, handle)| (id.clone(), handle.epoch, summary_from_handle(id, handle)))
+                .collect()
+        };
+
+        for (task_id, epoch, summary) in candidates {
+            let persistence_error = task_store
+                .persist_summary(&summary)
+                .await
+                .err()
+                .map(|e| e.to_string());
+            let mut handles = self.handles.lock().await;
+            if let Some(handle) = handles.get_mut(&task_id) {
+                if handle.epoch != epoch || !handle.status.is_terminal() {
+                    continue;
+                }
+                handle.persistence_error = persistence_error;
+            }
+        }
+    }
 }
 
 /// Collect task IDs forming the subtree rooted at `root_id` via `parent_task_id` links.
@@ -473,42 +516,126 @@ fn summary_from_handle(task_id: &str, handle: &TaskHandle) -> TaskSummary {
         supports_resume: handle.task_type == "agent_run",
         attempt: 0,
         metadata: handle.metadata.clone(),
+        persistence_error: handle.persistence_error.clone(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::storage::{
+        MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
+        ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
+        VersionPrecondition,
+    };
+    use crate::contracts::thread::{Thread, ThreadChangeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Test notifier that counts invocations.
-    struct CountingNotifier {
-        count: AtomicUsize,
+    struct FlakyTaskThreadStore {
+        inner: Arc<tirea_store_adapters::MemoryStore>,
+        fail_task_appends: AtomicUsize,
     }
 
-    impl CountingNotifier {
-        fn new() -> Arc<Self> {
+    impl FlakyTaskThreadStore {
+        fn new(fail_task_appends: usize) -> Arc<Self> {
             Arc::new(Self {
-                count: AtomicUsize::new(0),
+                inner: Arc::new(tirea_store_adapters::MemoryStore::new()),
+                fail_task_appends: AtomicUsize::new(fail_task_appends),
             })
         }
 
-        fn count(&self) -> usize {
-            self.count.load(Ordering::SeqCst)
+        fn set_failures(&self, failures: usize) {
+            self.fail_task_appends.store(failures, Ordering::SeqCst);
+        }
+
+        fn remaining_failures(&self) -> usize {
+            self.fail_task_appends.load(Ordering::SeqCst)
         }
     }
 
     #[async_trait::async_trait]
-    impl TaskCompletionNotifier for CountingNotifier {
-        async fn notify(&self, _: &str, _: &TaskSummary) {
-            self.count.fetch_add(1, Ordering::SeqCst);
+    impl ThreadReader for FlakyTaskThreadStore {
+        async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+            self.inner.load(thread_id).await
+        }
+
+        async fn list_threads(
+            &self,
+            query: &ThreadListQuery,
+        ) -> Result<ThreadListPage, ThreadStoreError> {
+            self.inner.list_threads(query).await
+        }
+
+        async fn load_messages(
+            &self,
+            thread_id: &str,
+            query: &MessageQuery,
+        ) -> Result<MessagePage, ThreadStoreError> {
+            self.inner.load_messages(thread_id, query).await
+        }
+
+        async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+            self.inner.load_run(run_id).await
+        }
+
+        async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+            self.inner.list_runs(query).await
+        }
+
+        async fn active_run_for_thread(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<RunRecord>, ThreadStoreError> {
+            self.inner.active_run_for_thread(thread_id).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ThreadWriter for FlakyTaskThreadStore {
+        async fn create(
+            &self,
+            thread: &Thread,
+        ) -> Result<crate::contracts::storage::Committed, ThreadStoreError> {
+            self.inner.create(thread).await
+        }
+
+        async fn append(
+            &self,
+            thread_id: &str,
+            delta: &ThreadChangeSet,
+            precondition: VersionPrecondition,
+        ) -> Result<crate::contracts::storage::Committed, ThreadStoreError> {
+            if thread_id.starts_with(TASK_THREAD_PREFIX)
+                && self
+                    .fail_task_appends
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        if remaining > 0 {
+                            Some(remaining - 1)
+                        } else {
+                            None
+                        }
+                    })
+                    .is_ok()
+            {
+                return Err(ThreadStoreError::Io(std::io::Error::other(
+                    "injected task persistence failure",
+                )));
+            }
+            self.inner.append(thread_id, delta, precondition).await
+        }
+
+        async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+            self.inner.delete(thread_id).await
+        }
+
+        async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+            self.inner.save(thread).await
         }
     }
 
     #[tokio::test]
     async fn spawn_and_complete_success() {
-        let notifier = CountingNotifier::new();
-        let mgr = BackgroundTaskManager::with_notifier(notifier.clone());
+        let mgr = BackgroundTaskManager::new();
         let tid = mgr
             .spawn("thread-1", "shell", "echo hello", |_cancel| async {
                 TaskResult::Success(serde_json::json!({ "exit_code": 0 }))
@@ -523,7 +650,6 @@ mod tests {
         assert!(summary.result.is_some());
         assert!(summary.error.is_none());
         assert!(summary.completed_at_ms.is_some());
-        assert_eq!(notifier.count(), 1);
     }
 
     #[tokio::test]
@@ -827,40 +953,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn notifier_called_for_every_completion() {
-        let notifier = CountingNotifier::new();
-        let mgr = BackgroundTaskManager::with_notifier(notifier.clone());
-
-        for _ in 0..5 {
-            mgr.spawn("thread-1", "shell", "task", |_| async {
-                TaskResult::Success(Value::Null)
-            })
-            .await;
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        assert_eq!(notifier.count(), 5);
-    }
-
-    #[tokio::test]
-    async fn notifier_called_on_cancel() {
-        let notifier = CountingNotifier::new();
-        let mgr = BackgroundTaskManager::with_notifier(notifier.clone());
-
-        let tid = mgr
-            .spawn("thread-1", "shell", "long", |cancel| async move {
-                cancel.cancelled().await;
-                TaskResult::Cancelled
-            })
-            .await;
-
-        mgr.cancel("thread-1", &tid).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        assert_eq!(notifier.count(), 1);
-    }
-
-    #[tokio::test]
     async fn task_summary_has_timing_info() {
         let mgr = BackgroundTaskManager::new();
         let tid = mgr
@@ -916,8 +1008,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_impl_is_noop_notifier() {
-        // BackgroundTaskManager::new() uses NoopNotifier.
+    async fn default_impl_without_task_store_still_tracks_terminal_tasks() {
         let mgr = BackgroundTaskManager::new();
         mgr.spawn("thread-1", "shell", "task", |_| async {
             TaskResult::Success(Value::Null)
@@ -1023,17 +1114,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_with_id_notifier_called_on_completion() {
-        let notifier = CountingNotifier::new();
-        let mgr = BackgroundTaskManager::with_notifier(notifier.clone());
-        let token = RunCancellationToken::new();
+    async fn manager_persists_terminal_state_to_task_store_when_configured() {
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let task_store = Arc::new(TaskStore::new(storage.clone() as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::store::NewTaskSpec {
+                task_id: "persisted-task".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "echo hi".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: Value::Object(serde_json::Map::new()),
+            })
+            .await
+            .unwrap();
 
+        let mgr = BackgroundTaskManager::with_task_store(Some(task_store.clone()));
         mgr.spawn_with_id(
-            "notify-test".to_string(),
+            "persisted-task".to_string(),
             "thread-1",
-            "agent_run",
-            "desc",
-            token,
+            "shell",
+            "echo hi",
+            RunCancellationToken::new(),
+            None,
+            serde_json::json!({}),
+            |_cancel: RunCancellationToken| async {
+                TaskResult::Success(serde_json::json!({ "stdout": "hi" }))
+            },
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let persisted = task_store
+            .load_task("persisted-task")
+            .await
+            .unwrap()
+            .expect("task should persist");
+        assert_eq!(persisted.status, TaskStatus::Completed);
+        assert_eq!(
+            persisted.result,
+            Some(serde_json::json!({ "stdout": "hi" }))
+        );
+    }
+
+    #[tokio::test]
+    async fn manager_exposes_persistence_error_and_gc_retains_terminal_task_until_persisted() {
+        let storage = FlakyTaskThreadStore::new(0);
+        let task_store = Arc::new(TaskStore::new(storage.clone() as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::store::NewTaskSpec {
+                task_id: "flaky-task".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "echo hi".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: Value::Object(serde_json::Map::new()),
+            })
+            .await
+            .unwrap();
+        storage.set_failures(10);
+
+        let mgr = BackgroundTaskManager::with_task_store(Some(task_store));
+        mgr.spawn_with_id(
+            "flaky-task".to_string(),
+            "thread-1",
+            "shell",
+            "echo hi",
+            RunCancellationToken::new(),
             None,
             serde_json::json!({}),
             |_cancel: RunCancellationToken| async { TaskResult::Success(Value::Null) },
@@ -1041,6 +1191,70 @@ mod tests {
         .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(notifier.count(), 1);
+
+        let summary = mgr.get("thread-1", "flaky-task").await.unwrap();
+        assert_eq!(summary.status, TaskStatus::Completed);
+        assert!(summary.persistence_error.is_some());
+        assert!(storage.remaining_failures() < 10);
+
+        let removed = mgr.gc_terminal("thread-1").await;
+        assert_eq!(removed, 0);
+        assert!(mgr.get("thread-1", "flaky-task").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn manager_retries_failed_persistence_on_get_and_clears_error() {
+        let storage = FlakyTaskThreadStore::new(0);
+        let task_store = Arc::new(TaskStore::new(storage.clone() as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::store::NewTaskSpec {
+                task_id: "retry-task".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "echo hi".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: Value::Object(serde_json::Map::new()),
+            })
+            .await
+            .unwrap();
+        storage.set_failures(1);
+
+        let mgr = BackgroundTaskManager::with_task_store(Some(task_store.clone()));
+        mgr.spawn_with_id(
+            "retry-task".to_string(),
+            "thread-1",
+            "shell",
+            "echo hi",
+            RunCancellationToken::new(),
+            None,
+            serde_json::json!({}),
+            |_cancel: RunCancellationToken| async {
+                TaskResult::Success(serde_json::json!({ "stdout": "done" }))
+            },
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let before_retry = task_store
+            .load_task("retry-task")
+            .await
+            .unwrap()
+            .expect("task should exist");
+        assert_eq!(before_retry.status, TaskStatus::Running);
+
+        let summary = mgr.get("thread-1", "retry-task").await.unwrap();
+        assert!(summary.persistence_error.is_none());
+
+        let after_retry = task_store
+            .load_task("retry-task")
+            .await
+            .unwrap()
+            .expect("task should exist");
+        assert_eq!(after_retry.status, TaskStatus::Completed);
+        assert_eq!(
+            after_retry.result,
+            Some(serde_json::json!({ "stdout": "done" }))
+        );
     }
 }

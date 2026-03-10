@@ -493,23 +493,6 @@ impl TaskStore {
     }
 }
 
-pub struct TaskPersistenceNotifier {
-    store: Arc<TaskStore>,
-}
-
-impl TaskPersistenceNotifier {
-    pub fn new(store: Arc<TaskStore>) -> Self {
-        Self { store }
-    }
-}
-
-#[async_trait::async_trait]
-impl super::manager::TaskCompletionNotifier for TaskPersistenceNotifier {
-    async fn notify(&self, _owner_thread_id: &str, summary: &TaskSummary) {
-        let _ = self.store.persist_summary(summary).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
