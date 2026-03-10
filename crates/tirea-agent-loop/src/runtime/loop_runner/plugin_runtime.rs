@@ -130,17 +130,9 @@ async fn reduce_and_emit(
     if state_actions.is_empty() {
         return Ok(());
     }
-    if state_actions.iter().any(|action| action.is_raw_patch()) {
-        return Err(AgentLoopError::StateError(
-            "raw patch state actions are disabled in plugin phases; emit typed state actions instead"
-                .to_string(),
-        ));
-    }
     // Capture serialized forms before reduce consumes the actions.
     for action in &state_actions {
-        if let Some(sa) = action.to_serialized_action() {
-            step.emit_serialized_action(sa);
-        }
+        step.emit_serialized_action(action.to_serialized_action());
     }
     let scope_ctx = match phase {
         Phase::BeforeToolExecute | Phase::AfterToolExecute => step

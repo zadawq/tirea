@@ -29,7 +29,6 @@ mod tests {
     use tirea_contract::runtime::behavior::AgentBehavior;
     use tirea_contract::runtime::phase::Phase;
     use tirea_contract::runtime::phase::{ActionSet, BeforeToolExecuteAction};
-    use tirea_contract::runtime::state::AnyStateAction;
     use tirea_contract::runtime::tool_call::ToolCallResume;
     use tirea_contract::RunConfig;
     use tirea_state::{DocCell, LatticeRegistry};
@@ -104,7 +103,7 @@ mod tests {
             behavior: ToolPermissionBehavior::Allow,
         };
         let state_action = permission_state_action(action);
-        assert!(!matches!(state_action, AnyStateAction::Patch(_)));
+        assert!(state_action.to_serialized_action().payload.is_object());
     }
 
     #[test]
@@ -545,7 +544,7 @@ mod tests {
             behavior: ToolPermissionBehavior::Allow,
         };
         let state_action = permission_state_action(action);
-        assert!(!matches!(state_action, AnyStateAction::Patch(_)));
+        assert!(state_action.to_serialized_action().payload.is_object());
     }
 
     #[test]
@@ -555,7 +554,7 @@ mod tests {
             behavior: ToolPermissionBehavior::Deny,
         };
         let state_action = permission_state_action(action);
-        assert!(!matches!(state_action, AnyStateAction::Patch(_)));
+        assert!(state_action.to_serialized_action().payload.is_object());
     }
 
     #[test]

@@ -1055,13 +1055,6 @@ async fn execute_single_tool_with_phases_impl(
             other_actions.push(action);
         }
     }
-    if tool_state_actions.iter().any(AnyStateAction::is_raw_patch) {
-        return Err(AgentLoopError::StateError(
-            "raw patch state actions are disabled in tool execution; emit typed state actions instead"
-                .to_string(),
-        ));
-    }
-
     // Apply non-state tool-emitted actions (validated against AfterToolExecute) before plugin hooks.
     for action in &other_actions {
         action
@@ -1120,7 +1113,7 @@ async fn execute_single_tool_with_phases_impl(
     // Capture serialized actions before reduce consumes them.
     let mut serialized_actions: Vec<tirea_contract::SerializedAction> = tool_state_actions
         .iter()
-        .filter_map(|a| a.to_serialized_action())
+        .map(|a| a.to_serialized_action())
         .collect();
 
     let tool_scope_ctx = ScopeContext::for_call(&call.id);

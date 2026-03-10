@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tirea_state::StateSpec;
 
-/// Serialized state action, sufficient to reconstruct an [`AnyStateAction::Typed`].
+/// Serialized state action, sufficient to reconstruct an [`AnyStateAction`].
 ///
 /// Captured at the point where a tool completes execution, before the batch
 /// commit. On crash recovery, these entries are deserialized back into
@@ -44,10 +44,7 @@ pub enum PendingWriteError {
 
 impl AnyStateAction {
     /// Convert this action into a serialized form for persistence.
-    ///
-    /// Returns `None` for raw `Patch` actions (they bypass the typed reducer
-    /// pipeline and are not recoverable via action replay).
-    pub fn to_serialized_action(&self) -> Option<SerializedAction> {
+    pub fn to_serialized_action(&self) -> SerializedAction {
         match self {
             Self::Typed {
                 state_type_name,
@@ -56,14 +53,13 @@ impl AnyStateAction {
                 call_id_override,
                 serialized_payload,
                 ..
-            } => Some(SerializedAction {
+            } => SerializedAction {
                 state_type_name: (*state_type_name).to_owned(),
                 base_path: base_path.clone(),
                 scope: *scope,
                 call_id_override: call_id_override.clone(),
                 payload: serialized_payload.clone(),
-            }),
-            Self::Patch(_) => None,
+            },
         }
     }
 }
@@ -272,7 +268,7 @@ mod tests {
     #[test]
     fn to_serialized_action_roundtrip() {
         let original = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(42));
-        let serialized = original.to_serialized_action().expect("Typed → Some");
+        let serialized = original.to_serialized_action();
 
         assert!(serialized.state_type_name.contains("TestCounter"));
         assert_eq!(serialized.base_path, "test_counter");
@@ -282,20 +278,13 @@ mod tests {
     }
 
     #[test]
-    fn to_serialized_action_returns_none_for_patch() {
-        let raw =
-            AnyStateAction::Patch(tirea_state::TrackedPatch::new(tirea_state::Patch::default()));
-        assert!(raw.to_serialized_action().is_none());
-    }
-
-    #[test]
     fn registry_deserialize_and_reduce_roundtrip() {
         let mut registry = ActionDeserializerRegistry::new();
         registry.register::<TestCounter>();
 
         // Create original action, serialize, then deserialize through registry
         let original = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(7));
-        let serialized = original.to_serialized_action().unwrap();
+        let serialized = original.to_serialized_action();
 
         let reconstructed = registry.deserialize(&serialized).unwrap();
 
@@ -355,7 +344,7 @@ mod tests {
             TestCounterAction::Increment(3),
             "call_99",
         );
-        let serialized = original.to_serialized_action().unwrap();
+        let serialized = original.to_serialized_action();
         assert_eq!(serialized.scope, StateScope::ToolCall);
         assert_eq!(serialized.call_id_override, Some("call_99".into()));
 

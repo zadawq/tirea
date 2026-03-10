@@ -3793,64 +3793,6 @@ fn test_suspended_call_action_persists_all_entries() {
     assert_eq!(suspended["call_b"].ticket.suspension.id, "int_b");
 }
 
-#[test]
-fn test_execute_tools_sequential_rejects_raw_patch_plugin_state_actions() {
-    struct RawPatchPlugin;
-
-    #[async_trait]
-    impl AgentBehavior for RawPatchPlugin {
-        fn id(&self) -> &str {
-            "raw_patch_plugin"
-        }
-
-        async fn after_tool_execute(
-            &self,
-            ctx: &ReadOnlyContext<'_>,
-        ) -> ActionSet<AfterToolExecuteAction> {
-            if ctx.tool_call_id() != Some("call_1") {
-                return ActionSet::empty();
-            }
-
-            let patch = TrackedPatch::new(
-                Patch::new().with_op(Op::increment(tirea_state::path!("counter"), 1_i64)),
-            )
-            .with_source("test:raw_patch_plugin");
-            ActionSet::single(AfterToolExecuteAction::State(AnyStateAction::Patch(patch)))
-        }
-    }
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let thread = Thread::new("test");
-        let result = StreamResult {
-            text: "Call tools".to_string(),
-            tool_calls: vec![
-                crate::contracts::thread::ToolCall::new(
-                    "call_1",
-                    "echo",
-                    json!({"message": "hello"}),
-                ),
-                crate::contracts::thread::ToolCall::new("call_2", "counter", json!({"amount": 5})),
-            ],
-            usage: None,
-            stop_reason: None,
-        };
-
-        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-        tools.insert("echo".to_string(), Arc::new(EchoTool));
-        tools.insert("counter".to_string(), Arc::new(CounterTool));
-        let agent = BaseAgent::new("m")
-            .with_behavior(Arc::new(RawPatchPlugin) as Arc<dyn AgentBehavior>)
-            .with_tool_executor(Arc::new(SequentialToolExecutor));
-
-        let err = execute_tools_with_config(thread, &result, &tools, &agent)
-            .await
-            .expect_err("raw patch plugin actions should be rejected");
-        assert!(matches!(err, AgentLoopError::StateError(message)
-            if message.contains("raw patch state actions are disabled in plugin phases")));
-    });
-}
-
 // ========================================================================
 // Phase lifecycle helpers & tests for run_loop_stream
 // ========================================================================

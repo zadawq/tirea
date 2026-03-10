@@ -52,10 +52,8 @@ impl StateScopeRegistry {
     /// If the action targets a registered type, returns the registered scope.
     /// Otherwise falls back to [`AnyStateAction::scope`].
     pub fn resolve(&self, action: &AnyStateAction) -> StateScope {
-        if let Some(type_id) = action.state_type_id() {
-            if let Some(scope) = self.typed_scope(type_id) {
-                return scope;
-            }
+        if let Some(scope) = self.typed_scope(action.state_type_id()) {
+            return scope;
         }
         action.scope()
     }

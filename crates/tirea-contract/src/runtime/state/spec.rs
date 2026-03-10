@@ -14,13 +14,9 @@ type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
 
 /// Type-erased state action that can be applied to a JSON document.
 ///
-/// Two variants:
-/// - `Typed`: The primary public path for business logic. Created via
-///   [`AnyStateAction::new`] or [`AnyStateAction::new_for_call`] from a concrete
-///   `StateSpec` type and reducer action.
-/// - `Patch`: A framework/internal bridge for pre-built [`TrackedPatch`] values.
-///   This bypasses the typed reducer pipeline and should be avoided in normal
-///   tools/plugins unless you are implementing runtime internals.
+/// Created via [`AnyStateAction::new`] / [`new_at`](Self::new_at) /
+/// [`new_for_call`](Self::new_for_call) from a concrete `StateSpec` type and
+/// reducer action.
 pub enum AnyStateAction {
     /// Type-erased action targeting a specific `StateSpec` type.
     Typed {
@@ -42,12 +38,6 @@ pub enum AnyStateAction {
         /// without requiring access to the concrete action type.
         serialized_payload: Value,
     },
-    /// Pre-built tracked patch emitted directly as a state effect.
-    ///
-    /// This exists primarily for runtime bridging and compatibility paths.
-    /// Prefer `Typed` actions for ordinary tool/plugin state updates.
-    #[doc(hidden)]
-    Patch(TrackedPatch),
 }
 
 impl AnyStateAction {
@@ -202,12 +192,9 @@ impl AnyStateAction {
     }
 
     /// The [`TypeId`] of the state type this action targets.
-    ///
-    /// Returns `None` for raw `Patch` actions.
-    pub fn state_type_id(&self) -> Option<TypeId> {
+    pub fn state_type_id(&self) -> TypeId {
         match self {
-            Self::Typed { state_type_id, .. } => Some(*state_type_id),
-            Self::Patch(_) => None,
+            Self::Typed { state_type_id, .. } => *state_type_id,
         }
     }
 
@@ -217,7 +204,6 @@ impl AnyStateAction {
             Self::Typed {
                 state_type_name, ..
             } => state_type_name,
-            Self::Patch(_) => "raw_patch",
         }
     }
 
@@ -225,45 +211,24 @@ impl AnyStateAction {
     pub fn scope(&self) -> StateScope {
         match self {
             Self::Typed { scope, .. } => *scope,
-            Self::Patch(_) => StateScope::Run,
         }
     }
 
-    /// The serialized action payload, if this is a `Typed` action.
-    ///
-    /// Returns `None` for raw `Patch` actions. The payload is captured at
-    /// construction time before the action is moved into the reduce closure.
-    pub fn serialized_payload(&self) -> Option<&Value> {
+    /// The serialized action payload captured before the action is moved into
+    /// the reduce closure.
+    pub fn serialized_payload(&self) -> &Value {
         match self {
             Self::Typed {
                 serialized_payload, ..
-            } => Some(serialized_payload),
-            Self::Patch(_) => None,
-        }
-    }
-
-    /// Whether this action bypasses the typed reducer pipeline and carries a raw patch.
-    pub fn is_raw_patch(&self) -> bool {
-        matches!(self, Self::Patch(_))
-    }
-
-    /// If this is a raw `Patch` action, return the tracked patch directly.
-    ///
-    /// Used by runtime internals to preserve source metadata for pre-built
-    /// patches. Normal business code should prefer typed state actions.
-    pub fn into_tracked_patch(self) -> Option<TrackedPatch> {
-        match self {
-            Self::Patch(tracked) => Some(tracked),
-            Self::Typed { .. } => None,
+            } => serialized_payload,
         }
     }
 }
 
 /// Reduce a batch of state actions into tracked patches with rolling snapshot semantics.
 ///
-/// Typed actions are reduced against a snapshot that is updated after each action,
-/// so sequential actions in one batch compose deterministically.
-/// Raw patch actions preserve the tracked patch metadata as-is.
+/// Typed actions are reduced against a snapshot that is updated after each
+/// action, so sequential actions in one batch compose deterministically.
 ///
 /// `scope_ctx` controls how `ToolCall`-scoped actions are routed to per-call
 /// namespaces. For Thread/Run phases (anything outside a tool-call), pass
@@ -279,12 +244,10 @@ pub fn reduce_state_actions(
     // to Op::Set semantics).
     let mut local_registry = LatticeRegistry::new();
     for action in &actions {
-        if let AnyStateAction::Typed {
+        let AnyStateAction::Typed {
             register_lattice, ..
-        } = action
-        {
-            register_lattice(&mut local_registry);
-        }
+        } = action;
+        register_lattice(&mut local_registry);
     }
 
     let mut rolling_snapshot = base_snapshot.clone();
@@ -292,14 +255,6 @@ pub fn reduce_state_actions(
 
     for action in actions {
         match action {
-            AnyStateAction::Patch(tracked) => {
-                if tracked.patch().is_empty() {
-                    continue;
-                }
-                rolling_snapshot =
-                    apply_patch_with_registry(&rolling_snapshot, tracked.patch(), &local_registry)?;
-                tracked_patches.push(tracked);
-            }
             AnyStateAction::Typed {
                 scope,
                 base_path,
@@ -345,10 +300,6 @@ impl fmt::Debug for AnyStateAction {
                 .field("type_id", state_type_id)
                 .field("scope", scope)
                 .field("payload", serialized_payload)
-                .finish(),
-            Self::Patch(tracked) => f
-                .debug_struct("AnyStateAction::Patch")
-                .field("source", &tracked.source)
                 .finish(),
         }
     }
@@ -543,7 +494,7 @@ mod tests {
     #[test]
     fn any_state_action_state_type_id() {
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(1));
-        assert_eq!(action.state_type_id(), Some(TypeId::of::<Counter>()));
+        assert_eq!(action.state_type_id(), TypeId::of::<Counter>());
     }
 
     #[test]
@@ -576,26 +527,6 @@ mod tests {
             state = apply_patch(&state, patch.patch()).unwrap();
         }
         assert_eq!(state["counters"]["main"]["value"], 3);
-    }
-
-    #[test]
-    fn reduce_state_actions_preserves_raw_patch_source() {
-        let base = json!({});
-        let raw = TrackedPatch::new(Patch::with_ops(vec![Op::set(
-            path_from_str("debug.raw"),
-            json!(true),
-        )]))
-        .with_source("plugin:test");
-
-        let tracked = reduce_state_actions(
-            vec![AnyStateAction::Patch(raw)],
-            &base,
-            "agent",
-            &ScopeContext::run(),
-        )
-        .unwrap();
-        assert_eq!(tracked.len(), 1);
-        assert_eq!(tracked[0].source.as_deref(), Some("plugin:test"));
     }
 
     #[test]
@@ -879,57 +810,6 @@ mod tests {
     }
 
     #[test]
-    fn reduce_state_actions_rolling_snapshot_uses_lattice_merge() {
-        // When a raw Patch with Op::LatticeMerge is followed by a Typed action
-        // that reads from the rolling snapshot, the lattice merge must be applied
-        // correctly (not as a plain set) so the subsequent reducer sees the merged value.
-        let mut c = GCounter::new();
-        c.increment("a", 10);
-        let base = json!({"token_stats": {"total_input": c, "total_output": {}, "label": ""}});
-
-        // Raw patch with a LatticeMerge delta from a different node
-        let mut delta = GCounter::new();
-        delta.increment("b", 7);
-        let raw_patch = TrackedPatch::new(Patch::with_ops(vec![Op::lattice_merge(
-            parse_path("token_stats.total_input"),
-            serde_json::to_value(&delta).unwrap(),
-        )]));
-
-        // Typed action that adds more input tokens
-        let typed_action = AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(3));
-
-        let tracked = reduce_state_actions(
-            vec![AnyStateAction::Patch(raw_patch), typed_action],
-            &base,
-            "test",
-            &ScopeContext::run(),
-        )
-        .unwrap();
-
-        // Apply all patches to get final state
-        let mut state = base.clone();
-        for tp in &tracked {
-            state = apply_patch_with_registry(
-                &state,
-                tp.patch(),
-                &LatticeRegistry::new(), // empty: tests the ops themselves
-            )
-            .unwrap();
-        }
-
-        // total_input should be max(a=10, b=7) from merge + 3 from typed action
-        // GCounter.value() = sum of all nodes
-        let total: GCounter =
-            serde_json::from_value(state["token_stats"]["total_input"].clone()).unwrap();
-        // a=10+3=13, b=7 → value = 20
-        assert_eq!(
-            total.value(),
-            20,
-            "rolling snapshot should apply lattice merge correctly"
-        );
-    }
-
-    #[test]
     fn diff_ops_skips_unchanged_fields() {
         // Only modify one CRDT field; the other fields should not appear in ops.
         let base = json!({"token_stats": {"total_input": {}, "total_output": {}, "label": ""}});
@@ -978,23 +858,15 @@ mod tests {
     #[test]
     fn serialized_payload_is_captured() {
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(42));
-        let payload = action
-            .serialized_payload()
-            .expect("Typed action should have payload");
+        let payload = action.serialized_payload();
         assert_eq!(*payload, json!({"Increment": 42}));
-
-        // Patch variant returns None
-        let raw = AnyStateAction::Patch(TrackedPatch::new(Patch::default()));
-        assert!(raw.serialized_payload().is_none());
     }
 
     #[test]
     fn serialized_payload_captured_for_call_scoped() {
         let action =
             AnyStateAction::new_for_call::<ToolScopedCounter>(CounterAction::Reset, "call_1");
-        let payload = action
-            .serialized_payload()
-            .expect("Typed action should have payload");
+        let payload = action.serialized_payload();
         assert_eq!(*payload, json!("Reset"));
     }
 }
