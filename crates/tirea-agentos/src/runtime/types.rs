@@ -19,6 +19,7 @@ use crate::loop_runtime::loop_runner::{
 };
 
 use super::agent_tools::SubAgentHandleTable;
+use super::background_tasks::BackgroundTaskManager;
 use super::thread_run;
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
@@ -96,6 +97,7 @@ pub struct AgentOs {
     pub(crate) skills_registry: Option<Arc<dyn SkillRegistry>>,
     pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
     pub(crate) sub_agent_handles: Arc<SubAgentHandleTable>,
+    pub(crate) background_task_manager: Arc<BackgroundTaskManager>,
     pub(crate) active_runs: Arc<thread_run::ActiveThreadRunRegistry>,
     pub(crate) agent_tools: AgentToolsConfig,
     pub(crate) agent_state_store: Option<Arc<dyn ThreadStore>>,
@@ -122,6 +124,7 @@ impl AgentOs {
             skills_registry: registries.skills,
             system_wirings: services.system_wirings,
             sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
+            background_task_manager: Arc::new(BackgroundTaskManager::new()),
             active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
             agent_tools: services.agent_tools,
             agent_state_store: services.agent_state_store,

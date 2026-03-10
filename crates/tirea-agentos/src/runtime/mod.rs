@@ -1,4 +1,5 @@
 pub(crate) mod agent_tools;
+pub(crate) mod background_tasks;
 mod behavior;
 mod bundle_merge;
 mod errors;
@@ -19,6 +20,10 @@ pub use plugin::context_window::{ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID};
 pub use plugin::stop_policy::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopPolicy, StopPolicyInput,
     StopPolicyPlugin, StopPolicyStats, StopOnTool, Timeout, TokenBudget,
+};
+pub use background_tasks::{
+    BackgroundCapable, BackgroundExecutable, BackgroundTaskManager, BackgroundTasksPlugin,
+    TaskCancelTool, TaskCompletionNotifier, TaskStatusTool, BACKGROUND_TASKS_PLUGIN_ID,
 };
 pub use thread_run::ForwardedDecision;
 pub use types::{AgentOs, PreparedRun, RunStream};

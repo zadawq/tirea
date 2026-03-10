@@ -574,12 +574,15 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("skill_script"));
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
+    assert!(resolved.tools.contains_key("task_status"));
+    assert!(resolved.tools.contains_key("task_cancel"));
     let behavior_ids = resolved.agent.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 4);
+    assert_eq!(behavior_ids.len(), 5);
     assert_eq!(behavior_ids[0], "skills_discovery");
     assert_eq!(behavior_ids[1], "agent_tools");
     assert_eq!(behavior_ids[2], "agent_recovery");
-    assert_eq!(behavior_ids[3], "stop_policy");
+    assert_eq!(behavior_ids[3], "background_tasks");
+    assert_eq!(behavior_ids[4], "stop_policy");
 }
 
 #[test]
@@ -1438,8 +1441,9 @@ async fn resolve_wires_plugins_in_order() {
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "agent_tools");
     assert_eq!(behavior_ids[1], "agent_recovery");
-    assert_eq!(behavior_ids[2], "policy1");
-    assert_eq!(behavior_ids[3], "p1");
+    assert_eq!(behavior_ids[2], "background_tasks");
+    assert_eq!(behavior_ids[3], "policy1");
+    assert_eq!(behavior_ids[4], "p1");
 }
 
 #[cfg(feature = "skills")]
@@ -1471,13 +1475,16 @@ async fn resolve_wires_skills_before_plugins() {
     assert!(resolved.tools.contains_key("skill_script"));
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
+    assert!(resolved.tools.contains_key("task_status"));
+    assert!(resolved.tools.contains_key("task_cancel"));
 
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "skills_discovery");
     assert_eq!(behavior_ids[1], "agent_tools");
     assert_eq!(behavior_ids[2], "agent_recovery");
-    assert_eq!(behavior_ids[3], "policy1");
-    assert_eq!(behavior_ids[4], "p1");
+    assert_eq!(behavior_ids[3], "background_tasks");
+    assert_eq!(behavior_ids[4], "policy1");
+    assert_eq!(behavior_ids[5], "p1");
 }
 
 #[test]
@@ -4024,8 +4031,9 @@ fn reserved_behavior_ids_without_wirings() {
     let ids = AgentOs::reserved_behavior_ids(&[]);
     assert!(ids.contains(&"agent_tools"));
     assert!(ids.contains(&"agent_recovery"));
+    assert!(ids.contains(&"background_tasks"));
     assert!(ids.contains(&"stop_policy"));
-    assert_eq!(ids.len(), 3, "only internal reserved ids: {ids:?}");
+    assert_eq!(ids.len(), 4, "only internal reserved ids: {ids:?}");
 }
 
 #[test]
@@ -4042,5 +4050,5 @@ fn reserved_behavior_ids_aggregates_from_wirings() {
     assert!(ids.contains(&"ext1_reserved_a"));
     assert!(ids.contains(&"ext1_reserved_b"));
     assert!(ids.contains(&"ext2_reserved"));
-    assert_eq!(ids.len(), 6, "should aggregate all reserved ids: {ids:?}");
+    assert_eq!(ids.len(), 7, "should aggregate all reserved ids: {ids:?}");
 }

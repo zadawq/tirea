@@ -2,6 +2,9 @@ use super::agent_tools::{
     AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
     AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
+use super::background_tasks::{
+    BackgroundTasksPlugin, TaskCancelTool, TaskStatusTool, BACKGROUND_TASKS_PLUGIN_ID,
+};
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
 use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
@@ -77,6 +80,7 @@ impl AgentOs {
         let mut ids = vec![
             AGENT_TOOLS_PLUGIN_ID,
             AGENT_RECOVERY_PLUGIN_ID,
+            BACKGROUND_TASKS_PLUGIN_ID,
             STOP_POLICY_PLUGIN_ID,
         ];
         for wiring in system_wirings {
@@ -212,6 +216,21 @@ impl AgentOs {
         Ok(vec![tools_bundle, recovery_bundle])
     }
 
+    fn build_background_task_bundles(&self) -> Vec<Arc<dyn RegistryBundle>> {
+        let mgr = self.background_task_manager.clone();
+        let status_tool: Arc<dyn Tool> = Arc::new(TaskStatusTool::new(mgr.clone()));
+        let cancel_tool: Arc<dyn Tool> = Arc::new(TaskCancelTool::new(mgr.clone()));
+        let plugin = BackgroundTasksPlugin::new(mgr);
+
+        let bundle: Arc<dyn RegistryBundle> = Arc::new(
+            ToolBehaviorBundle::new(BACKGROUND_TASKS_PLUGIN_ID)
+                .with_tool(status_tool)
+                .with_tool(cancel_tool)
+                .with_behavior(Arc::new(plugin)),
+        );
+        vec![bundle]
+    }
+
     #[cfg(test)]
     pub(crate) fn wire_behaviors_into(
         &self,
@@ -250,6 +269,9 @@ impl AgentOs {
         // Agent tools stay hardcoded (internal, needs &self/AgentOs access).
         system_bundles
             .extend(self.build_agent_tool_wiring_bundles(&resolved_plugins, frozen_agents)?);
+
+        // Background task tools (task_status, task_cancel) + state registration.
+        system_bundles.extend(self.build_background_task_bundles());
 
         let system_plugins = merge_wiring_bundles(&system_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()
