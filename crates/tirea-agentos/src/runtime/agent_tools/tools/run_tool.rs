@@ -1,8 +1,5 @@
 use super::*;
-use crate::runtime::background_tasks::{
-    BackgroundTaskManager, NewTaskSpec, SpawnParams, TaskResult as BgTaskResult, TaskStatus,
-    TaskStore, TaskStoreError,
-};
+use crate::runtime::background_tasks::{BackgroundExecutable, TaskResult as BgTaskResult};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -18,9 +15,10 @@ pub struct AgentRunArgs {
     /// Whether to fork caller state/messages into the new run.
     #[serde(default)]
     pub fork_context: bool,
-    /// true: run in background; false: wait for completion.
-    #[serde(default)]
-    pub background: bool,
+    /// Internal flag set by BackgroundCapable wrapper for resume paths.
+    #[serde(default, rename = "__is_resume")]
+    #[schemars(skip)]
+    pub is_resume: bool,
 }
 
 /// Normalize optional string: trim whitespace and treat empty as None.
@@ -29,47 +27,17 @@ fn normalize_opt(s: Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Task type used when registering sub-agent background runs with [`BackgroundTaskManager`].
+/// Task type used when registering sub-agent background runs.
 pub(crate) const AGENT_RUN_TASK_TYPE: &str = "agent_run";
-
-#[derive(Debug, Clone)]
-struct PersistedAgentRunRecord {
-    agent_id: String,
-    thread_id: String,
-    status: TaskStatus,
-    error: Option<String>,
-}
-
-impl PersistedAgentRunRecord {
-    fn from_task_state(task: crate::runtime::background_tasks::TaskState) -> Self {
-        Self {
-            agent_id: task
-                .metadata
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            thread_id: task
-                .metadata
-                .get("thread_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            status: task.status,
-            error: task.error,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct AgentRunTool {
     os: AgentOs,
-    bg_manager: Arc<BackgroundTaskManager>,
 }
 
 impl AgentRunTool {
-    pub fn new(os: AgentOs, bg_manager: Arc<BackgroundTaskManager>) -> Self {
-        Self { os, bg_manager }
+    pub fn new(os: AgentOs) -> Self {
+        Self { os }
     }
 
     fn ensure_target_visible(
@@ -93,221 +61,174 @@ impl AgentRunTool {
         ))
     }
 
-    fn task_store(&self) -> Option<TaskStore> {
-        self.os.agent_state_store().cloned().map(TaskStore::new)
-    }
-
-    async fn persist_task_start(
+    /// Resolve execution context from args.
+    /// Returns (agent_id, messages, initial_state).
+    ///
+    /// `prompt` is required for new runs but optional for resume (`is_resume`)
+    /// scenarios where the sub-agent continues from its existing thread state.
+    #[allow(clippy::result_large_err)]
+    fn resolve_execution_context(
         &self,
-        task_store: &TaskStore,
-        run_id: &str,
-        owner_thread_id: &str,
-        description: &str,
-        parent_task_id: Option<&str>,
-        metadata: &Value,
-    ) -> Result<(), TaskStoreError> {
-        match task_store.load_task(run_id).await? {
-            Some(task) => {
-                if task.owner_thread_id != owner_thread_id {
-                    return Err(TaskStoreError::OwnerMismatch {
-                        task_id: run_id.to_string(),
-                        expected_owner_thread_id: owner_thread_id.to_string(),
-                        actual_owner_thread_id: task.owner_thread_id,
-                    });
-                }
-                task_store.start_task_attempt(run_id).await?;
-            }
-            None => {
-                task_store
-                    .create_task(NewTaskSpec {
-                        task_id: run_id.to_string(),
-                        owner_thread_id: owner_thread_id.to_string(),
-                        task_type: AGENT_RUN_TASK_TYPE.to_string(),
-                        description: description.to_string(),
-                        parent_task_id: parent_task_id.map(str::to_string),
-                        supports_resume: true,
-                        metadata: metadata.clone(),
-                    })
-                    .await?;
-            }
-        }
-        Ok(())
-    }
+        args: &AgentRunArgs,
+        scope: Option<&tirea_contract::RunConfig>,
+        caller_agent_id: Option<&str>,
+        is_resume: bool,
+    ) -> Result<(String, Vec<Message>, Option<Value>), ToolResult> {
+        let tool_name = AGENT_RUN_TOOL_ID;
 
-    async fn launch_new_run(
-        &self,
-        ctx: &ToolCallContext<'_>,
-        request: LaunchNewRunRequest,
-        tool_name: &str,
-    ) -> ToolResult {
-        let LaunchNewRunRequest {
-            run_id,
-            owner_thread_id,
-            agent_id,
-            parent_run_id,
-            child_thread_id,
-            messages,
-            initial_state,
-            background,
-        } = request;
-        let parent_tool_call_id = ctx.call_id().to_string();
-        let metadata = serde_json::json!({
-            "thread_id": child_thread_id,
-            "agent_id": agent_id,
-        });
-        let description = format!("agent:{agent_id}");
-        let task_store = self.task_store();
+        let agent_id = normalize_opt(args.agent_id.clone());
+        let prompt = normalize_opt(args.prompt.clone());
 
-        if background {
-            let token = RunCancellationToken::new();
-            let parent_run_id_bg = parent_run_id.clone();
-            let parent_tool_call_id_bg = parent_tool_call_id.clone();
-
-            if let Some(task_store) = &task_store {
-                if let Err(err) = self
-                    .persist_task_start(
-                        task_store,
-                        &run_id,
-                        &owner_thread_id,
-                        &description,
-                        parent_run_id.as_deref(),
-                        &metadata,
-                    )
-                    .await
-                {
-                    return tool_error(
-                        tool_name,
-                        "task_persist_failed",
-                        format!("failed to persist task start: {err}"),
-                    );
-                }
-            }
-
-            // Spawn via BackgroundTaskManager for unified tracking.
-            let os = self.os.clone();
-            let run_id_bg = run_id.clone();
-            let agent_id_bg = agent_id.clone();
-            let child_thread_id_bg = child_thread_id.clone();
-            let parent_thread_id_bg = owner_thread_id.clone();
-
-            self.bg_manager
-                .spawn_with_id(
-                    SpawnParams {
-                        task_id: run_id.clone(),
-                        owner_thread_id,
-                        task_type: AGENT_RUN_TASK_TYPE.to_string(),
-                        description,
-                        parent_task_id: parent_run_id.clone(),
-                        metadata,
-                    },
-                    token.clone(),
-                    move |_cancel| async move {
-                        let completion = execute_sub_agent(
-                            os,
-                            SubAgentExecutionRequest {
-                                agent_id: agent_id_bg,
-                                child_thread_id: child_thread_id_bg,
-                                run_id: run_id_bg.clone(),
-                                parent_run_id: parent_run_id_bg,
-                                parent_tool_call_id: Some(parent_tool_call_id_bg),
-                                parent_thread_id: parent_thread_id_bg,
-                                messages,
-                                initial_state,
-                                cancellation_token: Some(token),
-                            },
-                            None,
-                        )
-                        .await;
-
-                        match completion.status {
-                            SubAgentStatus::Completed => BgTaskResult::Success(serde_json::json!({
-                                "run_id": run_id_bg,
-                                "status": "completed"
-                            })),
-                            SubAgentStatus::Failed => {
-                                BgTaskResult::Failed(completion.error.unwrap_or_default())
-                            }
-                            SubAgentStatus::Stopped => BgTaskResult::Stopped,
-                            SubAgentStatus::Running => {
-                                BgTaskResult::Success(serde_json::json!({ "run_id": run_id_bg }))
-                            }
-                        }
-                    },
-                )
-                .await;
-
-            return agent_tool_result(tool_name, &run_id, &agent_id, "running", None);
-        }
-
-        // Foreground run.
-        let forward_progress =
-            |update: crate::contracts::runtime::tool_call::ToolCallProgressUpdate| {
-                ctx.report_tool_call_progress(update)
-            };
-        let owner_thread_id_for_exec = owner_thread_id.clone();
-
-        let completion = execute_sub_agent(
-            self.os.clone(),
-            SubAgentExecutionRequest {
-                agent_id: agent_id.clone(),
-                child_thread_id: child_thread_id.clone(),
-                run_id: run_id.clone(),
-                parent_run_id: parent_run_id.clone(),
-                parent_tool_call_id: Some(parent_tool_call_id),
-                parent_thread_id: owner_thread_id_for_exec,
-                messages,
-                initial_state,
-                cancellation_token: None,
-            },
-            Some(&forward_progress),
-        )
-        .await;
-
-        let status = match completion.status {
-            SubAgentStatus::Completed => TaskStatus::Completed,
-            SubAgentStatus::Failed => TaskStatus::Failed,
-            SubAgentStatus::Stopped => TaskStatus::Stopped,
-            SubAgentStatus::Running => TaskStatus::Running,
+        let Some(agent_id) = agent_id else {
+            return Err(
+                ToolArgError::new("invalid_arguments", "missing 'agent_id'")
+                    .into_tool_result(tool_name),
+            );
         };
 
-        if let Some(task_store) = &task_store {
-            if let Err(err) = self
-                .persist_task_start(
-                    task_store,
-                    &run_id,
-                    &owner_thread_id,
-                    &description,
-                    parent_run_id.as_deref(),
-                    &metadata,
-                )
-                .await
-            {
-                return tool_error(
-                    tool_name,
-                    "task_persist_failed",
-                    format!("failed to persist task start: {err}"),
-                );
-            }
-
-            if let Err(err) = task_store
-                .persist_foreground_result(&run_id, status, completion.error.clone(), None)
-                .await
-            {
-                return tool_error(
-                    tool_name,
-                    "task_persist_failed",
-                    format!("failed to persist task outcome: {err}"),
-                );
-            }
+        if !is_resume && prompt.is_none() {
+            return Err(
+                ToolArgError::new("invalid_arguments", "missing 'prompt'")
+                    .into_tool_result(tool_name),
+            );
         }
 
-        agent_tool_result(
-            tool_name,
-            &run_id,
-            &agent_id,
-            status.as_str(),
-            completion.error.as_deref(),
-        )
+        if let Err(error) = self.ensure_target_visible(&agent_id, caller_agent_id, scope) {
+            return Err(error.into_tool_result(tool_name));
+        }
+
+        let (messages, initial_state) = if args.fork_context {
+            let fork_state = scope
+                .and_then(|s| s.value(SCOPE_CALLER_STATE_KEY))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let mut msgs = if let Some(caller_msgs) = parse_caller_messages(scope) {
+                filtered_fork_messages(caller_msgs)
+            } else {
+                Vec::new()
+            };
+            if let Some(prompt) = prompt {
+                msgs.push(Message::user(prompt));
+            }
+            (msgs, Some(fork_state))
+        } else if let Some(prompt) = prompt {
+            (vec![Message::user(prompt)], None)
+        } else {
+            // Resume: no new prompt, continue from existing thread state.
+            (Vec::new(), None)
+        };
+
+        Ok((agent_id, messages, initial_state))
+    }
+}
+
+#[async_trait]
+impl BackgroundExecutable for AgentRunTool {
+    fn task_type(&self) -> &str {
+        AGENT_RUN_TASK_TYPE
+    }
+
+    fn supports_resume(&self) -> bool {
+        true
+    }
+
+    fn task_metadata(&self, args: &Value) -> Value {
+        let run_id = args
+            .get("run_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let agent_id = args
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        json!({
+            "agent_id": agent_id,
+            "thread_id": sub_agent_thread_id(run_id),
+        })
+    }
+
+    fn task_id_from_args(&self, args: &Value) -> Option<String> {
+        args.get("run_id")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn set_task_id_in_args(&self, args: &mut Value, task_id: &str) {
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert("run_id".to_string(), json!(task_id));
+        }
+    }
+
+    fn task_description(&self, args: &Value) -> String {
+        let agent_id = args
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        format!("agent:{agent_id}")
+    }
+
+    async fn execute_background(
+        &self,
+        task_id: &str,
+        args: Value,
+        cancel_token: RunCancellationToken,
+    ) -> BgTaskResult {
+        // Extract parent context injected by BackgroundCapable wrapper.
+        let parent_thread_id = args
+            .get("__parent_thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let parent_run_id = args
+            .get("__parent_run_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        let run_args: AgentRunArgs = match serde_json::from_value(args) {
+            Ok(a) => a,
+            Err(e) => return BgTaskResult::Failed(format!("invalid args: {e}")),
+        };
+
+        let agent_id = normalize_opt(run_args.agent_id.clone());
+        let prompt = normalize_opt(run_args.prompt.clone());
+
+        let agent_id = match agent_id {
+            Some(id) => id,
+            None => return BgTaskResult::Failed("missing agent_id".to_string()),
+        };
+
+        let messages = if let Some(prompt) = prompt {
+            vec![Message::user(prompt)]
+        } else {
+            Vec::new()
+        };
+
+        let request = SubAgentExecutionRequest {
+            agent_id,
+            child_thread_id: sub_agent_thread_id(task_id),
+            run_id: task_id.to_string(),
+            parent_run_id,
+            parent_tool_call_id: None,
+            parent_thread_id,
+            messages,
+            initial_state: None,
+            cancellation_token: Some(cancel_token),
+        };
+
+        let completion = execute_sub_agent(self.os.clone(), request, None).await;
+
+        match completion.status {
+            SubAgentStatus::Completed => BgTaskResult::Success(json!({
+                "run_id": task_id,
+                "status": "completed"
+            })),
+            SubAgentStatus::Failed => {
+                BgTaskResult::Failed(completion.error.unwrap_or_default())
+            }
+            SubAgentStatus::Stopped => BgTaskResult::Stopped,
+            SubAgentStatus::Running => BgTaskResult::Success(json!({ "run_id": task_id })),
+        }
     }
 }
 
@@ -331,11 +252,6 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
-        let run_id = normalize_opt(args.run_id);
-        let prompt = normalize_opt(args.prompt);
-        let background = args.background;
-        let fork_context = args.fork_context;
-
         let scope = ctx.run_config();
         let owner_thread_id = scope_string(Some(scope), SCOPE_CALLER_SESSION_ID_KEY);
         let Some(owner_thread_id) = owner_thread_id else {
@@ -347,233 +263,57 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
         };
         let caller_agent_id = scope_string(Some(scope), SCOPE_CALLER_AGENT_ID_KEY);
         let caller_run_id = scope_run_id(Some(scope));
-        let task_store = self.task_store();
 
-        // ── Resume existing run by ID ──────────────────────────────
-        if let Some(run_id) = run_id {
-            // 1. Check live task in BackgroundTaskManager.
-            if let Some(summary) = self.bg_manager.get(&owner_thread_id, &run_id).await {
-                let agent_id = summary
-                    .metadata
-                    .get("agent_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let thread_id = summary
-                    .metadata
-                    .get("thread_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                match summary.status {
-                    TaskStatus::Running
-                    | TaskStatus::Completed
-                    | TaskStatus::Failed
-                    | TaskStatus::Cancelled => {
-                        return Ok(agent_tool_result(
-                            tool_name,
-                            &run_id,
-                            &agent_id,
-                            summary.status.as_str(),
-                            summary.error.as_deref(),
-                        ));
-                    }
-                    TaskStatus::Stopped => {
-                        // Resume stopped task.
-                        if let Err(error) = self.ensure_target_visible(
-                            &agent_id,
-                            caller_agent_id.as_deref(),
-                            Some(scope),
-                        ) {
-                            return Ok(error.into_tool_result(tool_name));
-                        }
-
-                        let mut messages = Vec::new();
-                        if let Some(prompt) = prompt {
-                            messages.push(Message::user(prompt));
-                        }
-
-                        return Ok(self
-                            .launch_new_run(
-                                ctx,
-                                LaunchNewRunRequest {
-                                    run_id,
-                                    owner_thread_id,
-                                    agent_id,
-                                    parent_run_id: caller_run_id,
-                                    child_thread_id: thread_id,
-                                    messages,
-                                    initial_state: None,
-                                    background,
-                                },
-                                tool_name,
-                            )
-                            .await);
-                    }
-                }
-            }
-
-            let durable_persisted = if let Some(task_store) = task_store.clone() {
-                match task_store
-                    .load_task_for_owner(&owner_thread_id, &run_id)
-                    .await
-                {
-                    Ok(Some(task)) => Some(task),
-                    Ok(None) => None,
-                    Err(err) => {
-                        return Ok(tool_error(
-                            tool_name,
-                            "task_load_failed",
-                            format!("Failed to load persisted run state: {err}"),
-                        ));
-                    }
-                }
-            } else {
-                None
-            };
-
-            let durable_exists = durable_persisted.is_some();
-            let persisted = durable_persisted.map(PersistedAgentRunRecord::from_task_state);
-
-            let Some(persisted) = persisted else {
-                return Ok(tool_error(
-                    tool_name,
-                    "unknown_run",
-                    format!("Unknown run_id: {run_id}"),
-                ));
-            };
-
-            if persisted.status == TaskStatus::Running {
-                if durable_exists {
-                    if let Some(task_store) = &task_store {
-                        if let Err(err) = task_store
-                            .persist_foreground_result(
-                                &run_id,
-                                TaskStatus::Stopped,
-                                Some(
-                                    "No live executor found in current process; marked stopped"
-                                        .to_string(),
-                                ),
-                                None,
-                            )
-                            .await
-                        {
-                            return Ok(tool_error(
-                                tool_name,
-                                "task_persist_failed",
-                                format!("Failed to mark orphaned task stopped: {err}"),
-                            ));
-                        }
-                    }
-                }
-                return Ok(agent_tool_result(
-                    tool_name,
-                    &run_id,
-                    &persisted.agent_id,
-                    "stopped",
-                    Some("No live executor found in current process; marked stopped"),
-                ));
-            }
-
-            match persisted.status {
-                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
-                    return Ok(agent_tool_result(
-                        tool_name,
-                        &run_id,
-                        &persisted.agent_id,
-                        persisted.status.as_str(),
-                        persisted.error.as_deref(),
-                    ));
-                }
-                TaskStatus::Stopped => {
-                    if let Err(error) = self.ensure_target_visible(
-                        &persisted.agent_id,
-                        caller_agent_id.as_deref(),
-                        Some(scope),
-                    ) {
-                        return Ok(error.into_tool_result(tool_name));
-                    }
-
-                    let mut messages = Vec::new();
-                    if let Some(prompt) = prompt {
-                        messages.push(Message::user(prompt));
-                    }
-
-                    return Ok(self
-                        .launch_new_run(
-                            ctx,
-                            LaunchNewRunRequest {
-                                run_id,
-                                owner_thread_id,
-                                agent_id: persisted.agent_id,
-                                parent_run_id: caller_run_id,
-                                child_thread_id: persisted.thread_id,
-                                messages,
-                                initial_state: None,
-                                background,
-                            },
-                            tool_name,
-                        )
-                        .await);
-                }
-                TaskStatus::Running => unreachable!("handled above"),
-            }
-        }
-
-        // ── New run ────────────────────────────────────────────────
-        let target_agent_id = normalize_opt(args.agent_id);
-        let Some(target_agent_id) = target_agent_id else {
-            return Ok(ToolArgError::new("invalid_arguments", "missing 'agent_id'")
-                .into_tool_result(tool_name));
-        };
-        let Some(prompt) = prompt else {
-            return Ok(
-                ToolArgError::new("invalid_arguments", "missing 'prompt'")
-                    .into_tool_result(tool_name),
-            );
-        };
-
-        if let Err(error) =
-            self.ensure_target_visible(&target_agent_id, caller_agent_id.as_deref(), Some(scope))
-        {
-            return Ok(error.into_tool_result(tool_name));
-        }
-
-        let run_id = uuid::Uuid::now_v7().to_string();
-        let child_thread_id = sub_agent_thread_id(&run_id);
-
-        let (messages, initial_state) = if fork_context {
-            let fork_state = scope
-                .value(SCOPE_CALLER_STATE_KEY)
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            let mut msgs = if let Some(caller_msgs) = parse_caller_messages(Some(scope)) {
-                filtered_fork_messages(caller_msgs)
-            } else {
-                Vec::new()
-            };
-            msgs.push(Message::user(prompt));
-            (msgs, Some(fork_state))
-        } else {
-            (vec![Message::user(prompt)], None)
-        };
-
-        Ok(self
-            .launch_new_run(
-                ctx,
-                LaunchNewRunRequest {
-                    run_id,
-                    owner_thread_id,
-                    agent_id: target_agent_id,
-                    parent_run_id: caller_run_id,
-                    child_thread_id,
-                    messages,
-                    initial_state,
-                    background,
-                },
+        // run_id is always set (injected by BackgroundCapable wrapper for new tasks).
+        let run_id = normalize_opt(args.run_id.clone()).unwrap_or_default();
+        if run_id.is_empty() {
+            return Ok(tool_error(
                 tool_name,
-            )
-            .await)
+                "missing_run_id",
+                "run_id is required (should be injected by wrapper)",
+            ));
+        }
+
+        // Resolve execution context from args.
+        let (agent_id, messages, initial_state) = match self.resolve_execution_context(
+            &args,
+            Some(scope),
+            caller_agent_id.as_deref(),
+            args.is_resume,
+        ) {
+            Ok(ctx) => ctx,
+            Err(result) => return Ok(result),
+        };
+
+        let parent_tool_call_id = ctx.call_id().to_string();
+
+        // Foreground execution with progress forwarding.
+        let forward_progress =
+            |update: crate::contracts::runtime::tool_call::ToolCallProgressUpdate| {
+                ctx.report_tool_call_progress(update)
+            };
+
+        let request = SubAgentExecutionRequest {
+            agent_id: agent_id.clone(),
+            child_thread_id: sub_agent_thread_id(&run_id),
+            run_id: run_id.clone(),
+            parent_run_id: caller_run_id,
+            parent_tool_call_id: Some(parent_tool_call_id),
+            parent_thread_id: owner_thread_id,
+            messages,
+            initial_state,
+            cancellation_token: None,
+        };
+
+        let completion =
+            execute_sub_agent(self.os.clone(), request, Some(&forward_progress)).await;
+
+        Ok(agent_tool_result(
+            tool_name,
+            &run_id,
+            &agent_id,
+            completion.status.as_str(),
+            completion.error.as_deref(),
+        ))
     }
 }

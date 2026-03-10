@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::background_tasks::BackgroundCapable;
 
 // ── Parallel sub-agent tests ─────────────────────────────────────────────────
 
@@ -17,7 +18,7 @@ async fn parallel_background_runs_and_stop_all() {
         .build()
         .unwrap();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
@@ -30,15 +31,15 @@ async fn parallel_background_runs_and_stop_all() {
                 json!({
                     "agent_id": "worker",
                     "prompt": format!("task-{i}"),
-                    "background": true
+                    "run_in_background": true
                 }),
                 &fix.ctx_with(&format!("call-{i}"), "tool:agent_run"),
             )
             .await
             .unwrap();
         assert_eq!(started.status, ToolStatus::Success);
-        assert_eq!(started.data["status"], json!("running"));
-        run_ids.push(started.data["run_id"].as_str().unwrap().to_string());
+        assert_eq!(started.data["status"], json!("running_in_background"));
+        run_ids.push(started.data["task_id"].as_str().unwrap().to_string());
     }
 
     // All should show as running in BackgroundTaskManager.
@@ -85,7 +86,7 @@ async fn parallel_background_launches_produce_unique_run_ids() {
         .build()
         .unwrap();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut run_ids = Vec::new();
     for i in 0..5 {
@@ -96,14 +97,14 @@ async fn parallel_background_launches_produce_unique_run_ids() {
                 json!({
                     "agent_id": "worker",
                     "prompt": format!("task-{i}"),
-                    "background": true
+                    "run_in_background": true
                 }),
                 &fix.ctx_with(&format!("call-{i}"), "tool:agent_run"),
             )
             .await
             .unwrap();
         assert_eq!(started.status, ToolStatus::Success);
-        run_ids.push(started.data["run_id"].as_str().unwrap().to_string());
+        run_ids.push(started.data["task_id"].as_str().unwrap().to_string());
     }
 
     // All run_ids should be unique.
@@ -135,7 +136,7 @@ async fn parallel_launch_and_immediate_stop() {
         .build()
         .unwrap();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     // Launch background run.
     let mut fix = TestFixture::new();
@@ -145,13 +146,13 @@ async fn parallel_launch_and_immediate_stop() {
             json!({
                 "agent_id": "worker",
                 "prompt": "fast task",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-launch", "tool:agent_run"),
         )
         .await
         .unwrap();
-    let run_id = started.data["run_id"].as_str().unwrap().to_string();
+    let run_id = started.data["task_id"].as_str().unwrap().to_string();
 
     // Immediately cancel via BackgroundTaskManager (race with background execution).
     bg_mgr.cancel("owner-thread", &run_id).await.unwrap();

@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::background_tasks::TaskOutputTool;
+use crate::runtime::background_tasks::{BackgroundCapable, TaskOutputTool, TaskStore};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Integration tests: full sub-agent lifecycle through ThreadStore
@@ -56,7 +56,10 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
 
     let (os, storage) = build_integration_os();
 
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let task_store = Some(Arc::new(TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)));
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
+        .with_task_store(task_store);
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -69,8 +72,7 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
         .execute(
             json!({
                 "agent_id": "worker",
-                "prompt": "do something",
-                "background": false
+                "prompt": "do something"
             }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
@@ -117,11 +119,12 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
 #[tokio::test]
 async fn integration_task_output_reads_from_thread_store() {
     use crate::contracts::storage::ThreadReader;
-    use crate::runtime::background_tasks::TaskStore;
 
     let (os, storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let task_store = Arc::new(TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>));
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
+        .with_task_store(Some(task_store.clone()));
     let output_tool = TaskOutputTool::new(
         bg_mgr,
         Some(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>),
@@ -139,8 +142,7 @@ async fn integration_task_output_reads_from_thread_store() {
         .execute(
             json!({
                 "agent_id": "worker",
-                "prompt": "analyze data",
-                "background": false
+                "prompt": "analyze data"
             }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
@@ -149,8 +151,6 @@ async fn integration_task_output_reads_from_thread_store() {
     assert_eq!(result.status, ToolStatus::Success);
     let run_id = result.data["run_id"].as_str().unwrap().to_string();
     let child_thread_id = super::super::tools::sub_agent_thread_id(&run_id);
-    let task_store =
-        TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>);
     let task = task_store
         .load_task(&run_id)
         .await
@@ -184,10 +184,11 @@ async fn integration_task_output_reads_from_thread_store() {
 
 #[tokio::test]
 async fn integration_persisted_task_state_contains_only_lightweight_metadata() {
-    use crate::runtime::background_tasks::TaskStore;
-
     let (os, storage) = build_integration_os();
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let task_store = Arc::new(TaskStore::new(storage as Arc<dyn crate::contracts::storage::ThreadStore>));
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
+        .with_task_store(Some(task_store.clone()));
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -200,8 +201,7 @@ async fn integration_persisted_task_state_contains_only_lightweight_metadata() {
         .execute(
             json!({
                 "agent_id": "worker",
-                "prompt": "task",
-                "background": false
+                "prompt": "task"
             }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
@@ -209,8 +209,6 @@ async fn integration_persisted_task_state_contains_only_lightweight_metadata() {
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
     let run_id = result.data["run_id"].as_str().unwrap();
-
-    let task_store = TaskStore::new(storage as Arc<dyn crate::contracts::storage::ThreadStore>);
     let task = task_store
         .load_task(run_id)
         .await
@@ -261,7 +259,7 @@ async fn integration_background_sub_agent_persists_to_store_after_completion() {
 
     let (os, storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -275,15 +273,15 @@ async fn integration_background_sub_agent_persists_to_store_after_completion() {
             json!({
                 "agent_id": "worker",
                 "prompt": "background task",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
-    assert_eq!(result.data["status"], json!("running"));
-    let run_id = result.data["run_id"].as_str().unwrap().to_string();
+    assert_eq!(result.data["status"], json!("running_in_background"));
+    let run_id = result.data["task_id"].as_str().unwrap().to_string();
     let child_thread_id = super::super::tools::sub_agent_thread_id(&run_id);
 
     // Wait for background completion (SlowTerminatePlugin sleeps 120ms then terminates).
@@ -321,7 +319,8 @@ async fn integration_background_sub_agent_preserves_parent_run_id_in_deltas() {
 
     let (os, storage) = build_integration_os();
 
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -335,14 +334,14 @@ async fn integration_background_sub_agent_preserves_parent_run_id_in_deltas() {
             json!({
                 "agent_id": "worker",
                 "prompt": "background lineage check",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
-    let run_id = result.data["run_id"].as_str().unwrap().to_string();
+    let run_id = result.data["task_id"].as_str().unwrap().to_string();
     let child_thread_id = super::super::tools::sub_agent_thread_id(&run_id);
 
     let mut deltas = Vec::new();
@@ -372,7 +371,8 @@ async fn integration_fork_context_passes_state_to_sub_agent_thread() {
 
     let (os, storage) = build_integration_os();
 
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let fork_state = json!({
         "project": "tirea",
@@ -391,8 +391,7 @@ async fn integration_fork_context_passes_state_to_sub_agent_thread() {
             json!({
                 "agent_id": "worker",
                 "prompt": "continue analysis",
-                "fork_context": true,
-                "background": false
+                "fork_context": true
             }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
@@ -436,7 +435,8 @@ async fn integration_multiple_parallel_sub_agents_create_independent_threads() {
 
     let (os, storage) = build_integration_os();
 
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut run_ids = Vec::new();
     for i in 0..3 {
@@ -457,14 +457,14 @@ async fn integration_multiple_parallel_sub_agents_create_independent_threads() {
                 json!({
                     "agent_id": agent_id,
                     "prompt": format!("task {i}"),
-                    "background": true
+                    "run_in_background": true
                 }),
                 &fix.ctx_with(&format!("call-{i}"), "tool:agent_run"),
             )
             .await
             .unwrap();
         assert_eq!(result.status, ToolStatus::Success);
-        run_ids.push(result.data["run_id"].as_str().unwrap().to_string());
+        run_ids.push(result.data["task_id"].as_str().unwrap().to_string());
     }
 
     // Wait for all background runs to complete.
@@ -500,7 +500,9 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
 
     let (os, storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let task_store = Some(Arc::new(TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)));
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
+        .with_task_store(task_store);
 
     // Phase 1: Launch background.
     let mut fix = TestFixture::new();
@@ -515,14 +517,14 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
             json!({
                 "agent_id": "worker",
                 "prompt": "long task",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-start", "tool:agent_run"),
         )
         .await
         .unwrap();
-    assert_eq!(started.data["status"], json!("running"));
-    let run_id = started.data["run_id"].as_str().unwrap().to_string();
+    assert_eq!(started.data["status"], json!("running_in_background"));
+    let run_id = started.data["task_id"].as_str().unwrap().to_string();
     let child_thread_id = super::super::tools::sub_agent_thread_id(&run_id);
 
     // Phase 2: Cancel immediately via BackgroundTaskManager.
@@ -547,13 +549,12 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
     );
 
     // Phase 3: Resume (foreground). The bg_manager has the task as Cancelled,
-    // which is terminal — run_tool will return the current status.
+    // which is terminal — the wrapper will return the current status.
     let resumed = run_tool
         .execute(
             json!({
                 "run_id": &run_id,
-                "prompt": "continue",
-                "background": false
+                "prompt": "continue"
             }),
             &fix.ctx_with("call-resume", "tool:agent_run"),
         )
@@ -1249,7 +1250,7 @@ async fn integration_task_output_reads_tool_result_from_sub_agent() {
 async fn integration_background_run_tracked_in_background_task_manager() {
     let (os, _storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -1263,14 +1264,14 @@ async fn integration_background_run_tracked_in_background_task_manager() {
             json!({
                 "agent_id": "worker",
                 "prompt": "background task",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-bg", "tool:agent_run"),
         )
         .await
         .unwrap();
-    assert_eq!(result.data["status"], json!("running"));
-    let run_id = result.data["run_id"].as_str().unwrap().to_string();
+    assert_eq!(result.data["status"], json!("running_in_background"));
+    let run_id = result.data["task_id"].as_str().unwrap().to_string();
 
     // The run should be visible in BackgroundTaskManager.
     let task = bg_mgr.get("parent-thread", &run_id).await;
@@ -1301,7 +1302,7 @@ async fn integration_background_run_tracked_in_background_task_manager() {
 async fn integration_background_stop_cancels_in_both_systems() {
     let (os, _storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -1316,13 +1317,13 @@ async fn integration_background_stop_cancels_in_both_systems() {
             json!({
                 "agent_id": "worker",
                 "prompt": "long task",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-bg", "tool:agent_run"),
         )
         .await
         .unwrap();
-    let run_id = result.data["run_id"].as_str().unwrap().to_string();
+    let run_id = result.data["task_id"].as_str().unwrap().to_string();
 
     // Verify running in manager.
     let task = bg_mgr.get("parent-thread", &run_id).await.unwrap();

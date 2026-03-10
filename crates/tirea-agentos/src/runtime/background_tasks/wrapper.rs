@@ -3,10 +3,16 @@
 //! Tools that support background execution must implement [`BackgroundExecutable`]
 //! in addition to [`Tool`]. The trait provides a context-free execution path
 //! that can safely cross `tokio::spawn` boundaries.
+//!
+//! The wrapper handles the full task lifecycle:
+//! - Persistence: create/resume tasks in [`TaskStore`]
+//! - Background spawning via [`BackgroundTaskManager`]
+//! - Resume: pass existing `task_id` to re-execute stopped tasks
+//! - Status queries: return current status for running/terminal tasks
 
 use super::manager::BackgroundTaskManager;
 use super::types::*;
-use super::{new_task_id, NewTaskSpec, TaskStore};
+use super::{new_task_id, NewTaskSpec, TaskStore, TaskStoreError};
 use crate::contracts::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
@@ -16,32 +22,74 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const RUN_IN_BACKGROUND_PARAM: &str = "run_in_background";
+const OWNER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
 
 /// Context-free background execution trait.
 ///
-/// Tools implement this to opt into background execution support.
-/// Unlike [`Tool::execute`], this method receives only owned data
-/// (no borrowed `ToolCallContext`) so it can be spawned across task boundaries.
+/// Tools implement this to opt into background execution support via
+/// [`BackgroundCapable`]. The wrapper handles persistence, resume, and
+/// background spawning — tools only implement execution logic.
 #[async_trait]
 pub trait BackgroundExecutable: Tool {
+    /// Task type label for persistence (e.g. `"agent_run"`, `"shell"`).
+    fn task_type(&self) -> &str;
+
+    /// Whether stopped tasks can be resumed with the same task_id.
+    fn supports_resume(&self) -> bool {
+        false
+    }
+
+    /// Metadata to persist alongside the task (e.g. agent_id, thread_id).
+    fn task_metadata(&self, _args: &Value) -> Value {
+        json!({})
+    }
+
+    /// Extract an existing task_id from args (for resume/status queries).
+    /// Return `None` for new tasks.
+    fn task_id_from_args(&self, _args: &Value) -> Option<String> {
+        None
+    }
+
+    /// Inject a generated task_id into the args before passing to execute.
+    /// Default implementation sets `args["task_id"]`.
+    fn set_task_id_in_args(&self, args: &mut Value, task_id: &str) {
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert("task_id".to_string(), json!(task_id));
+        }
+    }
+
+    /// Human-readable task description for the background task listing.
+    fn task_description(&self, args: &Value) -> String {
+        let tool_name = self.descriptor().name.clone();
+        format!(
+            "{} (background)",
+            args.get("description")
+                .or_else(|| args.get("command"))
+                .and_then(Value::as_str)
+                .unwrap_or(&tool_name)
+        )
+    }
+
     /// Execute the tool logic in background mode.
     ///
-    /// This receives the args and a cancellation token but NO `ToolCallContext`.
-    /// Tools that need state access should capture what they need from args
-    /// before the spawn boundary.
+    /// Receives a `task_id` (new or resumed) and a cancellation token but NO
+    /// `ToolCallContext`. Tools that need state access should capture what they
+    /// need from args before the spawn boundary.
     async fn execute_background(
         &self,
+        task_id: &str,
         args: Value,
         cancel_token: RunCancellationToken,
     ) -> TaskResult;
 }
 
-/// Wraps a tool that implements [`BackgroundExecutable`] to support
-/// `run_in_background: true` as a tool parameter.
+/// Wraps a tool that implements [`BackgroundExecutable`] to provide full task
+/// lifecycle management:
 ///
-/// - Foreground: delegates directly to inner `Tool::execute`.
-/// - Background: calls `BackgroundExecutable::execute_background` in a spawned task,
-///   returns immediately with a `task_id`.
+/// - **New tasks**: generates `task_id`, persists, executes foreground or spawns background.
+/// - **Resume**: if `task_id` is in args and the task is `Stopped`, re-executes.
+/// - **Status query**: if `task_id` is in args and the task is running/terminal, returns status.
+/// - **Orphan detection**: if a persisted `Running` task has no live handle, marks it `Stopped`.
 pub struct BackgroundCapable<T: BackgroundExecutable> {
     inner: Arc<T>,
     manager: Arc<BackgroundTaskManager>,
@@ -71,6 +119,369 @@ impl<T: BackgroundExecutable> BackgroundCapable<T> {
     }
 }
 
+/// Internal: result of looking up a task by id.
+struct TaskLookup {
+    summary: TaskSummary,
+    /// Whether this summary came from a live in-memory handle (vs durable store only).
+    is_live: bool,
+}
+
+/// Bundled execution parameters for `execute_task`.
+struct ExecuteParams<'a> {
+    task_id: &'a str,
+    owner_thread_id: &'a str,
+    background: bool,
+    is_resume: bool,
+    parent_task_id: Option<&'a str>,
+}
+
+impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
+    /// Look up a task by id, merging live (in-memory) and durable (TaskStore) sources.
+    /// Live takes precedence when both exist.
+    async fn lookup_task(
+        &self,
+        owner_thread_id: &str,
+        task_id: &str,
+    ) -> Result<Option<TaskLookup>, TaskStoreError> {
+        let live = self.manager.get(owner_thread_id, task_id).await;
+        if let Some(summary) = live {
+            return Ok(Some(TaskLookup {
+                summary,
+                is_live: true,
+            }));
+        }
+
+        if let Some(store) = &self.task_store {
+            if let Some(task) = store.load_task_for_owner(owner_thread_id, task_id).await? {
+                return Ok(Some(TaskLookup {
+                    summary: task.summary(),
+                    is_live: false,
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Persist task creation (new) or attempt increment (resume).
+    async fn persist_start(
+        &self,
+        task_id: &str,
+        owner_thread_id: &str,
+        is_resume: bool,
+        description: &str,
+        parent_task_id: Option<&str>,
+        metadata: &Value,
+    ) -> Result<(), ToolError> {
+        let Some(store) = &self.task_store else {
+            return Ok(());
+        };
+
+        if is_resume {
+            // Verify ownership and increment attempt.
+            match store.load_task(task_id).await {
+                Ok(Some(task)) => {
+                    if task.owner_thread_id != owner_thread_id {
+                        return Err(ToolError::ExecutionFailed(format!(
+                            "task '{}' belongs to a different owner",
+                            task_id
+                        )));
+                    }
+                    store
+                        .start_task_attempt(task_id)
+                        .await
+                        .map_err(|e| ToolError::ExecutionFailed(format!("task persist failed: {e}")))?;
+                }
+                Ok(None) => {
+                    // Resuming a non-existent task — create it.
+                    self.create_task(store, task_id, owner_thread_id, description, parent_task_id, metadata).await?;
+                }
+                Err(e) => {
+                    return Err(ToolError::ExecutionFailed(format!("task persist failed: {e}")));
+                }
+            }
+        } else {
+            self.create_task(store, task_id, owner_thread_id, description, parent_task_id, metadata).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn create_task(
+        &self,
+        store: &TaskStore,
+        task_id: &str,
+        owner_thread_id: &str,
+        description: &str,
+        parent_task_id: Option<&str>,
+        metadata: &Value,
+    ) -> Result<(), ToolError> {
+        store
+            .create_task(NewTaskSpec {
+                task_id: task_id.to_string(),
+                owner_thread_id: owner_thread_id.to_string(),
+                task_type: self.inner.task_type().to_string(),
+                description: description.to_string(),
+                parent_task_id: parent_task_id.map(str::to_string),
+                supports_resume: self.inner.supports_resume(),
+                metadata: metadata.clone(),
+            })
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("task persist failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Persist terminal status after foreground completion.
+    async fn persist_result(
+        &self,
+        task_id: &str,
+        status: TaskStatus,
+        error: Option<String>,
+    ) -> Result<(), ToolError> {
+        let Some(store) = &self.task_store else {
+            return Ok(());
+        };
+        store
+            .persist_foreground_result(task_id, status, error, None)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("task persist failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Mark an orphaned running task as stopped.
+    async fn mark_orphan_stopped(&self, task_id: &str) -> Result<(), ToolError> {
+        let Some(store) = &self.task_store else {
+            return Ok(());
+        };
+        store
+            .persist_foreground_result(
+                task_id,
+                TaskStatus::Stopped,
+                Some("No live executor found in current process; marked stopped".to_string()),
+                None,
+            )
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("failed to mark orphan stopped: {e}")))?;
+        Ok(())
+    }
+
+    fn status_result(&self, task_id: &str, summary: &TaskSummary) -> ToolResult {
+        let tool_name = self.inner.descriptor().name.clone();
+        let agent_id = summary
+            .metadata
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        ToolResult::success(
+            &tool_name,
+            json!({
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "status": summary.status.as_str(),
+                "error": summary.error,
+            }),
+        )
+    }
+
+    fn extract_owner_thread_id(&self, ctx: &ToolCallContext<'_>) -> String {
+        ctx.run_config()
+            .value(OWNER_THREAD_ID_KEY)
+            .and_then(Value::as_str)
+            .unwrap_or(ctx.source())
+            .to_string()
+    }
+
+    /// Merge stored task metadata into args for resume (fills in agent_id etc.
+    /// that the caller may not have supplied).
+    fn enrich_args_for_resume(args: &mut Value, metadata: &Value) {
+        if let (Some(obj), Some(meta)) = (args.as_object_mut(), metadata.as_object()) {
+            for (k, v) in meta {
+                if !obj.contains_key(k) {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    /// Tag args as a resume so tools can relax validation (e.g. prompt optional).
+    fn mark_resume(args: &mut Value) {
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert("__is_resume".to_string(), json!(true));
+        }
+    }
+
+    /// Handle the resume/status query path when a task_id is found in args.
+    async fn handle_existing_task(
+        &self,
+        mut args: Value,
+        ctx: &ToolCallContext<'_>,
+        task_id: String,
+        owner_thread_id: &str,
+        background: bool,
+        parent_task_id: Option<&str>,
+    ) -> Result<ToolResult, ToolError> {
+        let lookup = self
+            .lookup_task(owner_thread_id, &task_id)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("task lookup failed: {e}")))?;
+
+        let Some(lookup) = lookup else {
+            return Ok(ToolResult::error(
+                self.inner.descriptor().name,
+                format!("Unknown task: {task_id}"),
+            ));
+        };
+
+        match lookup.summary.status {
+            // Running or terminal: return current status without executing.
+            TaskStatus::Running
+            | TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled => {
+                // Orphan detection: persisted Running but no live handle.
+                if lookup.summary.status == TaskStatus::Running && !lookup.is_live {
+                    self.mark_orphan_stopped(&task_id).await?;
+                    // Return stopped status with orphan message.
+                    let mut stopped_summary = lookup.summary.clone();
+                    stopped_summary.status = TaskStatus::Stopped;
+                    stopped_summary.error = Some(
+                        "No live executor found in current process; marked stopped".to_string(),
+                    );
+                    if self.inner.supports_resume() {
+                        Self::enrich_args_for_resume(&mut args, &lookup.summary.metadata);
+                        Self::mark_resume(&mut args);
+                        return self
+                            .execute_task(
+                                args,
+                                ctx,
+                                &ExecuteParams {
+                                    task_id: &task_id,
+                                    owner_thread_id,
+                                    background,
+                                    is_resume: true,
+                                    parent_task_id,
+                                },
+                            )
+                            .await;
+                    }
+                    return Ok(self.status_result(&task_id, &stopped_summary));
+                }
+                Ok(self.status_result(&task_id, &lookup.summary))
+            }
+            TaskStatus::Stopped => {
+                if !self.inner.supports_resume() {
+                    return Ok(self.status_result(&task_id, &lookup.summary));
+                }
+                // Resume: re-execute with same task_id, enriched with stored metadata.
+                Self::enrich_args_for_resume(&mut args, &lookup.summary.metadata);
+                Self::mark_resume(&mut args);
+                self.execute_task(
+                    args,
+                    ctx,
+                    &ExecuteParams {
+                        task_id: &task_id,
+                        owner_thread_id,
+                        background,
+                        is_resume: true,
+                        parent_task_id,
+                    },
+                )
+                .await
+            }
+        }
+    }
+
+    /// Core execution path for both new and resumed tasks.
+    async fn execute_task(
+        &self,
+        mut args: Value,
+        ctx: &ToolCallContext<'_>,
+        params: &ExecuteParams<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        let description = self.inner.task_description(&args);
+        let metadata = self.inner.task_metadata(&args);
+
+        // Persist start (create or increment attempt).
+        self.persist_start(
+            params.task_id,
+            params.owner_thread_id,
+            params.is_resume,
+            &description,
+            params.parent_task_id,
+            &metadata,
+        )
+        .await?;
+
+        if params.background {
+            // Inject parent context so execute_background can access lineage.
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert(
+                    "__parent_thread_id".to_string(),
+                    json!(params.owner_thread_id),
+                );
+                if let Some(parent) = params.parent_task_id {
+                    obj.insert("__parent_run_id".to_string(), json!(parent));
+                }
+            }
+
+            let inner = self.inner.clone();
+            let task_id_owned = params.task_id.to_string();
+            let cancel_token = RunCancellationToken::new();
+            let spawn_token = cancel_token.clone();
+
+            self.manager
+                .spawn_with_id(
+                    SpawnParams {
+                        task_id: params.task_id.to_string(),
+                        owner_thread_id: params.owner_thread_id.to_string(),
+                        task_type: self.inner.task_type().to_string(),
+                        description,
+                        parent_task_id: params.parent_task_id.map(str::to_string),
+                        metadata,
+                    },
+                    cancel_token,
+                    move |_cancel| async move {
+                        inner
+                            .execute_background(&task_id_owned, args, spawn_token)
+                            .await
+                    },
+                )
+                .await;
+
+            let tool_name = self.inner.descriptor().name.clone();
+            Ok(ToolResult::success(
+                &tool_name,
+                json!({
+                    "task_id": params.task_id,
+                    "status": "running_in_background",
+                    "message": format!(
+                        "Task started in background. Use task_status tool with task_id '{}' to check progress.",
+                        params.task_id
+                    ),
+                }),
+            ))
+        } else {
+            // Foreground: delegate to inner.execute() which has ToolCallContext.
+            let result = self.inner.execute(args, ctx).await?;
+
+            // Infer terminal status from ToolResult for persistence.
+            let status = if result.is_error() {
+                TaskStatus::Failed
+            } else {
+                TaskStatus::Completed
+            };
+            let error = if result.is_error() {
+                result.message.clone()
+            } else {
+                None
+            };
+            self.persist_result(params.task_id, status, error).await?;
+
+            Ok(result)
+        }
+    }
+}
+
 #[async_trait]
 impl<T: BackgroundExecutable + 'static> Tool for BackgroundCapable<T> {
     fn descriptor(&self) -> ToolDescriptor {
@@ -97,75 +508,48 @@ impl<T: BackgroundExecutable + 'static> Tool for BackgroundCapable<T> {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        if !background {
-            let clean_args = strip_background_param(args);
-            return self.inner.execute(clean_args, ctx).await;
-        }
+        let mut clean_args = strip_background_param(args);
+        let owner_thread_id = self.extract_owner_thread_id(ctx);
 
-        let tool_name = self.inner.descriptor().name.clone();
-        let description = format!(
-            "{} (background)",
-            args.get("description")
-                .or_else(|| args.get("command"))
-                .and_then(Value::as_str)
-                .unwrap_or(&tool_name)
-        );
+        // Check for existing task_id (resume/status query).
+        let existing_task_id = self.inner.task_id_from_args(&clean_args);
 
-        let owner_thread_id = ctx
+        // Determine parent task_id from scope if available.
+        let parent_task_id: Option<String> = ctx
             .run_config()
-            .value("__agent_tool_caller_thread_id")
+            .value("run_id")
             .and_then(Value::as_str)
-            .unwrap_or(ctx.source())
-            .to_string();
+            .map(str::to_string);
 
-        let clean_args = strip_background_param(args);
-        let inner = self.inner.clone();
-
-        let task_id = new_task_id();
-        if let Some(task_store) = &self.task_store {
-            task_store
-                .create_task(NewTaskSpec {
-                    task_id: task_id.clone(),
-                    owner_thread_id: owner_thread_id.clone(),
-                    task_type: tool_name.clone(),
-                    description: description.clone(),
-                    parent_task_id: None,
-                    supports_resume: false,
-                    metadata: Value::Object(serde_json::Map::new()),
-                })
-                .await
-                .map_err(|e| ToolError::ExecutionFailed(format!("task persistence failed: {e}")))?;
+        if let Some(task_id) = existing_task_id {
+            return self
+                .handle_existing_task(
+                    clean_args,
+                    ctx,
+                    task_id,
+                    &owner_thread_id,
+                    background,
+                    parent_task_id.as_deref(),
+                )
+                .await;
         }
 
-        let task_id = self
-            .manager
-            .spawn_with_id(
-                SpawnParams {
-                    task_id,
-                    owner_thread_id,
-                    task_type: tool_name.clone(),
-                    description,
-                    parent_task_id: None,
-                    metadata: Value::Object(serde_json::Map::new()),
-                },
-                RunCancellationToken::new(),
-                move |cancel_token| async move {
-                    inner.execute_background(clean_args, cancel_token).await
-                },
-            )
-            .await;
+        // New task: generate task_id and inject into args.
+        let task_id = new_task_id();
+        self.inner.set_task_id_in_args(&mut clean_args, &task_id);
 
-        Ok(ToolResult::success(
-            &tool_name,
-            json!({
-                "task_id": task_id,
-                "status": "running_in_background",
-                "message": format!(
-                    "Task started in background. Use task_status tool with task_id '{}' to check progress.",
-                    task_id
-                ),
-            }),
-        ))
+        self.execute_task(
+            clean_args,
+            ctx,
+            &ExecuteParams {
+                task_id: &task_id,
+                owner_thread_id: &owner_thread_id,
+                background,
+                is_resume: false,
+                parent_task_id: parent_task_id.as_deref(),
+            },
+        )
+        .await
     }
 }
 
@@ -226,8 +610,13 @@ mod tests {
 
     #[async_trait]
     impl BackgroundExecutable for EchoTool {
+        fn task_type(&self) -> &str {
+            "echo"
+        }
+
         async fn execute_background(
             &self,
+            _task_id: &str,
             args: Value,
             _cancel_token: RunCancellationToken,
         ) -> TaskResult {
@@ -410,8 +799,13 @@ mod tests {
 
     #[async_trait]
     impl BackgroundExecutable for SlowTool {
+        fn task_type(&self) -> &str {
+            "slow"
+        }
+
         async fn execute_background(
             &self,
+            _task_id: &str,
             _args: Value,
             cancel_token: RunCancellationToken,
         ) -> TaskResult {

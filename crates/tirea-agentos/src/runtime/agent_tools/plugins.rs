@@ -240,8 +240,8 @@ impl AgentToolsPlugin {
         }
 
         out.push_str("<agent_tools_usage>\n");
-        out.push_str("Run or resume: tool \"agent_run\" with {\"agent_id\":\"<id>\",\"prompt\":\"...\",\"fork_context\":false,\"background\":false}.\n");
-        out.push_str("Resume existing run: tool \"agent_run\" with {\"run_id\":\"...\",\"prompt\":\"optional\",\"background\":false}.\n");
+        out.push_str("Run or resume: tool \"agent_run\" with {\"agent_id\":\"<id>\",\"prompt\":\"...\",\"fork_context\":false,\"run_in_background\":false}.\n");
+        out.push_str("Resume existing run: tool \"agent_run\" with {\"run_id\":\"...\",\"prompt\":\"optional\",\"run_in_background\":false}.\n");
         out.push_str(
             "Check background run: tool \"task_status\" with {\"task_id\":\"<run_id>\"}.\n",
         );

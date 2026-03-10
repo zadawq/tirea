@@ -1,11 +1,12 @@
 use super::*;
+use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::storage::{
     Committed, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
     ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
     VersionPrecondition,
 };
 use crate::contracts::thread::{Thread, ThreadChangeSet};
-use crate::runtime::background_tasks::TASK_THREAD_PREFIX;
+use crate::runtime::background_tasks::{BackgroundCapable, TaskStore, TASK_THREAD_PREFIX};
 use async_trait::async_trait;
 
 struct TaskLoadFailingStore {
@@ -136,7 +137,17 @@ async fn persist_agent_run(
     }
 }
 
-// ── AgentRunTool tests ───────────────────────────────────────────────────────
+/// Helper: wrap AgentRunTool in BackgroundCapable with optional task store.
+fn wrap_with_bg(
+    os: AgentOs,
+    bg_mgr: Arc<BackgroundTaskManager>,
+    storage: Option<Arc<dyn ThreadStore>>,
+) -> BackgroundCapable<AgentRunTool> {
+    let task_store = storage.map(|s| Arc::new(TaskStore::new(s)));
+    BackgroundCapable::new(AgentRunTool::new(os), bg_mgr).with_task_store(task_store)
+}
+
+// ── AgentRunTool validation tests (no background/resume) ─────────────────────
 
 #[tokio::test]
 async fn agent_run_tool_requires_scope_context() {
@@ -147,11 +158,11 @@ async fn agent_run_tool_requires_scope_context() {
         )
         .build()
         .unwrap();
-    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let tool = AgentRunTool::new(os);
     let fix = TestFixture::new();
     let result = tool
         .execute(
-            json!({"agent_id":"worker","prompt":"hi","background":false}),
+            json!({"agent_id":"worker","prompt":"hi"}),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -176,7 +187,7 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         )
         .build()
         .unwrap();
-    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
     fix.run_config
@@ -184,7 +195,7 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         .unwrap();
     let result = tool
         .execute(
-            json!({"agent_id":"reviewer","prompt":"hi","background":false}),
+            json!({"agent_id":"reviewer","prompt":"hi","run_id":"test-run"}),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -209,12 +220,12 @@ async fn agent_run_tool_rejects_self_target_agent() {
         )
         .build()
         .unwrap();
-    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
     let result = tool
         .execute(
-            json!({"agent_id":"caller","prompt":"hi","background":false}),
+            json!({"agent_id":"caller","prompt":"hi","run_id":"test-run"}),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -228,33 +239,39 @@ async fn agent_run_tool_rejects_self_target_agent() {
 
 #[tokio::test]
 async fn agent_run_tool_surfaces_task_store_load_failure_on_start() {
-    let storage = Arc::new(TaskLoadFailingStore {
-        inner: Arc::new(tirea_store_adapters::MemoryStore::new()),
+    let mem_store = Arc::new(tirea_store_adapters::MemoryStore::new());
+    let storage: Arc<dyn ThreadStore> = Arc::new(TaskLoadFailingStore {
+        inner: mem_store,
     });
     let os = AgentOs::builder()
-        .with_agent_state_store(storage as Arc<dyn ThreadStore>)
+        .with_agent_state_store(storage.clone())
         .with_agent(
             "worker",
             crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
-    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let task_store = Some(Arc::new(TaskStore::new(storage)));
+    let wrapped = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr)
+        .with_task_store(task_store);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
-    let result = tool
+    let result = wrapped
         .execute(
-            json!({"agent_id":"worker","prompt":"hi","background":true}),
+            json!({"agent_id":"worker","prompt":"hi","run_in_background":true}),
             &fix.ctx_with("call-load-fail", "tool:agent_run"),
         )
-        .await
-        .unwrap();
+        .await;
 
-    assert_eq!(result.status, ToolStatus::Error);
-    let message = result.message.unwrap_or_default();
-    assert!(message.contains("failed to persist task start"));
-    assert!(message.contains("injected task load failure"));
+    // The wrapper returns ToolError when persist_start fails.
+    let err = result.expect_err("should fail with ToolError");
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("task persist failed") || err_msg.contains("injected task load failure"),
+        "expected task persist error, got: {err_msg}"
+    );
 }
 
 #[tokio::test]
@@ -271,7 +288,8 @@ async fn agent_run_tool_fork_context_filters_messages() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(os, bg_mgr, None);
 
     let fork_messages = vec![
         crate::contracts::thread::Message::system("parent-system"),
@@ -312,12 +330,12 @@ async fn agent_run_tool_fork_context_filters_messages() {
         fork_messages,
     );
 
-    let started = run_tool
+    let started = wrapped
         .execute(
             json!({
                 "agent_id":"worker",
                 "prompt":"child-prompt",
-                "background": true,
+                "run_in_background": true,
                 "fork_context": true
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
@@ -325,10 +343,8 @@ async fn agent_run_tool_fork_context_filters_messages() {
         .await
         .unwrap();
     assert_eq!(started.status, ToolStatus::Success);
-    assert_eq!(started.data["status"], json!("running"));
-
-    // Verify the fork_context flag produces a running status.
-    // (Child thread details are now in ThreadStore, not in-memory handle.)
+    assert_eq!(started.data["status"], json!("running_in_background"));
+    assert!(started.data["task_id"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -346,42 +362,41 @@ async fn background_stop_then_resume_completes() {
         .build()
         .unwrap();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let wrapped = wrap_with_bg(os, bg_mgr.clone(), None);
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
-    let started = run_tool
+    let started = wrapped
         .execute(
             json!({
                 "agent_id":"worker",
                 "prompt":"start",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(started.status, ToolStatus::Success);
-    assert_eq!(started.data["status"], json!("running"));
-    let run_id = started.data["run_id"]
+    assert_eq!(started.data["status"], json!("running_in_background"));
+    let task_id = started.data["task_id"]
         .as_str()
-        .expect("run_id should exist")
+        .expect("task_id should exist")
         .to_string();
 
     // Cancel via BackgroundTaskManager directly.
-    bg_mgr.cancel("owner-thread", &run_id).await.unwrap();
+    bg_mgr.cancel("owner-thread", &task_id).await.unwrap();
 
     // Give cancelled background task a chance to flush stale completion.
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    // Resume: the bg_manager should have the task marked as cancelled,
-    // and the run_tool will pick it up.
-    let resumed = run_tool
+    // Resume foreground: the wrapper sees cancelled status and (since
+    // supports_resume is true) re-executes the task.
+    let resumed = wrapped
         .execute(
             json!({
-                "run_id": run_id,
-                "prompt":"resume",
-                "background": false
+                "run_id": task_id,
+                "prompt":"resume"
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
         )
@@ -398,31 +413,36 @@ async fn background_stop_then_resume_completes() {
 #[tokio::test]
 async fn agent_run_tool_persists_task_thread_state() {
     let (os, storage) = build_worker_os_with_store(true);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
-    let started = run_tool
+    let started = wrapped
         .execute(
             json!({
                 "agent_id":"worker",
                 "prompt":"start",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(started.status, ToolStatus::Success);
-    let run_id = started.data["run_id"]
+    let task_id = started.data["task_id"]
         .as_str()
-        .expect("run_id should exist")
+        .expect("task_id should exist")
         .to_string();
     let task_store = crate::runtime::background_tasks::TaskStore::new(
         storage as Arc<dyn crate::contracts::storage::ThreadStore>,
     );
     let task = task_store
-        .load_task(&run_id)
+        .load_task(&task_id)
         .await
         .unwrap()
         .expect("task should be persisted");
@@ -438,31 +458,36 @@ async fn agent_run_tool_persists_task_thread_state() {
 #[tokio::test]
 async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let (os, storage) = build_worker_os_with_store(true);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
-    let started = run_tool
+    let started = wrapped
         .execute(
             json!({
                 "agent_id":"worker",
                 "prompt":"start",
-                "background": true
+                "run_in_background": true
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(started.status, ToolStatus::Success);
-    let run_id = started.data["run_id"]
+    let task_id = started.data["task_id"]
         .as_str()
-        .expect("run_id should exist")
+        .expect("task_id should exist")
         .to_string();
     let task_store = crate::runtime::background_tasks::TaskStore::new(
         storage as Arc<dyn crate::contracts::storage::ThreadStore>,
     );
     let task = task_store
-        .load_task(&run_id)
+        .load_task(&task_id)
         .await
         .unwrap()
         .expect("task should be persisted");
@@ -472,7 +497,12 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
 #[tokio::test]
 async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
     let (os, storage) = build_worker_os_with_store(false);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
     persist_agent_run(
         storage.clone(),
         "owner-thread",
@@ -487,11 +517,13 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope_with_state_and_run(json!({}), "query-parent-run");
 
-    let result = run_tool
+    // The wrapper sees an orphaned Running task (no live handle), marks it
+    // Stopped, then immediately resumes since supports_resume() is true.
+    // The resumed execution produces a terminal result.
+    let result = wrapped
         .execute(
             json!({
-                "run_id":"run-1",
-                "background": false
+                "run_id":"run-1"
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
         )
@@ -499,15 +531,16 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
 
-    assert_eq!(result.data["status"], json!("stopped"));
+    // After orphan detection + resume, the result should be terminal.
+    let status = result.data["status"].as_str().unwrap();
+    assert!(
+        status == "completed" || status == "failed",
+        "expected terminal status after orphan resume, got: {status}"
+    );
     let task_store = crate::runtime::background_tasks::TaskStore::new(
         storage as Arc<dyn crate::contracts::storage::ThreadStore>,
     );
     let task = task_store.load_task("run-1").await.unwrap().unwrap();
-    assert_eq!(
-        task.status,
-        crate::runtime::background_tasks::TaskStatus::Stopped
-    );
     assert_eq!(task.metadata["thread_id"], json!("custom-child-thread"));
     assert_eq!(task.metadata["agent_id"], json!("worker"));
     assert_eq!(task.parent_task_id.as_deref(), Some("original-parent"));
@@ -516,7 +549,12 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
 #[tokio::test]
 async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     let (os, storage) = build_worker_os_with_store(true);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
     persist_agent_run(
         storage,
         "owner-thread",
@@ -530,19 +568,17 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     .await;
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
-    let resumed = run_tool
+    let resumed = wrapped
         .execute(
             json!({
                 "run_id":"run-1",
-                "prompt":"resume",
-                "background": false
+                "prompt":"resume"
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(resumed.status, ToolStatus::Success);
-    // The execution will fail because there's no ThreadStore, but the tool handles it.
     let status = resumed.data["status"].as_str().unwrap();
     assert!(
         status == "completed" || status == "failed",
@@ -553,7 +589,12 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
 #[tokio::test]
 async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     let (os, storage) = build_worker_os_with_store(true);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
     persist_agent_run(
         storage.clone(),
         "owner-thread",
@@ -567,26 +608,37 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     .await;
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
-    let summary = run_tool
+
+    // The wrapper detects an orphaned Running task (persisted but no live
+    // handle), marks it Stopped, then immediately resumes since
+    // supports_resume() is true. The resumed execution produces a terminal
+    // result (completed or failed).
+    let summary = wrapped
         .execute(
             json!({
-                "run_id":"run-1",
-                "background": false
+                "run_id":"run-1"
             }),
             &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(summary.status, ToolStatus::Success);
-    assert_eq!(summary.data["status"], json!("stopped"));
+
+    // After orphan detection + resume, the result should be terminal.
+    let status = summary.data["status"].as_str().unwrap();
+    assert!(
+        status == "completed" || status == "failed",
+        "expected terminal status after orphan resume, got: {status}"
+    );
+
+    // Verify the task store reflects the final state (resumed execution
+    // persists terminal result after the intermediate Stopped mark).
     let task_store = crate::runtime::background_tasks::TaskStore::new(
         storage as Arc<dyn crate::contracts::storage::ThreadStore>,
     );
     let task = task_store.load_task("run-1").await.unwrap().unwrap();
-    assert_eq!(
-        task.status,
-        crate::runtime::background_tasks::TaskStatus::Stopped
-    );
+    // The attempt count should have increased from the resume.
+    assert!(task.attempt >= 2, "expected attempt >= 2 after resume, got: {}", task.attempt);
 }
 
 // ── AgentRunTool: resume completed/failed returns status ─────────────────────
@@ -594,9 +646,14 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
 #[tokio::test]
 async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
     let (os, storage) = build_worker_os_with_store(false);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
     persist_agent_run(
-        storage,
+        storage.clone(),
         "owner-thread",
         "run-1",
         "worker",
@@ -609,23 +666,29 @@ async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
-    let result = run_tool
+    let result = wrapped
         .execute(
-            json!({ "run_id": "run-1", "background": false }),
+            json!({ "run_id": "run-1" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(result.data["status"], json!("completed"));
+    assert_eq!(result.data["task_id"], json!("run-1"));
 }
 
 #[tokio::test]
 async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
     let (os, storage) = build_worker_os_with_store(false);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
     persist_agent_run(
-        storage,
+        storage.clone(),
         "owner-thread",
         "run-1",
         "worker",
@@ -638,9 +701,9 @@ async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
-    let result = run_tool
+    let result = wrapped
         .execute(
-            json!({ "run_id": "run-1", "background": false }),
+            json!({ "run_id": "run-1" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -648,6 +711,7 @@ async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(result.data["status"], json!("failed"));
     assert_eq!(result.data["error"], json!("agent failed"));
+    assert_eq!(result.data["task_id"], json!("run-1"));
 }
 
 // ── AgentRunTool: missing required args ──────────────────────────────────────
@@ -661,13 +725,13 @@ async fn agent_run_tool_requires_prompt_for_new_run() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let run_tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
     let result = run_tool
         .execute(
-            json!({ "agent_id": "worker", "background": false }),
+            json!({ "agent_id": "worker", "run_id": "test-run" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -688,13 +752,13 @@ async fn agent_run_tool_requires_agent_id_for_new_run() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let run_tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
     let result = run_tool
         .execute(
-            json!({ "prompt": "hello", "background": false }),
+            json!({ "prompt": "hello", "run_id": "test-run" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -721,7 +785,7 @@ async fn agent_run_tool_rejects_excluded_agent() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let run_tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
     fix.run_config
@@ -730,7 +794,7 @@ async fn agent_run_tool_rejects_excluded_agent() {
 
     let result = run_tool
         .execute(
-            json!({ "agent_id": "secret", "prompt": "hi", "background": false }),
+            json!({ "agent_id": "secret", "prompt": "hi", "run_id": "test-run" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -747,22 +811,24 @@ async fn agent_run_tool_rejects_excluded_agent() {
 #[tokio::test]
 async fn agent_run_tool_returns_error_for_unknown_run_id() {
     let os = AgentOs::builder().build().unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(os, bg_mgr, None);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
-    let result = run_tool
+    let result = wrapped
         .execute(
-            json!({ "run_id": "nonexistent", "background": false }),
+            json!({ "run_id": "nonexistent" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Error);
-    assert!(result
-        .message
-        .unwrap_or_default()
-        .contains("Unknown run_id"));
+    let message = result.message.unwrap_or_default();
+    assert!(
+        message.contains("Unknown task"),
+        "expected 'Unknown task' error, got: {message}"
+    );
 }
 
 // ── AgentRunTool: persisted completed/failed returns without re-run ──────────
@@ -770,7 +836,12 @@ async fn agent_run_tool_returns_error_for_unknown_run_id() {
 #[tokio::test]
 async fn agent_run_tool_returns_persisted_completed_without_rerun() {
     let (os, storage) = build_worker_os_with_store(false);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
     persist_agent_run(
         storage,
         "owner-thread",
@@ -785,21 +856,27 @@ async fn agent_run_tool_returns_persisted_completed_without_rerun() {
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
-    let result = run_tool
+    let result = wrapped
         .execute(
-            json!({ "run_id": "run-1", "background": false }),
+            json!({ "run_id": "run-1" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(result.data["status"], json!("completed"));
+    assert_eq!(result.data["task_id"], json!("run-1"));
 }
 
 #[tokio::test]
 async fn agent_run_tool_returns_persisted_failed_with_error() {
     let (os, storage) = build_worker_os_with_store(false);
-    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
     persist_agent_run(
         storage,
         "owner-thread",
@@ -814,9 +891,9 @@ async fn agent_run_tool_returns_persisted_failed_with_error() {
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
-    let result = run_tool
+    let result = wrapped
         .execute(
-            json!({ "run_id": "run-1", "background": false }),
+            json!({ "run_id": "run-1" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
@@ -824,4 +901,5 @@ async fn agent_run_tool_returns_persisted_failed_with_error() {
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(result.data["status"], json!("failed"));
     assert_eq!(result.data["error"], json!("something broke"));
+    assert_eq!(result.data["task_id"], json!("run-1"));
 }

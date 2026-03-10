@@ -127,16 +127,6 @@ pub(super) fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
         .collect()
 }
 
-pub(super) struct LaunchNewRunRequest {
-    pub(super) run_id: String,
-    pub(super) owner_thread_id: String,
-    pub(super) agent_id: String,
-    pub(super) parent_run_id: Option<String>,
-    pub(super) child_thread_id: String,
-    pub(super) messages: Vec<Message>,
-    pub(super) initial_state: Option<Value>,
-    pub(super) background: bool,
-}
 
 pub(super) fn is_target_agent_visible(
     registry: &dyn AgentRegistry,

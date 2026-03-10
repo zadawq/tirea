@@ -3,8 +3,8 @@ use super::agent_tools::{
     AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
 use super::background_tasks::{
-    BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool, TaskStore,
-    BACKGROUND_TASKS_PLUGIN_ID,
+    BackgroundCapable, BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
+    TaskStore, BACKGROUND_TASKS_PLUGIN_ID,
 };
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
@@ -188,10 +188,18 @@ impl AgentOs {
         #[cfg(not(feature = "skills"))]
         let pinned_os = self.with_registry_overrides(agents_registry.clone());
 
-        let run_tool: Arc<dyn Tool> = Arc::new(AgentRunTool::new(
-            pinned_os.clone(),
-            self.background_task_manager.clone(),
-        ));
+        let task_store = self
+            .agent_state_store
+            .clone()
+            .map(TaskStore::new)
+            .map(Arc::new);
+        let run_tool: Arc<dyn Tool> = Arc::new(
+            BackgroundCapable::new(
+                AgentRunTool::new(pinned_os.clone()),
+                self.background_task_manager.clone(),
+            )
+            .with_task_store(task_store),
+        );
 
         let tools_plugin = AgentToolsPlugin::new(agents_registry).with_limits(
             self.agent_tools.discovery_max_entries,
