@@ -1,7 +1,12 @@
 use super::*;
-use crate::runtime::background_tasks::{BackgroundExecutable, TaskResult as BgTaskResult};
+use crate::runtime::background_tasks::{
+    BackgroundExecutable, TaskResult as BgTaskResult, TaskStatus,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
+
+const BG_PLANNED_MESSAGES_KEY: &str = "__agent_run_planned_messages";
+const BG_PLANNED_INITIAL_STATE_KEY: &str = "__agent_run_planned_initial_state";
 
 /// Arguments for the agent run tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -115,6 +120,28 @@ impl AgentRunTool {
 
         Ok((agent_id, messages, initial_state))
     }
+
+    fn encode_background_plan(
+        args: &mut Value,
+        agent_id: &str,
+        messages: &[Message],
+        initial_state: Option<Value>,
+    ) -> Result<(), ToolResult> {
+        let Some(obj) = args.as_object_mut() else {
+            return Err(ToolResult::error(
+                AGENT_RUN_TOOL_ID,
+                "agent_run arguments must be a JSON object",
+            ));
+        };
+
+        obj.insert("agent_id".to_string(), json!(agent_id));
+        obj.insert(BG_PLANNED_MESSAGES_KEY.to_string(), json!(messages));
+        obj.insert(
+            BG_PLANNED_INITIAL_STATE_KEY.to_string(),
+            initial_state.unwrap_or(Value::Null),
+        );
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -160,6 +187,49 @@ impl BackgroundExecutable for AgentRunTool {
         format!("agent:{agent_id}")
     }
 
+    fn prepare_background_args(
+        &self,
+        args: &mut Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<(), ToolResult> {
+        let parsed: AgentRunArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            ToolResult::error(
+                AGENT_RUN_TOOL_ID,
+                format!("invalid background agent_run args: {e}"),
+            )
+        })?;
+        let scope = ctx.run_config();
+        let caller_agent_id = scope_string(Some(scope), SCOPE_CALLER_AGENT_ID_KEY);
+        let (agent_id, messages, initial_state) = self.resolve_execution_context(
+            &parsed,
+            Some(scope),
+            caller_agent_id.as_deref(),
+            parsed.is_resume,
+        )?;
+        Self::encode_background_plan(args, &agent_id, &messages, initial_state)
+    }
+
+    fn foreground_task_status(&self, result: &ToolResult) -> (TaskStatus, Option<String>) {
+        let status = result
+            .data
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("completed");
+        let error = result
+            .data
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| result.message.clone());
+
+        match status {
+            "failed" => (TaskStatus::Failed, error),
+            "stopped" => (TaskStatus::Stopped, error),
+            "cancelled" => (TaskStatus::Cancelled, error),
+            _ => (TaskStatus::Completed, None),
+        }
+    }
+
     async fn execute_background(
         &self,
         task_id: &str,
@@ -177,24 +247,29 @@ impl BackgroundExecutable for AgentRunTool {
             .and_then(Value::as_str)
             .map(str::to_string);
 
-        let run_args: AgentRunArgs = match serde_json::from_value(args) {
+        let run_args: AgentRunArgs = match serde_json::from_value(args.clone()) {
             Ok(a) => a,
             Err(e) => return BgTaskResult::Failed(format!("invalid args: {e}")),
         };
 
-        let agent_id = normalize_opt(run_args.agent_id.clone());
-        let prompt = normalize_opt(run_args.prompt.clone());
-
-        let agent_id = match agent_id {
+        let agent_id = match normalize_opt(run_args.agent_id.clone()) {
             Some(id) => id,
             None => return BgTaskResult::Failed("missing agent_id".to_string()),
         };
 
-        let messages = if let Some(prompt) = prompt {
-            vec![Message::user(prompt)]
-        } else {
-            Vec::new()
+        let messages = match args
+            .get(BG_PLANNED_MESSAGES_KEY)
+            .cloned()
+            .map(serde_json::from_value::<Vec<Message>>)
+            .transpose()
+        {
+            Ok(messages) => messages.unwrap_or_default(),
+            Err(e) => return BgTaskResult::Failed(format!("invalid planned messages: {e}")),
         };
+        let initial_state = args
+            .get(BG_PLANNED_INITIAL_STATE_KEY)
+            .cloned()
+            .filter(|value| !value.is_null());
 
         let request = SubAgentExecutionRequest {
             agent_id,
@@ -204,7 +279,7 @@ impl BackgroundExecutable for AgentRunTool {
             parent_tool_call_id: None,
             parent_thread_id,
             messages,
-            initial_state: None,
+            initial_state,
             cancellation_token: Some(cancel_token),
         };
 

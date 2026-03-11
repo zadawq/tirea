@@ -436,6 +436,73 @@ async fn integration_fork_context_passes_state_to_sub_agent_thread() {
 }
 
 #[tokio::test]
+async fn integration_background_fork_context_passes_state_to_sub_agent_thread() {
+    use crate::contracts::storage::ThreadReader;
+
+    let (os, storage) = build_integration_os();
+
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
+
+    let fork_state = json!({
+        "project": "tirea",
+        "context": {"depth": 3}
+    });
+    let fork_messages = vec![
+        crate::contracts::thread::Message::system("parent-system"),
+        crate::contracts::thread::Message::user("analyze the code"),
+        crate::contracts::thread::Message::assistant("I'll start analyzing."),
+    ];
+
+    let mut fix = TestFixture::new();
+    fix.run_config = integration_caller_scope(fork_state.clone(), "parent-run-1", fork_messages);
+
+    let result = run_tool
+        .execute(
+            json!({
+                "agent_id": "worker",
+                "prompt": "continue analysis",
+                "fork_context": true,
+                "run_in_background": true
+            }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    assert_eq!(result.data["status"], json!("running_in_background"));
+
+    let run_id = result.data["task_id"].as_str().unwrap();
+    let child_thread_id = super::super::tools::sub_agent_thread_id(run_id);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let child_head = storage
+        .load(&child_thread_id)
+        .await
+        .expect("load should not error")
+        .expect("child thread should exist");
+
+    assert!(
+        child_head.thread.messages.len() >= 2,
+        "child should have forked messages + user prompt, got {} messages",
+        child_head.thread.messages.len()
+    );
+
+    let child_state = child_head.thread.rebuild_state().unwrap();
+    assert_eq!(
+        child_state["project"],
+        json!("tirea"),
+        "background child should have forked state: project"
+    );
+    assert_eq!(
+        child_state["context"]["depth"],
+        json!(3),
+        "background child should have forked state: nested context"
+    );
+}
+
+#[tokio::test]
 async fn integration_multiple_parallel_sub_agents_create_independent_threads() {
     use crate::contracts::storage::ThreadReader;
 

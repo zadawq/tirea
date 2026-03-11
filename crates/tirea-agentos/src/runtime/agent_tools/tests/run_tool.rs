@@ -238,6 +238,140 @@ async fn agent_run_tool_rejects_self_target_agent() {
 }
 
 #[tokio::test]
+async fn background_agent_run_tool_rejects_disallowed_target_agent() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .with_agent(
+            "reviewer",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(os, bg_mgr, None);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+    fix.run_config
+        .set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"])
+        .unwrap();
+
+    let result = wrapped
+        .execute(
+            json!({
+                "agent_id":"reviewer",
+                "prompt":"hi",
+                "run_in_background":true
+            }),
+            &fix.ctx_with("call-bg", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown or unavailable agent_id"));
+}
+
+#[tokio::test]
+async fn background_agent_run_tool_rejects_self_target_agent() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "caller",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .with_agent(
+            "worker",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(os, bg_mgr, None);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = wrapped
+        .execute(
+            json!({
+                "agent_id":"caller",
+                "prompt":"hi",
+                "run_in_background":true
+            }),
+            &fix.ctx_with("call-bg", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown or unavailable agent_id"));
+}
+
+#[tokio::test]
+async fn background_agent_run_tool_rejects_excluded_agent_without_persisting_task() {
+    let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent(
+            "worker",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .with_agent(
+            "secret",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(
+        os,
+        bg_mgr.clone(),
+        Some(storage.clone() as Arc<dyn ThreadStore>),
+    );
+    let task_store = TaskStore::new(storage as Arc<dyn ThreadStore>);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+    fix.run_config
+        .set(SCOPE_EXCLUDED_AGENTS_KEY, vec!["secret"])
+        .unwrap();
+
+    let result = wrapped
+        .execute(
+            json!({
+                "agent_id":"secret",
+                "prompt":"hi",
+                "run_in_background": true
+            }),
+            &fix.ctx_with("call-bg", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown or unavailable agent_id"));
+
+    let persisted = task_store
+        .list_tasks_for_owner("owner-thread")
+        .await
+        .expect("list should succeed");
+    assert!(
+        persisted.is_empty(),
+        "validation failure should not persist a task"
+    );
+    assert!(
+        bg_mgr.list("owner-thread", None).await.is_empty(),
+        "validation failure should not spawn a live background task"
+    );
+}
+
+#[tokio::test]
 async fn agent_run_tool_surfaces_task_store_load_failure_on_start() {
     let mem_store = Arc::new(tirea_store_adapters::MemoryStore::new());
     let storage: Arc<dyn ThreadStore> = Arc::new(TaskLoadFailingStore { inner: mem_store });
@@ -717,6 +851,34 @@ async fn agent_run_tool_requires_prompt_for_new_run() {
 }
 
 #[tokio::test]
+async fn background_agent_run_tool_requires_prompt_for_new_run() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(os, bg_mgr, None);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = wrapped
+        .execute(
+            json!({ "agent_id": "worker", "run_in_background": true }),
+            &fix.ctx_with("call-bg", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("missing 'prompt'"));
+}
+
+#[tokio::test]
 async fn agent_run_tool_requires_agent_id_for_new_run() {
     let os = AgentOs::builder()
         .with_agent(
@@ -733,6 +895,34 @@ async fn agent_run_tool_requires_agent_id_for_new_run() {
         .execute(
             json!({ "prompt": "hello", "run_id": "test-run" }),
             &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("missing 'agent_id'"));
+}
+
+#[tokio::test]
+async fn background_agent_run_tool_requires_agent_id_for_new_run() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(os, bg_mgr, None);
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = wrapped
+        .execute(
+            json!({ "prompt": "hello", "run_in_background": true }),
+            &fix.ctx_with("call-bg", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -867,4 +1057,107 @@ async fn agent_run_tool_returns_persisted_failed_with_error() {
     assert_eq!(result.data["status"], json!("failed"));
     assert_eq!(result.data["error"], json!("something broke"));
     assert_eq!(result.data["task_id"], json!("run-1"));
+}
+
+#[tokio::test]
+async fn foreground_agent_run_persists_failed_task_status() {
+    let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_provider("p1", genai::Client::default())
+        .with_model(
+            "m1",
+            crate::composition::ModelDefinition::new("p1", "gpt-4o-mini"),
+        )
+        .with_agent(
+            "worker",
+            crate::runtime::AgentDefinition::new("missing-model-ref"),
+        )
+        .build()
+        .unwrap();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = wrapped
+        .execute(
+            json!({ "agent_id": "worker", "prompt": "hi" }),
+            &fix.ctx_with("call-fg", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    assert_eq!(result.data["status"], json!("failed"));
+
+    let run_id = result.data["run_id"]
+        .as_str()
+        .expect("foreground run should return run_id");
+    let task_store = TaskStore::new(storage as Arc<dyn ThreadStore>);
+    let task = task_store
+        .load_task(run_id)
+        .await
+        .unwrap()
+        .expect("foreground run task should persist");
+    assert_eq!(
+        task.status,
+        crate::runtime::background_tasks::TaskStatus::Failed
+    );
+}
+
+#[test]
+fn foreground_agent_run_task_status_mapping_tracks_embedded_terminal_status() {
+    let tool = AgentRunTool::new(AgentOs::builder().build().unwrap());
+
+    let failed = ToolResult::success(
+        AGENT_RUN_TOOL_ID,
+        json!({"status":"failed","error":"child failed"}),
+    );
+    let stopped = ToolResult::success(
+        AGENT_RUN_TOOL_ID,
+        json!({"status":"stopped","error":"child stopped"}),
+    );
+    let cancelled = ToolResult::success(
+        AGENT_RUN_TOOL_ID,
+        json!({"status":"cancelled","error":"child cancelled"}),
+    );
+    let completed = ToolResult::success(AGENT_RUN_TOOL_ID, json!({"status":"completed"}));
+
+    assert_eq!(
+        <AgentRunTool as crate::runtime::background_tasks::BackgroundExecutable>::foreground_task_status(
+            &tool,
+            &failed,
+        ),
+        (
+            crate::runtime::background_tasks::TaskStatus::Failed,
+            Some("child failed".to_string())
+        )
+    );
+    assert_eq!(
+        <AgentRunTool as crate::runtime::background_tasks::BackgroundExecutable>::foreground_task_status(
+            &tool,
+            &stopped,
+        ),
+        (
+            crate::runtime::background_tasks::TaskStatus::Stopped,
+            Some("child stopped".to_string())
+        )
+    );
+    assert_eq!(
+        <AgentRunTool as crate::runtime::background_tasks::BackgroundExecutable>::foreground_task_status(
+            &tool,
+            &cancelled,
+        ),
+        (
+            crate::runtime::background_tasks::TaskStatus::Cancelled,
+            Some("child cancelled".to_string())
+        )
+    );
+    assert_eq!(
+        <AgentRunTool as crate::runtime::background_tasks::BackgroundExecutable>::foreground_task_status(
+            &tool,
+            &completed,
+        ),
+        (crate::runtime::background_tasks::TaskStatus::Completed, None)
+    );
 }

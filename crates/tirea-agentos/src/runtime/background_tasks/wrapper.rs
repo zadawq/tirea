@@ -70,6 +70,32 @@ pub trait BackgroundExecutable: Tool {
         )
     }
 
+    /// Validate and normalize arguments for background execution before any
+    /// task state is persisted or spawned.
+    ///
+    /// Tools can use this to perform the same semantic checks they enforce in
+    /// foreground mode and to inject hidden, precomputed execution inputs that
+    /// can safely cross the spawn boundary.
+    fn prepare_background_args(
+        &self,
+        _args: &mut Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<(), ToolResult> {
+        Ok(())
+    }
+
+    /// Derive the durable terminal task status for a foreground execution.
+    ///
+    /// The default implementation treats tool-level errors as failed tasks and
+    /// every other result as completed.
+    fn foreground_task_status(&self, result: &ToolResult) -> (TaskStatus, Option<String>) {
+        if result.is_error() {
+            (TaskStatus::Failed, result.message.clone())
+        } else {
+            (TaskStatus::Completed, None)
+        }
+    }
+
     /// Execute the tool logic in background mode.
     ///
     /// Receives a `task_id` (new or resumed) and a cancellation token but NO
@@ -417,6 +443,12 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
         ctx: &ToolCallContext<'_>,
         params: &ExecuteParams<'_>,
     ) -> Result<ToolResult, ToolError> {
+        if params.background {
+            if let Err(result) = self.inner.prepare_background_args(&mut args, ctx) {
+                return Ok(result);
+            }
+        }
+
         let description = self.inner.task_description(&args);
         let metadata = self.inner.task_metadata(&args);
 
@@ -484,16 +516,7 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
             let result = self.inner.execute(args, ctx).await?;
 
             // Infer terminal status from ToolResult for persistence.
-            let status = if result.is_error() {
-                TaskStatus::Failed
-            } else {
-                TaskStatus::Completed
-            };
-            let error = if result.is_error() {
-                result.message.clone()
-            } else {
-                None
-            };
+            let (status, error) = self.inner.foreground_task_status(&result);
             self.persist_result(params.task_id, status, error).await?;
 
             Ok(result)
