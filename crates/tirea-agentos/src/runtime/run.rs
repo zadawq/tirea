@@ -1,6 +1,6 @@
 use super::errors::{AgentOsResolveError, AgentOsRunError};
 use super::prepare::{
-    clear_suspended_tool_call_state, request_has_user_input, run_lifecycle_running_patch,
+    clear_tool_call_scope_state, request_has_user_input, run_lifecycle_running_patch,
     run_scope_cleanup_patches, set_or_validate_parent_thread_id, ActiveRunCleanupGuard,
 };
 use super::types::{AgentOs, AgentStateStoreStateCommitter, PreparedRun, RunStream};
@@ -72,7 +72,7 @@ impl AgentOs {
         let Some(head) = store.load(thread_id).await? else {
             return Ok(());
         };
-        if let Some(cleaned) = clear_suspended_tool_call_state(&head.thread.state) {
+        if let Some(cleaned) = clear_tool_call_scope_state(&head.thread.state) {
             run_request.state = Some(cleaned);
         }
         Ok(())
@@ -227,8 +227,10 @@ impl AgentOs {
         request: RunRequest,
         resolved: ResolvedRun,
     ) -> Result<PreparedRun, AgentOsRunError> {
-        self.prepare_run_with_persistence(request, resolved, true)
+        let owner_agent_id = request.agent_id.clone();
+        self.prepare_active_run_with_persistence(&owner_agent_id, request, resolved, true, false)
             .await
+            .map(|(prepared, _thread_id, _run_id)| prepared)
     }
 
     /// Prepare a resolved run and control whether the run should be persisted.

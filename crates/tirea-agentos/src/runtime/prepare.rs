@@ -8,7 +8,6 @@ use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus
 use crate::contracts::thread::{Message, Thread};
 use crate::loop_runtime::loop_runner::AgentLoopError;
 use std::sync::Arc;
-use tirea_contract::runtime::suspended_calls_from_state;
 use tirea_state::{Op, Patch, TrackedPatch};
 
 pub(super) fn now_unix_millis() -> u64 {
@@ -132,30 +131,8 @@ pub(super) fn request_has_user_input(messages: &[Message]) -> bool {
     })
 }
 
-pub(super) fn clear_suspended_tool_call_state(
-    state: &serde_json::Value,
-) -> Option<serde_json::Value> {
-    let suspended = suspended_calls_from_state(state);
-    if suspended.is_empty() {
-        return None;
-    }
-
+pub(super) fn clear_tool_call_scope_state(state: &serde_json::Value) -> Option<serde_json::Value> {
     let mut cleaned_state = state.clone();
     let root = cleaned_state.as_object_mut()?;
-    let scope_obj = root
-        .get_mut("__tool_call_scope")
-        .and_then(serde_json::Value::as_object_mut)?;
-
-    let mut removed_any = false;
-    for call_id in suspended.keys() {
-        if scope_obj.remove(call_id).is_some() {
-            removed_any = true;
-        }
-    }
-
-    if removed_any && scope_obj.is_empty() {
-        root.remove("__tool_call_scope");
-    }
-
-    removed_any.then_some(cleaned_state)
+    root.remove("__tool_call_scope").map(|_| cleaned_state)
 }

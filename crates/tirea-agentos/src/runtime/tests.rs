@@ -3752,6 +3752,151 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     assert_run_lifecycle_state(&state_after_run2, "run-2", "done", Some("stopped:custom"));
 }
 
+#[tokio::test]
+async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
+    use futures::StreamExt;
+    use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk};
+    use tirea_store_adapters::MemoryStore;
+
+    #[derive(Debug)]
+    struct RepeatToolCallLlm {
+        call_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::loop_runtime::loop_runner::LlmExecutor for RepeatToolCallLlm {
+        async fn exec_chat_response(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<genai::chat::ChatResponse> {
+            unreachable!("streaming path only")
+        }
+
+        async fn exec_chat_stream_events(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
+            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            if idx % 2 == 0 {
+                let tool_call = genai::chat::ToolCall {
+                    call_id: "call_repeat".to_string(),
+                    fn_name: "echo".to_string(),
+                    fn_arguments: Value::String(json!({"idx": idx / 2}).to_string()),
+                    thought_signatures: None,
+                };
+                Ok(Box::pin(futures::stream::iter(vec![
+                    Ok(ChatStreamEvent::Start),
+                    Ok(ChatStreamEvent::ToolCallChunk(ToolChunk {
+                        tool_call: tool_call.clone(),
+                    })),
+                    Ok(ChatStreamEvent::End(StreamEnd {
+                        captured_content: Some(MessageContent::from_tool_calls(vec![tool_call])),
+                        ..Default::default()
+                    })),
+                ])))
+            } else {
+                Ok(Box::pin(futures::stream::iter(vec![
+                    Ok(ChatStreamEvent::Start),
+                    Ok(ChatStreamEvent::Chunk(StreamChunk {
+                        content: format!("done #{idx}"),
+                    })),
+                    Ok(ChatStreamEvent::End(StreamEnd::default())),
+                ])))
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            "repeat_tool_call_llm"
+        }
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("echo".to_string(), Arc::new(DecisionEchoTool));
+    let os = AgentOs::builder()
+        .with_tools(tools)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .build()
+        .unwrap();
+
+    let thread_id = "t-tool-call-scope-cleanup";
+    let llm = Arc::new(RepeatToolCallLlm {
+        call_count: AtomicUsize::new(0),
+    }) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>;
+
+    let mut resolved1 = os.resolve("a1").unwrap();
+    resolved1.agent = resolved1.agent.with_llm_executor(llm.clone());
+    let prepared1 = os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some(thread_id.to_string()),
+                run_id: Some("run-1".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: RunOrigin::default(),
+                state: None,
+                messages: vec![Message::user("go")],
+                initial_decisions: vec![],
+            },
+            resolved1,
+        )
+        .await
+        .unwrap();
+    let run1 = AgentOs::execute_prepared(prepared1).unwrap();
+    let _events1: Vec<_> = run1.events.collect().await;
+
+    let head_after_run1 = storage.load(thread_id).await.unwrap().unwrap();
+    let state_after_run1 = head_after_run1.thread.rebuild_state().unwrap();
+    assert_eq!(
+        state_after_run1["__tool_call_scope"]["call_repeat"]["tool_call_state"]["status"],
+        json!("succeeded"),
+    );
+
+    let mut resolved2 = os.resolve("a1").unwrap();
+    resolved2.agent = resolved2.agent.with_llm_executor(llm);
+    let prepared2 = os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some(thread_id.to_string()),
+                run_id: Some("run-2".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: RunOrigin::default(),
+                state: None,
+                messages: vec![Message::user("go again")],
+                initial_decisions: vec![],
+            },
+            resolved2,
+        )
+        .await
+        .unwrap();
+
+    let head_after_prepare2 = storage.load(thread_id).await.unwrap().unwrap();
+    let state_after_prepare2 = head_after_prepare2.thread.rebuild_state().unwrap();
+    assert!(
+        state_after_prepare2["__tool_call_scope"].is_null(),
+        "prepare_run should clear previous tool-call scope before a new user run: {state_after_prepare2}",
+    );
+
+    let run2 = AgentOs::execute_prepared(prepared2).unwrap();
+    let events2: Vec<_> = run2.events.collect().await;
+    assert!(
+        events2
+            .iter()
+            .any(|event| matches!(event, AgentEvent::RunFinish { .. })),
+        "second run should finish successfully after tool-call scope cleanup: {events2:?}",
+    );
+}
+
 // ── SystemWiring tests ───────────────────────────────────────────────────────
 
 /// A minimal test SystemWiring that contributes a tool and a behavior.
