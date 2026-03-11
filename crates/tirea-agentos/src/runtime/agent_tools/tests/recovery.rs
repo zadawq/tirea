@@ -1,14 +1,115 @@
 use super::*;
 use crate::contracts::runtime::phase::StepContext;
-use crate::contracts::storage::ThreadStore;
+use crate::contracts::storage::{
+    Committed, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
+    ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
+    VersionPrecondition,
+};
+use crate::contracts::thread::{Thread, ThreadChangeSet};
 use crate::loop_runtime::loop_runner::RunCancellationToken;
 use crate::runtime::background_tasks::{
     NewTaskSpec, SpawnParams, TaskResult, TaskStatus, TaskStore,
 };
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn recovery_task_store() -> Arc<TaskStore> {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     Arc::new(TaskStore::new(storage as Arc<dyn ThreadStore>))
+}
+
+struct FailingTaskAppendStore {
+    inner: Arc<tirea_store_adapters::MemoryStore>,
+    fail_task_appends: AtomicUsize,
+}
+
+#[async_trait]
+impl ThreadReader for FailingTaskAppendStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+        self.inner.load(thread_id).await
+    }
+
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        self.inner.list_threads(query).await
+    }
+
+    async fn load_messages(
+        &self,
+        thread_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, ThreadStoreError> {
+        self.inner.load_messages(thread_id, query).await
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+        self.inner.load_run(run_id).await
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+        self.inner.list_runs(query).await
+    }
+
+    async fn active_run_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<RunRecord>, ThreadStoreError> {
+        self.inner.active_run_for_thread(thread_id).await
+    }
+}
+
+#[async_trait]
+impl ThreadWriter for FailingTaskAppendStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        self.inner.create(thread).await
+    }
+
+    async fn append(
+        &self,
+        thread_id: &str,
+        delta: &ThreadChangeSet,
+        precondition: VersionPrecondition,
+    ) -> Result<Committed, ThreadStoreError> {
+        if thread_id.starts_with(crate::runtime::background_tasks::TASK_THREAD_PREFIX)
+            && self
+                .fail_task_appends
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    if remaining > 0 {
+                        Some(remaining - 1)
+                    } else {
+                        None
+                    }
+                })
+                .is_ok()
+        {
+            return Err(ThreadStoreError::Io(std::io::Error::other(
+                "injected task persistence failure",
+            )));
+        }
+
+        self.inner.append(thread_id, delta, precondition).await
+    }
+
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+        self.inner.delete(thread_id).await
+    }
+
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+        self.inner.save(thread).await
+    }
+}
+
+fn recovery_task_store_with_failing_backend() -> (Arc<TaskStore>, Arc<FailingTaskAppendStore>) {
+    let storage = Arc::new(FailingTaskAppendStore {
+        inner: Arc::new(tirea_store_adapters::MemoryStore::new()),
+        fail_task_appends: AtomicUsize::new(0),
+    });
+    (
+        Arc::new(TaskStore::new(storage.clone() as Arc<dyn ThreadStore>)),
+        storage,
+    )
 }
 
 async fn persist_agent_run(
@@ -466,6 +567,49 @@ async fn recovery_plugin_detects_multiple_orphans_creates_one_suspension() {
     assert_eq!(
         suspended_count, 1,
         "only one recovery suspension should be created"
+    );
+}
+
+#[tokio::test]
+async fn recovery_plugin_does_not_create_suspension_when_stop_persist_fails() {
+    let (task_store, backend) = recovery_task_store_with_failing_backend();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    backend.fail_task_appends.store(1, Ordering::SeqCst);
+
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store.clone()));
+    let thread = Thread::with_initial_state("owner-1", json!({}));
+    let doc = thread.rebuild_state().unwrap();
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = owner_step(&fixture);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    assert_eq!(
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Running,
+        "recovery should not advertise resumability when stopped status was not persisted"
+    );
+
+    let updated = fixture.updated_state();
+    let has_suspended = updated
+        .get("__tool_call_scope")
+        .and_then(|scope| scope.as_object())
+        .map(|obj| {
+            obj.values()
+                .any(|value| value.get("suspended_call").is_some())
+        })
+        .unwrap_or(false);
+    assert!(
+        !has_suspended,
+        "recovery interaction must not be created when orphan stop persistence fails"
     );
 }
 

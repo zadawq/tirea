@@ -6,7 +6,6 @@ use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::{Tool, ToolStatus};
 use crate::contracts::storage::RunOrigin;
-use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
 use crate::loop_runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,

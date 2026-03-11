@@ -76,9 +76,8 @@ impl AgentBehavior for AgentRecoveryPlugin {
                 continue;
             }
             if !self.bg_manager.contains_any(&task.task_id).await {
-                orphaned_run_ids.push(task.task_id.clone());
                 if let Some(task_store) = &self.task_store {
-                    let _ = task_store
+                    if task_store
                         .persist_foreground_result(
                             &task.task_id,
                             TaskStatus::Stopped,
@@ -88,7 +87,11 @@ impl AgentBehavior for AgentRecoveryPlugin {
                             ),
                             None,
                         )
-                        .await;
+                        .await
+                        .is_ok()
+                    {
+                        orphaned_run_ids.push(task.task_id.clone());
+                    }
                 }
             }
         }

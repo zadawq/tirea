@@ -825,6 +825,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_tool_marks_cancel_requested_for_descendant_tree() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let task_store = Arc::new(TaskStore::new(storage as Arc<dyn ThreadStore>));
+
+        for (task_id, parent_task_id) in [("root", None), ("child", Some("root"))] {
+            task_store
+                .create_task(super::super::NewTaskSpec {
+                    task_id: task_id.to_string(),
+                    owner_thread_id: "thread-1".to_string(),
+                    task_type: "agent_run".to_string(),
+                    description: format!("agent:{task_id}"),
+                    parent_task_id: parent_task_id.map(str::to_string),
+                    supports_resume: true,
+                    metadata: json!({}),
+                })
+                .await
+                .unwrap();
+        }
+
+        for (task_id, parent_task_id) in [("root", None), ("child", Some("root"))] {
+            mgr.spawn_with_id(
+                SpawnParams {
+                    task_id: task_id.to_string(),
+                    owner_thread_id: "thread-1".to_string(),
+                    task_type: "agent_run".to_string(),
+                    description: format!("agent:{task_id}"),
+                    parent_task_id: parent_task_id.map(str::to_string),
+                    metadata: json!({}),
+                },
+                crate::loop_runtime::loop_runner::RunCancellationToken::new(),
+                |cancel| async move {
+                    cancel.cancelled().await;
+                    super::super::types::TaskResult::Cancelled
+                },
+            )
+            .await;
+        }
+
+        let tool = TaskCancelTool::new(mgr).with_task_store(Some(task_store.clone()));
+        let fix = fixture_with_thread("thread-1");
+        let result = tool
+            .execute(json!({"task_id": "root"}), &fix.ctx())
+            .await
+            .unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.data["cancelled_count"], 2);
+
+        for task_id in ["root", "child"] {
+            let task = task_store
+                .load_task(task_id)
+                .await
+                .unwrap()
+                .expect("task should exist");
+            assert!(
+                task.cancel_requested_at_ms.is_some(),
+                "expected durable cancel_requested mark for {task_id}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn cancel_tool_unknown_task_returns_error() {
         let mgr = Arc::new(BackgroundTaskManager::new());
         let tool = TaskCancelTool::new(mgr);
