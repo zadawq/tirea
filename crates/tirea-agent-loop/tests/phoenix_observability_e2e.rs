@@ -284,7 +284,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         })
         .build();
 
-    let config = BaseAgent::new(model_name.clone())
+    let config = BaseAgent::new("gpt-4")
         .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))

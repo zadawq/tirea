@@ -25,11 +25,12 @@ fn make_os(
     provider_client: genai::Client,
     configured_model: &str,
     wire_model: &str,
+    observed_model: &str,
     observed_provider: &str,
 ) -> AgentOs {
     let plugin = Arc::new(
         LLMMetryPlugin::new(InMemorySink::new())
-            .with_model(wire_model)
+            .with_model(observed_model)
             .with_provider(observed_provider),
     );
 
@@ -113,6 +114,7 @@ async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
         storage.clone(),
         provider_client,
         configured_model,
+        "gpt-4",
         &observed_model,
         provider_name,
     ));
@@ -213,6 +215,7 @@ async fn e2e_agentos_server_exports_llm_error_observability_to_phoenix() {
         storage.clone(),
         provider_client,
         configured_model,
+        "gpt-4",
         &observed_model,
         provider_name,
     ));
