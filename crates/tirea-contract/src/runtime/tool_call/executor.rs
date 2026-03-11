@@ -1,7 +1,8 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::behavior::AgentBehavior;
+use crate::runtime::run::RunExecutionContext;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
-use crate::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
+use crate::runtime::tool_call::{CallerContext, Tool, ToolDescriptor, ToolResult};
 use crate::thread::{Message, ToolCall};
 use crate::RunConfig;
 use async_trait::async_trait;
@@ -54,6 +55,8 @@ pub struct ToolExecutionRequest<'a> {
     pub agent_behavior: Option<&'a dyn AgentBehavior>,
     pub activity_manager: Arc<dyn ActivityManager>,
     pub run_config: &'a RunConfig,
+    pub execution_ctx: RunExecutionContext,
+    pub caller_context: CallerContext,
     pub thread_id: &'a str,
     pub thread_messages: &'a [Arc<Message>],
     pub state_version: u64,

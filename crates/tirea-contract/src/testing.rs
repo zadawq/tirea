@@ -8,8 +8,10 @@ use crate::runtime::phase::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
 };
+use crate::runtime::run::RunExecutionContext;
 use crate::runtime::run::{RunAction, TerminationReason};
 use crate::runtime::tool_call::suspension::Suspension;
+use crate::runtime::tool_call::CallerContext;
 use crate::runtime::tool_call::ToolDescriptor;
 use crate::runtime::{
     PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode,
@@ -33,6 +35,8 @@ pub struct TestFixture {
     pub doc: DocCell,
     pub ops: Mutex<Vec<Op>>,
     pub run_config: RunConfig,
+    pub execution_ctx: RunExecutionContext,
+    pub caller_context: CallerContext,
     pub pending_messages: Mutex<Vec<Arc<Message>>>,
     pub messages: Vec<Arc<Message>>,
 }
@@ -43,6 +47,8 @@ impl TestFixture {
             doc: DocCell::new(serde_json::json!({})),
             ops: Mutex::new(Vec::new()),
             run_config: RunConfig::default(),
+            execution_ctx: RunExecutionContext::default(),
+            caller_context: CallerContext::default(),
             pending_messages: Mutex::new(Vec::new()),
             messages: Vec::new(),
         }
@@ -65,6 +71,8 @@ impl TestFixture {
             &self.pending_messages,
             NoOpActivityManager::arc(),
         )
+        .with_execution_context(self.execution_ctx.clone())
+        .with_caller_context(self.caller_context.clone())
     }
 
     pub fn ctx_with(
@@ -81,6 +89,8 @@ impl TestFixture {
             &self.pending_messages,
             NoOpActivityManager::arc(),
         )
+        .with_execution_context(self.execution_ctx.clone())
+        .with_caller_context(self.caller_context.clone())
     }
 
     pub fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {

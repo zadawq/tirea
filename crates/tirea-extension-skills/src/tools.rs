@@ -4,7 +4,6 @@ use crate::{
     SkillState, SkillStateAction, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
     SKILL_SCRIPT_TOOL_ID,
 };
-use crate::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
@@ -14,7 +13,7 @@ use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
 };
-use tirea_contract::scope::is_scope_allowed;
+use tirea_contract::scope::{is_scope_allowed, ScopeDomain};
 use tirea_extension_permission::{
     permission_state_action, PermissionAction, ToolPermissionBehavior,
 };
@@ -88,10 +87,9 @@ impl SkillActivateTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.run_config()),
+            Some(ctx.run_config().policy()),
             &meta.id,
-            SCOPE_ALLOWED_SKILLS_KEY,
-            SCOPE_EXCLUDED_SKILLS_KEY,
+            ScopeDomain::Skill,
         ) {
             return Ok(ToolExecutionEffect::from(tool_error(
                 SKILL_ACTIVATE_TOOL_ID,
@@ -295,10 +293,9 @@ impl Tool for LoadSkillResourceTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.run_config()),
+            Some(ctx.run_config().policy()),
             &meta.id,
-            SCOPE_ALLOWED_SKILLS_KEY,
-            SCOPE_EXCLUDED_SKILLS_KEY,
+            ScopeDomain::Skill,
         ) {
             return Ok(tool_error(
                 tool_name,
@@ -448,10 +445,9 @@ impl Tool for SkillScriptTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.run_config()),
+            Some(ctx.run_config().policy()),
             &meta.id,
-            SCOPE_ALLOWED_SKILLS_KEY,
-            SCOPE_EXCLUDED_SKILLS_KEY,
+            ScopeDomain::Skill,
         ) {
             return Ok(tool_error(
                 SKILL_SCRIPT_TOOL_ID,

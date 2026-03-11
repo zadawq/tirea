@@ -5,6 +5,7 @@
 //! entity (`Thread`) invisible to tools and plugins.
 
 use crate::runtime::activity::ActivityManager;
+use crate::runtime::run::RunExecutionContext;
 use crate::runtime::{ToolCallResume, ToolCallState};
 use crate::thread::Message;
 use crate::RunConfig;
@@ -21,7 +22,6 @@ use tokio_util::sync::CancellationToken;
 
 type PatchHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
 const TOOL_PROGRESS_STREAM_PREFIX: &str = "tool_call:";
-const TOOL_SCOPE_CALLER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
 /// Scope key injected by the framework for nested sub-runs.
 ///
 /// When present, progress events emitted from the current tool call are linked
@@ -152,6 +152,53 @@ impl ActivityManagerProgressSink {
     }
 }
 
+/// Typed caller metadata exposed to tool executions.
+#[derive(Clone, Debug, Default)]
+pub struct CallerContext {
+    thread_id: Option<String>,
+    run_id: Option<String>,
+    agent_id: Option<String>,
+    messages: Arc<[Arc<Message>]>,
+}
+
+impl CallerContext {
+    pub fn new(
+        thread_id: Option<String>,
+        run_id: Option<String>,
+        agent_id: Option<String>,
+        messages: Vec<Arc<Message>>,
+    ) -> Self {
+        Self {
+            thread_id: thread_id
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            run_id: run_id
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            agent_id: agent_id
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            messages: Arc::<[Arc<Message>]>::from(messages),
+        }
+    }
+
+    pub fn thread_id(&self) -> Option<&str> {
+        self.thread_id.as_deref()
+    }
+
+    pub fn run_id(&self) -> Option<&str> {
+        self.run_id.as_deref()
+    }
+
+    pub fn agent_id(&self) -> Option<&str> {
+        self.agent_id.as_deref()
+    }
+
+    pub fn messages(&self) -> &[Arc<Message>] {
+        self.messages.as_ref()
+    }
+}
+
 impl ToolCallProgressSink for ActivityManagerProgressSink {
     fn report(
         &self,
@@ -183,6 +230,8 @@ pub struct ToolCallContext<'a> {
     call_id: String,
     source: String,
     run_config: &'a RunConfig,
+    execution_ctx: RunExecutionContext,
+    caller_context: CallerContext,
     pending_messages: &'a Mutex<Vec<Arc<Message>>>,
     activity_manager: Arc<dyn ActivityManager>,
     tool_call_progress_sink: Arc<dyn ToolCallProgressSink>,
@@ -221,6 +270,8 @@ impl<'a> ToolCallContext<'a> {
             call_id: call_id.into(),
             source: source.into(),
             run_config,
+            execution_ctx: RunExecutionContext::default(),
+            caller_context: CallerContext::default(),
             pending_messages,
             activity_manager,
             tool_call_progress_sink,
@@ -232,6 +283,18 @@ impl<'a> ToolCallContext<'a> {
     #[must_use]
     pub fn with_cancellation_token(mut self, token: &'a CancellationToken) -> Self {
         self.cancellation_token = Some(token);
+        self
+    }
+
+    #[must_use]
+    pub fn with_execution_context(mut self, execution_ctx: RunExecutionContext) -> Self {
+        self.execution_ctx = execution_ctx;
+        self
+    }
+
+    #[must_use]
+    pub fn with_caller_context(mut self, caller_context: CallerContext) -> Self {
+        self.caller_context = caller_context;
         self
     }
 
@@ -302,14 +365,12 @@ impl<'a> ToolCallContext<'a> {
         self.run_config
     }
 
-    /// Typed run config accessor.
-    pub fn config_state<T: State>(&self) -> TireaResult<T::Ref<'_>> {
-        Ok(self.run_config.get::<T>())
+    pub fn execution_ctx(&self) -> &RunExecutionContext {
+        &self.execution_ctx
     }
 
-    /// Read a run config value by key.
-    pub fn config_value(&self, key: &str) -> Option<&Value> {
-        self.run_config.value(key)
+    pub fn caller_context(&self) -> &CallerContext {
+        &self.caller_context
     }
 
     // =========================================================================
@@ -464,12 +525,6 @@ impl<'a> ToolCallContext<'a> {
             .map(ToOwned::to_owned)
     }
 
-    fn scope_string(&self, key: &str) -> Option<String> {
-        self.run_config
-            .value(key)
-            .and_then(|value| value.as_str().map(ToOwned::to_owned))
-    }
-
     fn validate_progress_value(name: &str, value: Option<f64>) -> TireaResult<()> {
         let Some(value) = value else {
             return Ok(());
@@ -496,19 +551,19 @@ impl<'a> ToolCallContext<'a> {
         Self::validate_progress_value("progress loaded", update.loaded)?;
         Self::validate_progress_value("progress total", update.total)?;
 
-        let run_id = self.scope_string("run_id");
-        let parent_run_id = self.scope_string("parent_run_id");
-        let thread_id = self.scope_string(TOOL_SCOPE_CALLER_THREAD_ID_KEY);
-        let parent_call_id = self
-            .scope_string(TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY)
-            .and_then(|id| {
-                let trimmed = id.trim();
-                if trimmed.is_empty() || trimmed == self.call_id {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            });
+        let run_id = self.execution_ctx.run_id_opt().map(ToOwned::to_owned);
+        let parent_run_id = self
+            .execution_ctx
+            .parent_run_id_opt()
+            .map(ToOwned::to_owned);
+        let thread_id = self.caller_context.thread_id().map(ToOwned::to_owned);
+        let parent_call_id = self.execution_ctx.parent_tool_call_id_opt().and_then(|id| {
+            if id == self.call_id {
+                None
+            } else {
+                Some(id.to_string())
+            }
+        });
         let parent_node_id = parent_call_id
             .as_ref()
             .map(|id| format!("{TOOL_PROGRESS_STREAM_PREFIX}{id}"))
@@ -679,6 +734,24 @@ mod tests {
         )
     }
 
+    fn execution_ctx(run_id: &str) -> RunExecutionContext {
+        RunExecutionContext::new(
+            run_id.to_string(),
+            None,
+            "agent".to_string(),
+            crate::storage::RunOrigin::Internal,
+        )
+    }
+
+    fn caller_context(thread_id: &str) -> CallerContext {
+        CallerContext::new(
+            Some(thread_id.to_string()),
+            Some("run-parent".to_string()),
+            Some("caller".to_string()),
+            vec![Arc::new(Message::user("seed"))],
+        )
+    }
+
     #[test]
     fn test_identity() {
         let doc = DocCell::new(json!({}));
@@ -693,16 +766,24 @@ mod tests {
     }
 
     #[test]
-    fn test_scope_access() {
+    fn test_typed_context_access() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
         let mut scope = RunConfig::new();
-        scope.set("user_id", "u1").unwrap();
+        scope
+            .set_parent_tool_call_id("call-parent")
+            .expect("set parent tool call id");
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, &scope, &pending);
-        assert_eq!(ctx.config_value("user_id"), Some(&json!("u1")));
-        assert_eq!(ctx.config_value("missing"), None);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending)
+            .with_execution_context(execution_ctx("run-1"))
+            .with_caller_context(caller_context("thread-1"));
+
+        assert_eq!(ctx.run_config().parent_tool_call_id(), Some("call-parent"));
+        assert_eq!(ctx.execution_ctx().run_id_opt(), Some("run-1"));
+        assert_eq!(ctx.caller_context().thread_id(), Some("thread-1"));
+        assert_eq!(ctx.caller_context().agent_id(), Some("caller"));
+        assert_eq!(ctx.caller_context().messages().len(), 1);
     }
 
     #[test]
@@ -1074,19 +1155,22 @@ mod tests {
     fn test_report_tool_call_progress_writes_lineage_and_metadata() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let mut scope = RunConfig::new();
-        scope.set("run_id", "run-123").expect("set run_id");
-        scope
-            .set("parent_run_id", "run-parent")
-            .expect("set parent_run_id");
-        scope
-            .set(TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY, "call-parent")
-            .expect("set parent tool call id");
-        scope
-            .set("__agent_tool_caller_thread_id", "thread-abc")
-            .expect("set caller thread id");
+        let scope = RunConfig::new();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
+        let execution_ctx = RunExecutionContext::new(
+            "run-123".to_string(),
+            Some("run-parent".to_string()),
+            "agent".to_string(),
+            crate::storage::RunOrigin::Internal,
+        )
+        .with_parent_tool_call_id("call-parent");
+        let caller_context = CallerContext::new(
+            Some("thread-abc".to_string()),
+            Some("run-parent".to_string()),
+            Some("caller".to_string()),
+            vec![],
+        );
 
         let ctx = ToolCallContext::new(
             &doc,
@@ -1096,7 +1180,9 @@ mod tests {
             &scope,
             &pending,
             activity_manager.clone(),
-        );
+        )
+        .with_execution_context(execution_ctx)
+        .with_caller_context(caller_context);
 
         ctx.report_tool_call_progress(ToolCallProgressUpdate {
             status: ToolCallProgressStatus::Done,
@@ -1126,10 +1212,10 @@ mod tests {
     fn test_report_tool_call_progress_without_parent_tool_call_anchors_to_run_node() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let mut scope = RunConfig::new();
-        scope.set("run_id", "run-123").expect("set run_id");
+        let scope = RunConfig::new();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
+        let execution_ctx = execution_ctx("run-123");
         let ctx = ToolCallContext::new(
             &doc,
             &ops,
@@ -1138,7 +1224,8 @@ mod tests {
             &scope,
             &pending,
             activity_manager.clone(),
-        );
+        )
+        .with_execution_context(execution_ctx);
 
         ctx.report_tool_call_progress(ToolCallProgressUpdate {
             status: ToolCallProgressStatus::Running,

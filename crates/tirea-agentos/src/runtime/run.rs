@@ -7,12 +7,12 @@ use super::types::{AgentOs, AgentStateStoreStateCommitter, PreparedRun, RunStrea
 use super::ResolvedRun;
 
 use crate::composition::AgentOsWiringError;
+use crate::contracts::runtime::RunExecutionContext;
 use crate::contracts::storage::{ThreadHead, ThreadStore, VersionPrecondition};
 use crate::contracts::thread::{CheckpointReason, Message, Thread};
 use crate::contracts::{AgentEvent, RunContext, RunRequest};
 use crate::loop_runtime::loop_runner::{
-    run_loop_stream_with_context, AgentLoopError, RunCancellationToken, RunExecutionContext,
-    StateCommitter,
+    run_loop_stream_with_context, AgentLoopError, RunCancellationToken, StateCommitter,
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -240,7 +240,7 @@ impl AgentOs {
     pub async fn prepare_run_with_persistence(
         &self,
         mut request: RunRequest,
-        mut resolved: ResolvedRun,
+        resolved: ResolvedRun,
         persist_run: bool,
     ) -> Result<PreparedRun, AgentOsRunError> {
         let agent_state_store = self.require_agent_state_store()?;
@@ -345,21 +345,6 @@ impl AgentOs {
         thread = thread.with_patches(delta_patches);
         thread.metadata.version = Some(version);
 
-        // 5. Set run identity on the run_config
-        resolved.run_config.set("run_id", run_id.clone())?;
-        if let Some(parent) = parent_run_id.as_deref() {
-            resolved
-                .run_config
-                .set("parent_run_id", parent.to_string())?;
-        }
-        resolved
-            .run_config
-            .set("agent_id", request.agent_id.clone())?;
-        resolved.run_config.set(
-            "origin",
-            serde_json::to_value(request.origin)
-                .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?,
-        )?;
         let execution_ctx = RunExecutionContext::new(
             run_id.clone(),
             parent_run_id.clone(),
@@ -382,9 +367,10 @@ impl AgentOs {
             }
         }
 
-        let run_ctx = RunContext::from_thread_with_registry(
+        let run_ctx = RunContext::from_thread_with_registry_and_execution(
             &thread,
             resolved.run_config,
+            execution_ctx.clone(),
             resolved.agent.lattice_registry.clone(),
         )
         .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
@@ -500,18 +486,19 @@ impl AgentOs {
         state_committer: Option<Arc<dyn StateCommitter>>,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
         let resolved = self.resolve(agent_id)?;
-        let run_ctx = RunContext::from_thread_with_registry(
-            &thread,
-            resolved.run_config,
-            resolved.agent.lattice_registry.clone(),
-        )
-        .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
         let execution_ctx = RunExecutionContext::new(
             thread.id.clone(),
             None,
             agent_id.to_string(),
             crate::contracts::storage::RunOrigin::Internal,
         );
+        let run_ctx = RunContext::from_thread_with_registry_and_execution(
+            &thread,
+            resolved.run_config,
+            execution_ctx.clone(),
+            resolved.agent.lattice_registry.clone(),
+        )
+        .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
         Ok(run_loop_stream_with_context(
             Arc::new(resolved.agent),
             resolved.tools,

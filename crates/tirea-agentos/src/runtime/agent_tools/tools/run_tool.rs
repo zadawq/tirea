@@ -48,13 +48,13 @@ impl AgentRunTool {
         &self,
         target_agent_id: &str,
         caller_agent_id: Option<&str>,
-        scope: Option<&tirea_contract::RunConfig>,
+        policy: Option<&tirea_contract::runtime::ScopePolicy>,
     ) -> Result<(), ToolArgError> {
         if is_target_agent_visible(
             self.os.agents_registry().as_ref(),
             target_agent_id,
             caller_agent_id,
-            scope,
+            policy,
         ) {
             return Ok(());
         }
@@ -74,7 +74,8 @@ impl AgentRunTool {
     fn resolve_execution_context(
         &self,
         args: &AgentRunArgs,
-        scope: Option<&tirea_contract::RunConfig>,
+        caller_messages: &[Arc<Message>],
+        policy: Option<&tirea_contract::runtime::ScopePolicy>,
         caller_agent_id: Option<&str>,
         is_resume: bool,
     ) -> Result<(String, Vec<Message>, Option<Value>), ToolResult> {
@@ -93,24 +94,21 @@ impl AgentRunTool {
                 .into_tool_result(tool_name));
         }
 
-        if let Err(error) = self.ensure_target_visible(&agent_id, caller_agent_id, scope) {
+        if let Err(error) = self.ensure_target_visible(&agent_id, caller_agent_id, policy) {
             return Err(error.into_tool_result(tool_name));
         }
 
         let (messages, initial_state) = if args.fork_context {
-            let fork_state = scope
-                .and_then(|s| s.value(SCOPE_CALLER_STATE_KEY))
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            let mut msgs = if let Some(caller_msgs) = parse_caller_messages(scope) {
-                filtered_fork_messages(caller_msgs)
-            } else {
-                Vec::new()
-            };
+            let mut msgs = filtered_fork_messages(
+                caller_messages
+                    .iter()
+                    .map(|message| (**message).clone())
+                    .collect(),
+            );
             if let Some(prompt) = prompt {
                 msgs.push(Message::user(prompt));
             }
-            (msgs, Some(fork_state))
+            (msgs, None)
         } else if let Some(prompt) = prompt {
             (vec![Message::user(prompt)], None)
         } else {
@@ -198,11 +196,11 @@ impl BackgroundExecutable for AgentRunTool {
                 format!("invalid background agent_run args: {e}"),
             )
         })?;
-        let scope = ctx.run_config();
-        let caller_agent_id = scope_string(Some(scope), SCOPE_CALLER_AGENT_ID_KEY);
+        let caller_agent_id = ctx.caller_context().agent_id().map(str::to_string);
         let (agent_id, messages, initial_state) = self.resolve_execution_context(
             &parsed,
-            Some(scope),
+            ctx.caller_context().messages(),
+            Some(ctx.run_config().policy()),
             caller_agent_id.as_deref(),
             parsed.is_resume,
         )?;
@@ -317,8 +315,7 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
-        let scope = ctx.run_config();
-        let owner_thread_id = scope_string(Some(scope), SCOPE_CALLER_SESSION_ID_KEY);
+        let owner_thread_id = ctx.caller_context().thread_id().map(str::to_string);
         let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,
@@ -326,8 +323,12 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
                 "missing caller thread context",
             ));
         };
-        let caller_agent_id = scope_string(Some(scope), SCOPE_CALLER_AGENT_ID_KEY);
-        let caller_run_id = scope_run_id(Some(scope));
+        let caller_agent_id = ctx.caller_context().agent_id().map(str::to_string);
+        let caller_run_id = ctx
+            .caller_context()
+            .run_id()
+            .map(str::to_string)
+            .or_else(|| ctx.execution_ctx().run_id_opt().map(str::to_string));
 
         // run_id is always set (injected by BackgroundCapable wrapper for new tasks).
         let run_id = normalize_opt(args.run_id.clone()).unwrap_or_default();
@@ -342,7 +343,8 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
         // Resolve execution context from args.
         let (agent_id, messages, initial_state) = match self.resolve_execution_context(
             &args,
-            Some(scope),
+            ctx.caller_context().messages(),
+            Some(ctx.run_config().policy()),
             caller_agent_id.as_deref(),
             args.is_resume,
         ) {

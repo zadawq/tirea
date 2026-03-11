@@ -214,21 +214,14 @@ impl AgentToolsPlugin {
     pub(super) fn render_available_agents(
         &self,
         caller_agent: Option<&str>,
-        scope: Option<&tirea_contract::RunConfig>,
+        policy: Option<&tirea_contract::runtime::ScopePolicy>,
     ) -> String {
         let mut ids = self.agents.ids();
         ids.sort();
         if let Some(caller) = caller_agent {
             ids.retain(|id| id != caller);
         }
-        ids.retain(|id| {
-            is_scope_allowed(
-                scope,
-                id,
-                SCOPE_ALLOWED_AGENTS_KEY,
-                SCOPE_EXCLUDED_AGENTS_KEY,
-            )
-        });
+        ids.retain(|id| is_scope_allowed(policy, id, crate::contracts::scope::ScopeDomain::Agent));
         if ids.is_empty() {
             return String::new();
         }
@@ -289,11 +282,8 @@ impl AgentBehavior for AgentToolsPlugin {
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        let caller_agent = ctx
-            .run_config()
-            .value(SCOPE_CALLER_AGENT_ID_KEY)
-            .and_then(|v| v.as_str());
-        let rendered = self.render_available_agents(caller_agent, Some(ctx.run_config()));
+        let caller_agent = ctx.execution_ctx().agent_id_opt();
+        let rendered = self.render_available_agents(caller_agent, Some(ctx.run_config().policy()));
         if rendered.is_empty() {
             ActionSet::empty()
         } else {

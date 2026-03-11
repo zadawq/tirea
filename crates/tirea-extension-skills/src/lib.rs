@@ -24,11 +24,6 @@ pub const SKILL_ACTIVATE_TOOL_ID: &str = "skill";
 pub const SKILL_LOAD_RESOURCE_TOOL_ID: &str = "load_skill_resource";
 pub const SKILL_SCRIPT_TOOL_ID: &str = "skill_script";
 
-/// Scope key: skill allow-list policy.
-pub const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
-/// Scope key: skill deny-list policy.
-pub const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
-
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillData};
 pub use registry::{

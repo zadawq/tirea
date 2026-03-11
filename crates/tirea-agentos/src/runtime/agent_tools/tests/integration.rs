@@ -35,19 +35,24 @@ fn build_integration_os() -> (AgentOs, Arc<tirea_store_adapters::MemoryStore>) {
     (os, storage)
 }
 
-fn integration_caller_scope(
-    state: serde_json::Value,
+fn apply_integration_caller_scope(
+    fix: &mut TestFixture,
+    _state: serde_json::Value,
     run_id: &str,
     messages: Vec<crate::contracts::thread::Message>,
-) -> tirea_contract::RunConfig {
-    let mut rt = tirea_contract::RunConfig::new();
-    rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "parent-thread")
-        .unwrap();
-    rt.set(TOOL_SCOPE_CALLER_AGENT_ID_KEY, "caller").unwrap();
-    rt.set(SCOPE_RUN_ID_KEY, run_id).unwrap();
-    rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state).unwrap();
-    rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, messages).unwrap();
-    rt
+) {
+    fix.execution_ctx = RunExecutionContext::new(
+        run_id.to_string(),
+        None,
+        "caller".to_string(),
+        RunOrigin::User,
+    );
+    fix.caller_context = CallerContext::new(
+        Some("parent-thread".to_string()),
+        Some(run_id.to_string()),
+        Some("caller".to_string()),
+        messages.into_iter().map(Arc::new).collect(),
+    );
 }
 
 #[tokio::test]
@@ -64,7 +69,8 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
         BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone()).with_task_store(task_store);
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-1",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -135,7 +141,8 @@ async fn integration_task_output_reads_from_thread_store() {
     );
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-1",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -164,7 +171,7 @@ async fn integration_task_output_reads_from_thread_store() {
     assert_eq!(task.metadata["agent_id"], json!("worker"));
 
     let mut output_fix = TestFixture::new();
-    output_fix.run_config = integration_caller_scope(json!({}), "parent-run-1", vec![]);
+    apply_integration_caller_scope(&mut output_fix, json!({}), "parent-run-1", vec![]);
     let output_result = output_tool
         .execute(
             json!({ "task_id": run_id }),
@@ -197,7 +204,8 @@ async fn integration_persisted_task_state_contains_only_lightweight_metadata() {
         .with_task_store(Some(task_store.clone()));
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-1",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -268,7 +276,8 @@ async fn integration_background_sub_agent_persists_to_store_after_completion() {
     let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-1",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -329,7 +338,8 @@ async fn integration_background_sub_agent_preserves_parent_run_id_in_deltas() {
     let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-lineage",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -372,7 +382,7 @@ async fn integration_background_sub_agent_preserves_parent_run_id_in_deltas() {
 }
 
 #[tokio::test]
-async fn integration_fork_context_passes_state_to_sub_agent_thread() {
+async fn integration_fork_context_copies_messages_only_to_sub_agent_thread() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
@@ -390,7 +400,7 @@ async fn integration_fork_context_passes_state_to_sub_agent_thread() {
     ];
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(fork_state.clone(), "parent-run-1", fork_messages);
+    apply_integration_caller_scope(&mut fix, fork_state.clone(), "parent-run-1", fork_messages);
 
     let result = run_tool
         .execute(
@@ -421,22 +431,28 @@ async fn integration_fork_context_passes_state_to_sub_agent_thread() {
         child_head.thread.messages.len()
     );
 
-    // The forked state should be the initial state of the child thread.
+    let child_msg_contents: Vec<&str> = child_head
+        .thread
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(child_msg_contents.contains(&"analyze the code"));
+    assert!(child_msg_contents.contains(&"I'll start analyzing."));
+    assert!(child_msg_contents.contains(&"continue analysis"));
+
+    // fork_context now copies messages only; caller state is not inherited.
     let child_state = child_head.thread.rebuild_state().unwrap();
     assert_eq!(
         child_state["project"],
-        json!("tirea"),
-        "child should have forked state: project"
+        Value::Null,
+        "child should not inherit caller state through fork_context"
     );
-    assert_eq!(
-        child_state["context"]["depth"],
-        json!(3),
-        "child should have forked state: nested context"
-    );
+    assert_eq!(child_state["context"], Value::Null);
 }
 
 #[tokio::test]
-async fn integration_background_fork_context_passes_state_to_sub_agent_thread() {
+async fn integration_background_fork_context_copies_messages_only_to_sub_agent_thread() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
@@ -455,7 +471,7 @@ async fn integration_background_fork_context_passes_state_to_sub_agent_thread() 
     ];
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(fork_state.clone(), "parent-run-1", fork_messages);
+    apply_integration_caller_scope(&mut fix, fork_state.clone(), "parent-run-1", fork_messages);
 
     let result = run_tool
         .execute(
@@ -489,17 +505,23 @@ async fn integration_background_fork_context_passes_state_to_sub_agent_thread() 
         child_head.thread.messages.len()
     );
 
+    let child_msg_contents: Vec<&str> = child_head
+        .thread
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(child_msg_contents.contains(&"analyze the code"));
+    assert!(child_msg_contents.contains(&"I'll start analyzing."));
+    assert!(child_msg_contents.contains(&"continue analysis"));
+
     let child_state = child_head.thread.rebuild_state().unwrap();
     assert_eq!(
         child_state["project"],
-        json!("tirea"),
-        "background child should have forked state: project"
+        Value::Null,
+        "background child should not inherit caller state through fork_context"
     );
-    assert_eq!(
-        child_state["context"]["depth"],
-        json!(3),
-        "background child should have forked state: nested context"
-    );
+    assert_eq!(child_state["context"], Value::Null);
 }
 
 #[tokio::test]
@@ -519,7 +541,8 @@ async fn integration_multiple_parallel_sub_agents_create_independent_threads() {
             _ => "worker",
         };
         let mut fix = TestFixture::new();
-        fix.run_config = integration_caller_scope(
+        apply_integration_caller_scope(
+            &mut fix,
             json!({}),
             "parent-run-1",
             vec![crate::contracts::thread::Message::user("hi")],
@@ -581,7 +604,8 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
 
     // Phase 1: Launch background.
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-1",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -1290,7 +1314,7 @@ async fn integration_task_output_reads_tool_result_from_sub_agent() {
         .unwrap();
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(json!({}), "parent-run-1", vec![]);
+    apply_integration_caller_scope(&mut fix, json!({}), "parent-run-1", vec![]);
     let result = output_tool
         .execute(
             json!({ "task_id": "run-output-test" }),
@@ -1328,7 +1352,8 @@ async fn integration_background_run_tracked_in_background_task_manager() {
     let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-1",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -1380,7 +1405,8 @@ async fn integration_background_stop_cancels_in_both_systems() {
     let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
+    apply_integration_caller_scope(
+        &mut fix,
         json!({}),
         "parent-run-1",
         vec![crate::contracts::thread::Message::user("hi")],
@@ -1460,9 +1486,7 @@ async fn integration_background_tasks_plugin_includes_all_task_types() {
     let plugin = BackgroundTasksPlugin::new(bg_mgr.clone());
 
     let doc = tirea_state::DocCell::new(json!({}));
-    let mut rc = crate::contracts::RunConfig::new();
-    rc.set("__agent_tool_caller_thread_id", "thread-1".to_string())
-        .unwrap();
+    let rc = crate::contracts::RunConfig::new();
     let ctx = crate::contracts::runtime::behavior::ReadOnlyContext::new(
         tirea_contract::runtime::phase::Phase::AfterToolExecute,
         "thread-1",

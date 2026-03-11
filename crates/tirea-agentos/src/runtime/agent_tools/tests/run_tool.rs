@@ -189,10 +189,10 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         .unwrap();
     let tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     fix.run_config
-        .set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"])
-        .unwrap();
+        .policy_mut()
+        .set_allowed_agents_if_absent(Some(&["worker".to_string()]));
     let result = tool
         .execute(
             json!({"agent_id":"reviewer","prompt":"hi","run_id":"test-run"}),
@@ -222,7 +222,7 @@ async fn agent_run_tool_rejects_self_target_agent() {
         .unwrap();
     let tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     let result = tool
         .execute(
             json!({"agent_id":"caller","prompt":"hi","run_id":"test-run"}),
@@ -253,10 +253,10 @@ async fn background_agent_run_tool_rejects_disallowed_target_agent() {
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let wrapped = wrap_with_bg(os, bg_mgr, None);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     fix.run_config
-        .set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"])
-        .unwrap();
+        .policy_mut()
+        .set_allowed_agents_if_absent(Some(&["worker".to_string()]));
 
     let result = wrapped
         .execute(
@@ -292,7 +292,7 @@ async fn background_agent_run_tool_rejects_self_target_agent() {
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let wrapped = wrap_with_bg(os, bg_mgr, None);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -335,10 +335,10 @@ async fn background_agent_run_tool_rejects_excluded_agent_without_persisting_tas
     );
     let task_store = TaskStore::new(storage as Arc<dyn ThreadStore>);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     fix.run_config
-        .set(SCOPE_EXCLUDED_AGENTS_KEY, vec!["secret"])
-        .unwrap();
+        .policy_mut()
+        .set_excluded_agents_if_absent(Some(&["secret".to_string()]));
 
     let result = wrapped
         .execute(
@@ -387,7 +387,7 @@ async fn agent_run_tool_surfaces_task_store_load_failure_on_start() {
     let task_store = Some(Arc::new(TaskStore::new(storage)));
     let wrapped = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr).with_task_store(task_store);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -455,7 +455,8 @@ async fn agent_run_tool_fork_context_filters_messages() {
     ];
 
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope_with_state_run_and_messages(
+    apply_caller_scope_with_state_run_and_messages(
+        &mut fix,
         json!({"forked": true}),
         "parent-run-42",
         fork_messages,
@@ -496,7 +497,7 @@ async fn background_stop_then_resume_completes() {
     let wrapped = wrap_with_bg(os, bg_mgr.clone(), None);
 
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     let started = wrapped
         .execute(
             json!({
@@ -548,7 +549,7 @@ async fn agent_run_tool_persists_task_thread_state() {
     let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
 
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     let started = wrapped
         .execute(
             json!({
@@ -589,7 +590,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
 
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
+    apply_caller_scope_with_state_and_run(&mut fix, json!({"forked": true}), "parent-run-42");
     let started = wrapped
         .execute(
             json!({
@@ -634,7 +635,7 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
     )
     .await;
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope_with_state_and_run(json!({}), "query-parent-run");
+    apply_caller_scope_with_state_and_run(&mut fix, json!({}), "query-parent-run");
 
     // The wrapper sees an orphaned Running task (no live handle), marks it
     // Stopped, then immediately resumes since supports_resume() is true.
@@ -682,7 +683,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     )
     .await;
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     let resumed = wrapped
         .execute(
             json!({
@@ -718,7 +719,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     )
     .await;
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     // The wrapper detects an orphaned Running task (persisted but no live
     // handle), marks it Stopped, then immediately resumes since
@@ -775,7 +776,7 @@ async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
     )
     .await;
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -806,7 +807,7 @@ async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
     )
     .await;
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -834,7 +835,7 @@ async fn agent_run_tool_requires_prompt_for_new_run() {
         .unwrap();
     let run_tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = run_tool
         .execute(
@@ -862,7 +863,7 @@ async fn background_agent_run_tool_requires_prompt_for_new_run() {
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let wrapped = wrap_with_bg(os, bg_mgr, None);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -889,7 +890,7 @@ async fn agent_run_tool_requires_agent_id_for_new_run() {
         .unwrap();
     let run_tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = run_tool
         .execute(
@@ -917,7 +918,7 @@ async fn background_agent_run_tool_requires_agent_id_for_new_run() {
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let wrapped = wrap_with_bg(os, bg_mgr, None);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -950,10 +951,10 @@ async fn agent_run_tool_rejects_excluded_agent() {
         .unwrap();
     let run_tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
     fix.run_config
-        .set(SCOPE_EXCLUDED_AGENTS_KEY, vec!["secret"])
-        .unwrap();
+        .policy_mut()
+        .set_excluded_agents_if_absent(Some(&["secret".to_string()]));
 
     let result = run_tool
         .execute(
@@ -977,7 +978,7 @@ async fn agent_run_tool_returns_error_for_unknown_run_id() {
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let wrapped = wrap_with_bg(os, bg_mgr, None);
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -1013,7 +1014,7 @@ async fn agent_run_tool_returns_persisted_completed_without_rerun() {
     )
     .await;
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -1044,7 +1045,7 @@ async fn agent_run_tool_returns_persisted_failed_with_error() {
     )
     .await;
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(
@@ -1078,7 +1079,7 @@ async fn foreground_agent_run_persists_failed_task_status() {
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    apply_caller_scope(&mut fix);
 
     let result = wrapped
         .execute(

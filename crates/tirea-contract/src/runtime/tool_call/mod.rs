@@ -6,7 +6,7 @@ pub mod suspension;
 pub mod tool;
 
 pub use context::{
-    ActivityContext, ToolCallContext, ToolCallProgressSink, ToolCallProgressState,
+    ActivityContext, CallerContext, ToolCallContext, ToolCallProgressSink, ToolCallProgressState,
     ToolCallProgressStatus, ToolCallProgressUpdate, ToolProgressState,
     TOOL_CALL_PROGRESS_ACTIVITY_TYPE, TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE,
     TOOL_PROGRESS_ACTIVITY_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,

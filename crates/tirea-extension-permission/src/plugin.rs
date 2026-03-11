@@ -82,7 +82,7 @@ impl AgentBehavior for PermissionPlugin {
 
 /// Tool scope policy plugin.
 ///
-/// Enforces allow/deny list filtering via `RunConfig` scope keys.
+/// Enforces allow/deny list filtering via typed `RunConfig` policy fields.
 /// Install before [`PermissionPlugin`] so out-of-scope tools are blocked first.
 pub struct ToolPolicyPlugin;
 
@@ -97,13 +97,17 @@ impl AgentBehavior for ToolPolicyPlugin {
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
         let run_config = ctx.run_config();
-        let allowed = scope::parse_scope_filter(run_config.value(scope::SCOPE_ALLOWED_TOOLS_KEY));
-        let excluded = scope::parse_scope_filter(run_config.value(scope::SCOPE_EXCLUDED_TOOLS_KEY));
+        let allowed = run_config.policy().allowed_tools();
+        let excluded = run_config.policy().excluded_tools();
 
         if allowed.is_none() && excluded.is_none() {
             return ActionSet::empty();
         }
-        apply_tool_policy(allowed, excluded).into()
+        apply_tool_policy(
+            allowed.map(|values| values.to_vec()),
+            excluded.map(|values| values.to_vec()),
+        )
+        .into()
     }
 
     async fn before_tool_execute(
@@ -115,12 +119,7 @@ impl AgentBehavior for ToolPolicyPlugin {
         };
 
         let run_config = ctx.run_config();
-        if !scope::is_scope_allowed(
-            Some(run_config),
-            tool_id,
-            scope::SCOPE_ALLOWED_TOOLS_KEY,
-            scope::SCOPE_EXCLUDED_TOOLS_KEY,
-        ) {
+        if !scope::is_scope_allowed(Some(run_config.policy()), tool_id, scope::ScopeDomain::Tool) {
             ActionSet::single(reject_out_of_scope(tool_id))
         } else {
             ActionSet::empty()

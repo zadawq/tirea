@@ -172,7 +172,6 @@ where
 mod tests {
     use super::*;
     use crate::transport::runtime_endpoint::RunStarter;
-    use crate::transport::TransportError;
     use std::pin::Pin;
     use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
     use tirea_agentos::runtime::RunStream;

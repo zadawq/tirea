@@ -57,13 +57,14 @@ use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, Sco
 use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    DecisionReplayPolicy, RunLifecycleAction, RunLifecycleState, StreamResult, SuspendedCall,
-    ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
+    DecisionReplayPolicy, RunExecutionContext, RunLifecycleAction, RunLifecycleState, StreamResult,
+    SuspendedCall, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest,
+    ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::RunContext;
-use crate::contracts::{AgentEvent, RunAction, RunOrigin, TerminationReason, ToolCallDecision};
+use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::runtime::activity::ActivityHub;
 
@@ -83,8 +84,7 @@ use uuid::Uuid;
 pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
     await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
-    StateCommitter, TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
-    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+    StateCommitter,
 };
 use config::StaticStepToolProvider;
 pub use config::{Agent, BaseAgent, GenaiLlmExecutor, LlmRetryPolicy};
@@ -115,9 +115,8 @@ use tool_exec::execute_single_tool_with_phases;
 use tool_exec::execute_tools_parallel_with_phases;
 pub use tool_exec::ExecuteToolsOutcome;
 use tool_exec::{
-    apply_tool_results_impl, apply_tool_results_to_session,
-    execute_single_tool_with_phases_deferred, scope_with_tool_caller_context, step_metadata,
-    ToolPhaseContext,
+    apply_tool_results_impl, apply_tool_results_to_session, caller_context_for_tool_execution,
+    execute_single_tool_with_phases_deferred, step_metadata, ToolPhaseContext,
 };
 pub use tool_exec::{
     execute_tools, execute_tools_with_behaviors, execute_tools_with_config,
@@ -138,7 +137,7 @@ pub struct ResolvedRun {
     pub agent: BaseAgent,
     /// Resolved tool map after filtering and wiring.
     pub tools: HashMap<String, Arc<dyn Tool>>,
-    /// Runtime configuration (user_id, run_id, ...).
+    /// Typed per-run configuration and policy.
     pub run_config: crate::contracts::RunConfig,
 }
 
@@ -158,106 +157,30 @@ impl ResolvedRun {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RunExecutionContext {
-    pub run_id: String,
-    pub parent_run_id: Option<String>,
-    pub agent_id: String,
-    pub origin: RunOrigin,
-}
-
-impl RunExecutionContext {
-    pub const RUN_ID_KEY: &'static str = "run_id";
-    pub const PARENT_RUN_ID_KEY: &'static str = "parent_run_id";
-    pub const AGENT_ID_KEY: &'static str = "agent_id";
-    pub const ORIGIN_KEY: &'static str = "origin";
-
-    #[must_use]
-    pub const fn new(
-        run_id: String,
-        parent_run_id: Option<String>,
-        agent_id: String,
-        origin: RunOrigin,
-    ) -> Self {
-        Self {
-            run_id,
-            parent_run_id,
-            agent_id,
-            origin,
-        }
-    }
-
-    #[must_use]
-    pub fn from_run_config(run_ctx: &RunContext) -> Self {
-        let run_id = run_ctx
-            .run_config
-            .value(Self::RUN_ID_KEY)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(uuid_v7);
-
-        let parent_run_id = run_ctx
-            .run_config
-            .value(Self::PARENT_RUN_ID_KEY)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(ToOwned::to_owned);
-
-        let agent_id = run_ctx
-            .run_config
-            .value(Self::AGENT_ID_KEY)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| run_ctx.thread_id().to_string());
-
-        let origin = run_ctx
-            .run_config
-            .value(Self::ORIGIN_KEY)
-            .and_then(|value| serde_json::from_value::<RunOrigin>(value.clone()).ok())
-            .unwrap_or_default();
-
-        Self::new(run_id, parent_run_id, agent_id, origin)
-    }
-}
-
-fn uuid_v7() -> String {
-    Uuid::now_v7().simple().to_string()
-}
-
-fn bind_execution_context_to_run_config(
-    run_ctx: &mut RunContext,
-    execution_ctx: &RunExecutionContext,
-) {
-    let _ = run_ctx.run_config.set(
-        RunExecutionContext::RUN_ID_KEY,
-        execution_ctx.run_id.clone(),
-    );
-    if let Some(parent_run_id) = execution_ctx.parent_run_id.as_deref() {
-        let _ = run_ctx.run_config.set(
-            RunExecutionContext::PARENT_RUN_ID_KEY,
-            parent_run_id.to_string(),
-        );
-    }
-    let _ = run_ctx.run_config.set(
-        RunExecutionContext::AGENT_ID_KEY,
-        execution_ctx.agent_id.clone(),
-    );
-    if let Ok(origin_value) = serde_json::to_value(execution_ctx.origin) {
-        let _ = run_ctx
-            .run_config
-            .set(RunExecutionContext::ORIGIN_KEY, origin_value);
-    }
-}
-
 pub(crate) fn current_unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn ensure_execution_context(
+    agent: &dyn Agent,
+    run_ctx: &mut RunContext,
+    mut execution_ctx: RunExecutionContext,
+) -> RunExecutionContext {
+    if execution_ctx.run_id_opt().is_none() {
+        execution_ctx.run_id = Uuid::now_v7().to_string();
+    }
+    if execution_ctx.agent_id_opt().is_none() {
+        execution_ctx.agent_id = agent.id().to_string();
+    }
+    if execution_ctx.parent_tool_call_id_opt().is_none() {
+        if let Some(parent_tool_call_id) = run_ctx.run_config.parent_tool_call_id() {
+            execution_ctx.parent_tool_call_id = Some(parent_tool_call_id.to_string());
+        }
+    }
+    run_ctx.set_execution_ctx(execution_ctx.clone());
+    execution_ctx
 }
 
 #[cfg(test)]
@@ -1084,6 +1007,8 @@ pub(super) fn suspended_call_pending_events_for_ids(
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
     pub(super) run_config: tirea_contract::RunConfig,
+    pub(super) execution_ctx: RunExecutionContext,
+    pub(super) caller_context: crate::contracts::runtime::tool_call::CallerContext,
 }
 
 pub(super) fn prepare_tool_execution_context(
@@ -1092,8 +1017,13 @@ pub(super) fn prepare_tool_execution_context(
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let run_config = scope_with_tool_caller_context(run_ctx, &state)?;
-    Ok(ToolExecutionContext { state, run_config })
+    let caller_context = caller_context_for_tool_execution(run_ctx, &state);
+    Ok(ToolExecutionContext {
+        state,
+        run_config: run_ctx.run_config.clone(),
+        execution_ctx: run_ctx.execution_ctx().clone(),
+        caller_context,
+    })
 }
 
 pub(super) async fn finalize_run_end(
@@ -1429,12 +1359,14 @@ async fn drain_resuming_tool_calls_and_replay(
                     .snapshot()
                     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
                 let tool = tools.get(&tool_call.name).cloned();
-                let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state)?;
+                let caller_context = caller_context_for_tool_execution(run_ctx, &state);
                 let replay_phase_ctx = ToolPhaseContext {
                     tool_descriptors,
                     agent_behavior: Some(agent.behavior()),
                     activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-                    run_config: &rt_for_replay,
+                    run_config: &run_ctx.run_config,
+                    execution_ctx: run_ctx.execution_ctx().clone(),
+                    caller_context,
                     thread_id: run_ctx.thread_id(),
                     thread_messages: run_ctx.messages(),
                     cancellation_token: None,
@@ -1903,7 +1835,7 @@ pub async fn run_loop(
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> LoopOutcome {
-    let execution_ctx = RunExecutionContext::from_run_config(&run_ctx);
+    let execution_ctx = run_ctx.execution_ctx().clone();
     run_loop_with_context(
         agent,
         tools,
@@ -1930,8 +1862,7 @@ pub async fn run_loop_with_context(
     state_committer: Option<Arc<dyn StateCommitter>>,
     mut decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> LoopOutcome {
-    bind_execution_context_to_run_config(&mut run_ctx, &execution_ctx);
-
+    let execution_ctx = ensure_execution_context(agent, &mut run_ctx, execution_ctx);
     let executor = llm_executor_for_run(agent);
     let tool_executor = agent.tool_executor();
     let mut run_state = LoopRunState::new();
@@ -2271,6 +2202,8 @@ pub async fn run_loop_with_context(
             agent_behavior: Some(agent.behavior()),
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &tool_context.run_config,
+            execution_ctx: tool_context.execution_ctx.clone(),
+            caller_context: tool_context.caller_context.clone(),
             thread_id: run_ctx.thread_id(),
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,
@@ -2377,7 +2310,7 @@ pub fn run_loop_stream(
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    let execution_ctx = RunExecutionContext::from_run_config(&run_ctx);
+    let execution_ctx = run_ctx.execution_ctx().clone();
     run_loop_stream_with_context(
         agent,
         tools,
@@ -2398,8 +2331,7 @@ pub fn run_loop_stream_with_context(
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    bind_execution_context_to_run_config(&mut run_ctx, &execution_ctx);
-
+    let execution_ctx = ensure_execution_context(agent.as_ref(), &mut run_ctx, execution_ctx);
     stream_runner::run_stream(
         agent,
         tools,

@@ -14,10 +14,6 @@ use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
 };
-use crate::loop_runtime::loop_runner::{
-    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
-};
-use crate::runtime::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use async_trait::async_trait;
 use genai::Client;
 use serde_json::{json, Value};
@@ -736,18 +732,13 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
     // Update source registry after resolve #1. First run should still see worker_a.
     dynamic_agents.replace_ids(&["worker_b"]);
 
-    let scope = {
-        let mut scope = tirea_contract::RunConfig::new();
-        scope
-            .set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
-            .expect("set caller thread id");
-        scope
-            .set(TOOL_SCOPE_CALLER_AGENT_ID_KEY, "root")
-            .expect("set caller agent id");
-        scope
-    };
     let mut fix_first = TestFixture::new();
-    fix_first.run_config = scope.clone();
+    fix_first.caller_context = crate::contracts::runtime::tool_call::CallerContext::new(
+        Some("owner-thread".to_string()),
+        None,
+        Some("root".to_string()),
+        vec![],
+    );
     let first_result = run_tool_first
         .execute(
             json!({
@@ -772,7 +763,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         .cloned()
         .expect("agent_run tool should exist");
     let mut fix_second = TestFixture::new();
-    fix_second.run_config = scope.clone();
+    fix_second.caller_context = fix_first.caller_context.clone();
     let second_result = run_tool_second
         .execute(
             json!({
@@ -1158,7 +1149,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
 }
 
 #[test]
-fn resolve_sets_runtime_caller_agent_id() {
+fn resolve_sets_typed_scope_policy() {
     let os = AgentOs::builder()
         .with_agent(
             "a1",
@@ -1171,29 +1162,16 @@ fn resolve_sets_runtime_caller_agent_id() {
         .unwrap();
     let resolved = os.resolve("a1").unwrap();
     assert_eq!(
-        resolved
-            .run_config
-            .value(SCOPE_CALLER_AGENT_ID_KEY)
-            .and_then(|v| v.as_str()),
-        Some("a1")
+        resolved.run_config.policy().allowed_skills(),
+        Some(&["s1".to_string()][..])
     );
     assert_eq!(
-        resolved
-            .run_config
-            .value(super::policy::SCOPE_ALLOWED_SKILLS_KEY),
-        Some(&json!(["s1"]))
+        resolved.run_config.policy().allowed_agents(),
+        Some(&["worker".to_string()][..])
     );
     assert_eq!(
-        resolved
-            .run_config
-            .value(super::policy::SCOPE_ALLOWED_AGENTS_KEY),
-        Some(&json!(["worker"]))
-    );
-    assert_eq!(
-        resolved
-            .run_config
-            .value(tirea_contract::scope::SCOPE_ALLOWED_TOOLS_KEY),
-        Some(&json!(["echo"]))
+        resolved.run_config.policy().allowed_tools(),
+        Some(&["echo".to_string()][..])
     );
 }
 
@@ -1874,12 +1852,12 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     assert_eq!(prepared.thread_id, "t-prepare");
     assert_eq!(prepared.run_id, "run-prepare");
     assert_eq!(
-        prepared.run_ctx.run_config.value("run_id"),
-        Some(&json!("run-prepare"))
+        prepared.run_ctx.execution_ctx().run_id_opt(),
+        Some("run-prepare")
     );
     assert_eq!(
-        prepared.run_ctx.run_config.value("parent_run_id"),
-        Some(&json!("run-parent"))
+        prepared.run_ctx.execution_ctx().parent_run_id_opt(),
+        Some("run-parent")
     );
 
     let head = storage.load("t-prepare").await.unwrap().unwrap();
@@ -1892,52 +1870,6 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state["__run"]["id"], json!("run-prepare"));
     assert_eq!(state["__run"]["status"], json!("running"));
-}
-
-#[tokio::test]
-async fn prepare_run_returns_error_when_run_id_already_exists_in_run_config() {
-    use tirea_store_adapters::MemoryStore;
-
-    let storage = Arc::new(MemoryStore::new());
-    let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
-        .build()
-        .unwrap();
-
-    let mut resolved = os.resolve("a1").unwrap();
-    resolved
-        .run_config
-        .set("run_id", "preset-run-id")
-        .expect("preset run_id");
-
-    let err = match os
-        .prepare_run(
-            RunRequest {
-                agent_id: "a1".to_string(),
-                thread_id: Some("t-prepare-duplicate-run-id".to_string()),
-                run_id: Some("run-prepare".to_string()),
-                parent_run_id: None,
-                parent_thread_id: None,
-                resource_id: None,
-                origin: RunOrigin::default(),
-                state: None,
-                messages: vec![crate::contracts::thread::Message::user("hello")],
-                initial_decisions: vec![],
-            },
-            resolved,
-        )
-        .await
-    {
-        Ok(_) => panic!("duplicate run_id in run_config should fail"),
-        Err(err) => err,
-    };
-
-    assert!(matches!(
-        err,
-        AgentOsRunError::RunConfig(crate::contracts::RunConfigError::AlreadySet(ref key))
-            if key == "run_id"
-    ));
 }
 
 #[tokio::test]

@@ -4,17 +4,15 @@ use crate::contracts::runtime::behavior::ReadOnlyContext;
 use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
-use crate::contracts::runtime::tool_call::{Tool, ToolStatus};
+use crate::contracts::runtime::tool_call::{CallerContext, Tool, ToolStatus};
+use crate::contracts::runtime::RunExecutionContext;
 use crate::contracts::storage::RunOrigin;
 use crate::contracts::AgentBehavior;
-use crate::loop_runtime::loop_runner::{
-    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
-    TOOL_SCOPE_CALLER_THREAD_ID_KEY,
-};
 use crate::runtime::background_tasks::BackgroundTaskManager;
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tirea_contract::testing::{
     apply_after_inference_for_test, apply_after_tool_for_test, apply_before_inference_for_test,
@@ -95,38 +93,45 @@ impl AgentBehavior for SlowTerminatePlugin {
     }
 }
 
-pub(super) fn caller_scope_with_state_and_run(
+pub(super) fn apply_caller_scope_with_state_and_run(
+    fix: &mut TestFixture,
     state: serde_json::Value,
     run_id: &str,
-) -> tirea_contract::RunConfig {
-    caller_scope_with_state_run_and_messages(
+) {
+    apply_caller_scope_with_state_run_and_messages(
+        fix,
         state,
         run_id,
         vec![crate::contracts::thread::Message::user("seed message")],
     )
 }
 
-pub(super) fn caller_scope_with_state_run_and_messages(
-    state: serde_json::Value,
+pub(super) fn apply_caller_scope_with_state_run_and_messages(
+    fix: &mut TestFixture,
+    _state: serde_json::Value,
     run_id: &str,
     messages: Vec<crate::contracts::thread::Message>,
-) -> tirea_contract::RunConfig {
-    let mut rt = tirea_contract::RunConfig::new();
-    rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
-        .unwrap();
-    rt.set(TOOL_SCOPE_CALLER_AGENT_ID_KEY, "caller").unwrap();
-    rt.set(SCOPE_RUN_ID_KEY, run_id).unwrap();
-    rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state).unwrap();
-    rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, messages).unwrap();
-    rt
+) {
+    fix.execution_ctx = RunExecutionContext::new(
+        run_id.to_string(),
+        None,
+        "caller".to_string(),
+        RunOrigin::User,
+    );
+    fix.caller_context = CallerContext::new(
+        Some("owner-thread".to_string()),
+        Some(run_id.to_string()),
+        Some("caller".to_string()),
+        messages.into_iter().map(Arc::new).collect(),
+    );
 }
 
-pub(super) fn caller_scope_with_state(state: serde_json::Value) -> tirea_contract::RunConfig {
-    caller_scope_with_state_and_run(state, "parent-run-default")
+pub(super) fn apply_caller_scope_with_state(fix: &mut TestFixture, state: serde_json::Value) {
+    apply_caller_scope_with_state_and_run(fix, state, "parent-run-default")
 }
 
-pub(super) fn caller_scope() -> tirea_contract::RunConfig {
-    caller_scope_with_state(json!({"forked": true}))
+pub(super) fn apply_caller_scope(fix: &mut TestFixture) {
+    apply_caller_scope_with_state(fix, json!({"forked": true}))
 }
 
 mod integration;

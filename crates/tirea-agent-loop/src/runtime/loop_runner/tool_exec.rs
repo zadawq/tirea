@@ -4,15 +4,12 @@ use super::core::{
 };
 use super::parallel_state_merge::merge_parallel_state_patches;
 use super::plugin_runtime::emit_tool_phase;
-use super::{
-    Agent, AgentLoopError, BaseAgent, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
-    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
-};
+use super::{Agent, AgentLoopError, BaseAgent, RunCancellationToken};
 use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
-use crate::contracts::runtime::tool_call::ToolGate;
+use crate::contracts::runtime::tool_call::{CallerContext, ToolGate};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
@@ -74,6 +71,8 @@ pub(super) struct ToolPhaseContext<'a> {
     pub(super) agent_behavior: Option<&'a dyn AgentBehavior>,
     pub(super) activity_manager: Arc<dyn ActivityManager>,
     pub(super) run_config: &'a tirea_contract::RunConfig,
+    pub(super) execution_ctx: tirea_contract::runtime::RunExecutionContext,
+    pub(super) caller_context: CallerContext,
     pub(super) thread_id: &'a str,
     pub(super) thread_messages: &'a [Arc<Message>],
     pub(super) cancellation_token: Option<&'a RunCancellationToken>,
@@ -86,6 +85,8 @@ impl<'a> ToolPhaseContext<'a> {
             agent_behavior: request.agent_behavior,
             activity_manager: request.activity_manager.clone(),
             run_config: request.run_config,
+            execution_ctx: request.execution_ctx.clone(),
+            caller_context: request.caller_context.clone(),
             thread_id: request.thread_id,
             thread_messages: request.thread_messages,
             cancellation_token: request.cancellation_token,
@@ -548,27 +549,19 @@ pub async fn execute_tools_with_config(
     .await
 }
 
-pub(super) fn scope_with_tool_caller_context(
+pub(super) fn caller_context_for_tool_execution(
     run_ctx: &RunContext,
-    state: &Value,
-) -> Result<tirea_contract::RunConfig, AgentLoopError> {
-    let mut rt = run_ctx.run_config.clone();
-    if rt.value(TOOL_SCOPE_CALLER_THREAD_ID_KEY).is_none() {
-        rt.set(
-            TOOL_SCOPE_CALLER_THREAD_ID_KEY,
-            run_ctx.thread_id().to_string(),
-        )
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    }
-    if rt.value(TOOL_SCOPE_CALLER_STATE_KEY).is_none() {
-        rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state.clone())
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    }
-    if rt.value(TOOL_SCOPE_CALLER_MESSAGES_KEY).is_none() {
-        rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, run_ctx.messages().to_vec())
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    }
-    Ok(rt)
+    _state: &Value,
+) -> CallerContext {
+    CallerContext::new(
+        Some(run_ctx.thread_id().to_string()),
+        run_ctx.execution_ctx().run_id_opt().map(ToOwned::to_owned),
+        run_ctx
+            .execution_ctx()
+            .agent_id_opt()
+            .map(ToOwned::to_owned),
+        run_ctx.messages().to_vec(),
+    )
 }
 
 /// Execute tool calls with behavior hooks.
@@ -671,7 +664,7 @@ async fn execute_tools_with_agent_and_executor(
     let current_state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let rt_for_tools = scope_with_tool_caller_context(&run_ctx, &current_state)?;
+    let caller_context = caller_context_for_tool_execution(&run_ctx, &current_state);
     let results = executor
         .execute(ToolExecutionRequest {
             tools,
@@ -680,7 +673,9 @@ async fn execute_tools_with_agent_and_executor(
             tool_descriptors: &tool_descriptors,
             agent_behavior: behavior,
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-            run_config: &rt_for_tools,
+            run_config: &run_ctx.run_config,
+            execution_ctx: run_ctx.execution_ctx().clone(),
+            caller_context,
             thread_id: run_ctx.thread_id(),
             thread_messages: run_ctx.messages(),
             state_version: run_ctx.version(),
@@ -742,6 +737,8 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let tool_descriptors = tool_descriptors.clone();
         let activity_manager = phase_ctx.activity_manager.clone();
         let rt = run_config_owned.clone();
+        let execution_ctx = phase_ctx.execution_ctx.clone();
+        let caller_context = phase_ctx.caller_context.clone();
         let sid = thread_id.clone();
         let thread_messages = thread_messages.clone();
 
@@ -755,6 +752,8 @@ pub(super) async fn execute_tools_parallel_with_phases(
                     agent_behavior: agent,
                     activity_manager,
                     run_config: &rt,
+                    execution_ctx,
+                    caller_context,
                     thread_id: &sid,
                     thread_messages: thread_messages.as_slice(),
                     cancellation_token: None,
@@ -796,6 +795,8 @@ pub(super) async fn execute_tools_sequential_with_phases(
             agent_behavior: phase_ctx.agent_behavior,
             activity_manager: phase_ctx.activity_manager.clone(),
             run_config: phase_ctx.run_config,
+            execution_ctx: phase_ctx.execution_ctx.clone(),
+            caller_context: phase_ctx.caller_context.clone(),
             thread_id: phase_ctx.thread_id,
             thread_messages: phase_ctx.thread_messages,
             cancellation_token: None,
@@ -881,7 +882,9 @@ async fn execute_single_tool_with_phases_impl(
         plugin_scope,
         &pending_messages,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-    );
+    )
+    .with_execution_context(phase_ctx.execution_ctx.clone())
+    .with_caller_context(phase_ctx.caller_context.clone());
     if let Some(token) = phase_ctx.cancellation_token {
         plugin_tool_call_ctx = plugin_tool_call_ctx.with_cancellation_token(token);
     }
@@ -994,7 +997,9 @@ async fn execute_single_tool_with_phases_impl(
                         plugin_scope,
                         &tool_pending_msgs,
                         phase_ctx.activity_manager.clone(),
-                    );
+                    )
+                    .with_execution_context(phase_ctx.execution_ctx.clone())
+                    .with_caller_context(phase_ctx.caller_context.clone());
                     if let Some(token) = phase_ctx.cancellation_token {
                         tool_ctx = tool_ctx.with_cancellation_token(token);
                     }

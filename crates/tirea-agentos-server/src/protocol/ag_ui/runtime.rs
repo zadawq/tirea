@@ -23,19 +23,11 @@ use tirea_contract::ToolCallContext;
 
 use tirea_protocol_ag_ui::{build_context_addendum, RunAgentInput};
 
-/// Run-config key carrying AG-UI request `config`.
-pub const AGUI_CONFIG_KEY: &str = "agui_config";
-/// Run-config key carrying AG-UI request `forwardedProps`.
-pub const AGUI_FORWARDED_PROPS_KEY: &str = "agui_forwarded_props";
-
 /// Apply AG-UI–specific extensions to a [`ResolvedRun`].
 ///
 /// Injects frontend tool stubs, suspended-call plugins, context
 /// injection, and request model/config overrides.
-pub fn apply_agui_extensions(
-    resolved: &mut ResolvedRun,
-    request: &RunAgentInput,
-) -> Result<(), tirea_contract::RunConfigError> {
+pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput) {
     if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
         resolved.agent.model = model.clone();
     }
@@ -49,12 +41,6 @@ pub fn apply_agui_extensions(
     if let Some(config) = request.config.clone() {
         apply_agui_tool_execution_mode_override(resolved, &config);
         apply_agui_chat_options_overrides(resolved, &config);
-        resolved.run_config.set(AGUI_CONFIG_KEY, config)?;
-    }
-    if let Some(forwarded_props) = request.forwarded_props.clone() {
-        resolved
-            .run_config
-            .set(AGUI_FORWARDED_PROPS_KEY, forwarded_props)?;
     }
 
     let frontend_defs = request.frontend_tools();
@@ -87,8 +73,6 @@ pub fn apply_agui_extensions(
             Arc::new(ContextInjectionPlugin::new(addendum)),
         );
     }
-
-    Ok(())
 }
 
 /// Add a behavior to a `BaseAgent` by reference, composing with any existing behavior.
@@ -379,7 +363,7 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         assert_eq!(resolved.agent.tool_executor.name(), "parallel_streaming");
         assert!(resolved.tools.contains_key("copyToClipboard"));
         // Only 1 frontend tool (backend tools are not stubs)
@@ -409,7 +393,7 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
         assert_eq!(resolved.agent.behavior.id(), "noop");
     }
@@ -455,7 +439,7 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
         assert_eq!(resolved.agent.behavior.id(), "noop");
     }
@@ -483,7 +467,7 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.contains_key("copyToClipboard"));
         // FrontendToolPendingPlugin behavior only
         assert_eq!(resolved.agent.behavior.id(), "agui_frontend_tools");
@@ -514,7 +498,7 @@ mod tests {
         let mut resolved = empty_resolved();
         add_behavior_mut(&mut resolved.agent, Arc::new(MarkerPlugin));
 
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
 
         let behavior_id = resolved.agent.behavior.id();
         assert!(
@@ -531,7 +515,7 @@ mod tests {
     fn no_changes_without_frontend_or_response_data() {
         let request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         assert_eq!(resolved.agent.tool_executor.name(), "parallel_streaming");
         assert!(resolved.tools.is_empty());
         assert_eq!(resolved.agent.behavior.id(), "noop");
@@ -683,7 +667,7 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         assert!(resolved
             .agent
             .behavior
@@ -712,7 +696,7 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         let behavior = &resolved.agent.behavior;
 
         let fixture = TestFixture::new();
@@ -738,7 +722,7 @@ mod tests {
     fn no_context_injection_behavior_when_context_empty() {
         let request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
         assert!(!resolved
             .agent
             .behavior
@@ -757,14 +741,14 @@ mod tests {
         resolved.agent.model = "base-model".to_string();
         resolved.agent.system_prompt = "base-prompt".to_string();
 
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
 
         assert_eq!(resolved.agent.model, "gpt-4.1");
         assert_eq!(resolved.agent.system_prompt, "You are precise.");
     }
 
     #[test]
-    fn writes_config_and_forwarded_props_into_run_config() {
+    fn ignores_non_runtime_agui_config_fields() {
         let request = RunAgentInput::new("t1", "r1")
             .with_message(Message::user("hello"))
             .with_state(json!({"k":"v"}))
@@ -773,35 +757,15 @@ mod tests {
         request.config = Some(json!({"temperature": 0.2}));
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
 
-        assert_eq!(
-            resolved.run_config.value(AGUI_CONFIG_KEY),
-            Some(&json!({"temperature": 0.2}))
-        );
-        assert_eq!(
-            resolved.run_config.value(AGUI_FORWARDED_PROPS_KEY),
-            Some(&json!({"session":"abc"}))
-        );
-    }
-
-    #[test]
-    fn returns_error_when_config_key_is_already_set() {
-        let mut request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
-        request.config = Some(json!({"temperature": 0.2}));
-
-        let mut resolved = empty_resolved();
-        resolved
-            .run_config
-            .set(AGUI_CONFIG_KEY, json!({"temperature": 0.1}))
-            .expect("preset run config");
-
-        let err = apply_agui_extensions(&mut resolved, &request)
-            .expect_err("duplicate AG-UI config key should fail");
-        assert!(matches!(
-            err,
-            tirea_contract::RunConfigError::AlreadySet(ref key) if key == AGUI_CONFIG_KEY
-        ));
+        let options = resolved
+            .agent
+            .chat_options
+            .as_ref()
+            .expect("default chat options should be preserved");
+        assert_eq!(options.capture_usage, Some(true));
+        assert_eq!(options.capture_reasoning_content, Some(true));
     }
 
     #[test]
@@ -814,7 +778,7 @@ mod tests {
         }));
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
 
         let options = resolved
             .agent
@@ -822,14 +786,6 @@ mod tests {
             .expect("chat options should exist");
         assert_eq!(options.capture_reasoning_content, Some(true));
         assert_eq!(options.normalize_reasoning_content, Some(true));
-        assert_eq!(
-            resolved.run_config.value(AGUI_CONFIG_KEY),
-            Some(&json!({
-                "captureReasoningContent": true,
-                "normalizeReasoningContent": true,
-                "reasoningEffort": "high"
-            }))
-        );
     }
 
     #[test]
@@ -840,7 +796,7 @@ mod tests {
         }));
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
 
         assert_eq!(
             resolved.agent.tool_executor.name(),
@@ -859,7 +815,7 @@ mod tests {
         }));
 
         let mut resolved = empty_resolved();
-        apply_agui_extensions(&mut resolved, &request).expect("apply AG-UI extensions");
+        apply_agui_extensions(&mut resolved, &request);
 
         let options = resolved
             .agent

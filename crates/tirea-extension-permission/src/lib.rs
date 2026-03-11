@@ -419,11 +419,8 @@ mod tests {
     async fn test_tool_policy_blocks_out_of_scope() {
         let mut config = RunConfig::new();
         config
-            .set(
-                tirea_contract::scope::SCOPE_ALLOWED_TOOLS_KEY,
-                vec!["other_tool"],
-            )
-            .unwrap();
+            .policy_mut()
+            .set_allowed_tools_if_absent(Some(&["other_tool".to_string()]));
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -442,11 +439,8 @@ mod tests {
     async fn test_tool_policy_allows_in_scope() {
         let mut config = RunConfig::new();
         config
-            .set(
-                tirea_contract::scope::SCOPE_ALLOWED_TOOLS_KEY,
-                vec!["my_tool"],
-            )
-            .unwrap();
+            .policy_mut()
+            .set_allowed_tools_if_absent(Some(&["my_tool".to_string()]));
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -482,11 +476,8 @@ mod tests {
     async fn test_tool_policy_excluded_tool_is_blocked() {
         let mut config = RunConfig::new();
         config
-            .set(
-                tirea_contract::scope::SCOPE_EXCLUDED_TOOLS_KEY,
-                vec!["excluded_tool"],
-            )
-            .unwrap();
+            .policy_mut()
+            .set_excluded_tools_if_absent(Some(&["excluded_tool".to_string()]));
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(

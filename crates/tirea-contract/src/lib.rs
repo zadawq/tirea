@@ -117,11 +117,11 @@ pub mod storage;
 pub mod thread;
 pub mod transport;
 
-/// Per-run configuration — a business alias for the generic `SealedState` container.
-pub type RunConfig = tirea_state::SealedState;
+/// Per-run runtime configuration.
+pub type RunConfig = runtime::RunConfig;
 
 /// Error type for `RunConfig` operations.
-pub type RunConfigError = tirea_state::SealedStateError;
+pub type RunConfigError = runtime::RunConfigError;
 
 // thread
 pub use thread::{

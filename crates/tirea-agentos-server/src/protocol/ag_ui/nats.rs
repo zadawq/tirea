@@ -58,11 +58,7 @@ async fn handle_message(
     };
 
     let mut resolved = resolved;
-    if let Err(err) = apply_agui_extensions(&mut resolved, &req.request) {
-        return transport
-            .publish_error_event(reply, Event::run_error(err.to_string(), None))
-            .await;
-    }
+    apply_agui_extensions(&mut resolved, &req.request);
     let frontend_run_id = req.request.run_id.clone();
     let mut run_request = req.request.into_runtime_run_request(req.agent_id);
     run_request.run_id = None;

@@ -1,4 +1,5 @@
 use crate::runtime::inference::{InferenceContext, LLMResponse, MessagingContext};
+use crate::runtime::run::RunExecutionContext;
 use crate::runtime::run::{FlowControl, RunAction};
 use crate::runtime::state::{AnyStateAction, SerializedStateAction};
 use crate::runtime::tool_call::gate::ToolGate;
@@ -134,8 +135,8 @@ impl<'a> StepContext<'a> {
         self.ctx.run_config()
     }
 
-    pub fn config_state<T: State>(&self) -> TireaResult<T::Ref<'_>> {
-        self.ctx.config_state::<T>()
+    pub fn execution_ctx(&self) -> &RunExecutionContext {
+        self.ctx.execution_ctx()
     }
 
     pub fn snapshot(&self) -> Value {

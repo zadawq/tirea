@@ -969,6 +969,8 @@ pub(super) fn run_stream(
                         agent_behavior: Some(agent.behavior()),
                         activity_manager: activity_manager.clone(),
                         run_config: &tool_context.run_config,
+                        execution_ctx: tool_context.execution_ctx.clone(),
+                        caller_context: tool_context.caller_context.clone(),
                         thread_id: &sid_for_tools,
                         thread_messages: &thread_messages_for_tools,
                         state_version: thread_version_for_tools,

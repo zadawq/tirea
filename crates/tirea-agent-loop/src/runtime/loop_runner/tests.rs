@@ -8,9 +8,10 @@ use crate::contracts::runtime::phase::{
 };
 use crate::contracts::runtime::phase::{Phase, SuspendTicket};
 use crate::contracts::runtime::tool_call::{
-    ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+    CallerContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
 use crate::contracts::runtime::ActivityManager;
+use crate::contracts::runtime::RunExecutionContext;
 use crate::contracts::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
@@ -42,6 +43,73 @@ fn get_suspended_call(state: &Value, call_id: &str) -> Option<Value> {
         .and_then(|scopes| scopes.get(call_id))
         .and_then(|scope| scope.get("suspended_call"))
         .cloned()
+}
+
+fn test_execution_ctx(run_id: &str) -> RunExecutionContext {
+    RunExecutionContext::new(
+        run_id.to_string(),
+        None,
+        "test-agent".to_string(),
+        crate::contracts::RunOrigin::User,
+    )
+}
+
+fn test_execution_ctx_with_parent(
+    run_id: &str,
+    parent_run_id: Option<&str>,
+    parent_tool_call_id: Option<&str>,
+) -> RunExecutionContext {
+    let mut ctx = RunExecutionContext::new(
+        run_id.to_string(),
+        parent_run_id.map(ToOwned::to_owned),
+        "test-agent".to_string(),
+        crate::contracts::RunOrigin::User,
+    );
+    if let Some(parent_tool_call_id) = parent_tool_call_id {
+        ctx = ctx.with_parent_tool_call_id(parent_tool_call_id);
+    }
+    ctx
+}
+
+fn test_caller_context(thread_id: &str, messages: &[Arc<Message>]) -> CallerContext {
+    CallerContext::new(
+        Some(thread_id.to_string()),
+        Some("caller-run".to_string()),
+        Some("caller-agent".to_string()),
+        messages.to_vec(),
+    )
+}
+
+fn test_tool_phase_context<'a>(
+    tool_descriptors: &'a [ToolDescriptor],
+    agent_behavior: Option<&'a dyn AgentBehavior>,
+    activity_manager: Arc<dyn ActivityManager>,
+    run_config: &'a tirea_contract::RunConfig,
+    thread_id: &'a str,
+    thread_messages: &'a [Arc<Message>],
+    cancellation_token: Option<&'a RunCancellationToken>,
+) -> super::tool_exec::ToolPhaseContext<'a> {
+    super::tool_exec::ToolPhaseContext {
+        tool_descriptors,
+        agent_behavior,
+        activity_manager,
+        run_config,
+        execution_ctx: test_execution_ctx("test-run"),
+        caller_context: test_caller_context(thread_id, thread_messages),
+        thread_id,
+        thread_messages,
+        cancellation_token,
+    }
+}
+
+fn run_ctx_with_execution(thread: &Thread, run_id: &str) -> RunContext {
+    RunContext::from_thread_with_registry_and_execution(
+        thread,
+        tirea_contract::RunConfig::default(),
+        test_execution_ctx(run_id),
+        Arc::new(tirea_state::LatticeRegistry::new()),
+    )
+    .expect("run context")
 }
 
 /// Test-local behavior composition (mirrors agentos `compose_behaviors`).
@@ -870,27 +938,17 @@ impl Tool for ScopeSnapshotTool {
         _args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let rt = ctx.run_config();
-        let thread_id = rt
-            .value(TOOL_SCOPE_CALLER_THREAD_ID_KEY)
-            .and_then(|v| v.as_str())
+        let thread_id = ctx
+            .caller_context()
+            .thread_id()
             .unwrap_or_default()
             .to_string();
-        let state = rt
-            .value(TOOL_SCOPE_CALLER_STATE_KEY)
-            .cloned()
-            .unwrap_or(Value::Null);
-        let messages_len = rt
-            .value(TOOL_SCOPE_CALLER_MESSAGES_KEY)
-            .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
+        let messages_len = ctx.caller_context().messages().len();
 
         Ok(ToolResult::success(
             "scope_snapshot",
             json!({
                 "thread_id": thread_id,
-                "state": state,
                 "messages_len": messages_len
             }),
         ))
@@ -1519,7 +1577,6 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
             crate::contracts::runtime::tool_call::ToolStatus::Success
         );
         assert_eq!(tool_result.data["thread_id"], json!("caller-s"));
-        assert_eq!(tool_result.data["state"]["k"], json!("v"));
         assert_eq!(tool_result.data["messages_len"], json!(1));
     });
 }
@@ -1544,15 +1601,15 @@ async fn test_activity_event_emitted_before_tool_completion() {
     let descriptors = vec![tool.descriptor()];
     let state = json!({});
     let run_config = tirea_contract::RunConfig::default();
-    let phase_ctx = super::tool_exec::ToolPhaseContext {
-        tool_descriptors: &descriptors,
-        agent_behavior: None,
-        activity_manager: activity_manager,
-        run_config: &run_config,
-        thread_id: "test",
-        thread_messages: &[],
-        cancellation_token: None,
-    };
+    let phase_ctx = test_tool_phase_context(
+        &descriptors,
+        None,
+        activity_manager,
+        &run_config,
+        "test",
+        &[],
+        None,
+    );
 
     let mut tool_future = Box::pin(execute_single_tool_with_phases(
         Some(&tool),
@@ -1627,15 +1684,15 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     let tool_descriptors_for_task = tool_descriptors.clone();
     let state_for_task = state.clone();
     let handle = tokio::spawn(async move {
-        let phase_ctx = super::tool_exec::ToolPhaseContext {
-            tool_descriptors: &tool_descriptors_for_task,
-            agent_behavior: None,
-            activity_manager: activity_manager,
-            run_config: &run_config,
-            thread_id: "test",
-            thread_messages: &[],
-            cancellation_token: None,
-        };
+        let phase_ctx = test_tool_phase_context(
+            &tool_descriptors_for_task,
+            None,
+            activity_manager,
+            &run_config,
+            "test",
+            &[],
+            None,
+        );
         execute_tools_parallel_with_phases(
             &tools_for_task,
             &calls_for_task,
@@ -1703,15 +1760,15 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
     let run_config = tirea_contract::RunConfig::default();
 
     let handle = tokio::spawn(async move {
-        let phase_ctx = super::tool_exec::ToolPhaseContext {
-            tool_descriptors: &tool_descriptors,
-            agent_behavior: None,
-            activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-            run_config: &run_config,
-            thread_id: "cancel-test",
-            thread_messages: &[],
-            cancellation_token: Some(&token_for_task),
-        };
+        let phase_ctx = test_tool_phase_context(
+            &tool_descriptors,
+            None,
+            tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+            &run_config,
+            "cancel-test",
+            &[],
+            Some(&token_for_task),
+        );
         let result =
             execute_tools_parallel_with_phases(&tools, &calls, &json!({}), phase_ctx).await;
         ready_for_task.notify_one();
@@ -2303,15 +2360,15 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     let tool_descriptors = vec![tool.descriptor()];
     let guarded_behavior: Arc<dyn AgentBehavior> = Arc::new(GuardedPlugin);
     let run_config = tirea_contract::RunConfig::default();
-    let phase_ctx = super::tool_exec::ToolPhaseContext {
-        tool_descriptors: &tool_descriptors,
-        agent_behavior: Some(guarded_behavior.as_ref()),
-        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        run_config: &run_config,
-        thread_id: "test",
-        thread_messages: &[],
-        cancellation_token: None,
-    };
+    let phase_ctx = test_tool_phase_context(
+        &tool_descriptors,
+        Some(guarded_behavior.as_ref()),
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        &run_config,
+        "test",
+        &[],
+        None,
+    );
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
         .await
@@ -2365,15 +2422,15 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
     let state = json!({});
     let tool_descriptors = vec![tool.descriptor()];
     let run_config = tirea_contract::RunConfig::default();
-    let phase_ctx = super::tool_exec::ToolPhaseContext {
-        tool_descriptors: &tool_descriptors,
-        agent_behavior: None,
-        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        run_config: &run_config,
-        thread_id: "test",
-        thread_messages: &[],
-        cancellation_token: None,
-    };
+    let phase_ctx = test_tool_phase_context(
+        &tool_descriptors,
+        None,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        &run_config,
+        "test",
+        &[],
+        None,
+    );
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
         .await
@@ -2438,15 +2495,15 @@ async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy
     let state = json!({});
     let tool_descriptors = vec![tool.descriptor()];
     let run_config = tirea_contract::RunConfig::default();
-    let phase_ctx = super::tool_exec::ToolPhaseContext {
-        tool_descriptors: &tool_descriptors,
-        agent_behavior: None,
-        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        run_config: &run_config,
-        thread_id: "test",
-        thread_messages: &[],
-        cancellation_token: None,
-    };
+    let phase_ctx = test_tool_phase_context(
+        &tool_descriptors,
+        None,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        &run_config,
+        "test",
+        &[],
+        None,
+    );
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
         .await
@@ -2531,15 +2588,15 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
         ready_for_task.notified().await;
         token_for_task.cancel();
     });
-    let phase_ctx = super::tool_exec::ToolPhaseContext {
-        tool_descriptors: &tool_descriptors,
-        agent_behavior: None,
-        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        run_config: &run_config,
-        thread_id: "test",
-        thread_messages: &[],
-        cancellation_token: Some(&token),
-    };
+    let phase_ctx = test_tool_phase_context(
+        &tool_descriptors,
+        None,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        &run_config,
+        "test",
+        &[],
+        Some(&token),
+    );
 
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(500),
@@ -2556,7 +2613,7 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
 }
 
 #[tokio::test]
-async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
+async fn test_plugin_sees_real_session_id_and_typed_context_in_tool_phase() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static VERIFIED: AtomicBool = AtomicBool::new(false);
@@ -2574,7 +2631,11 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeToolExecuteAction> {
             assert_eq!(ctx.thread_id(), "real-thread-42");
-            assert_eq!(ctx.run_config().value("user_id"), Some(&json!("u-abc")),);
+            assert_eq!(ctx.execution_ctx().run_id_opt(), Some("tool-phase-run"));
+            assert_eq!(
+                ctx.run_config().policy().allowed_tools(),
+                Some(&["echo".to_string()][..])
+            );
             VERIFIED.store(true, Ordering::SeqCst);
             ActionSet::empty()
         }
@@ -2590,16 +2651,18 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     let session_check_behavior: Arc<dyn AgentBehavior> = Arc::new(SessionCheckPlugin);
 
     let mut rt = tirea_contract::RunConfig::new();
-    rt.set("user_id", "u-abc").unwrap();
-    let phase_ctx = super::tool_exec::ToolPhaseContext {
-        tool_descriptors: &tool_descriptors,
-        agent_behavior: Some(session_check_behavior.as_ref()),
-        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        run_config: &rt,
-        thread_id: "real-thread-42",
-        thread_messages: &[],
-        cancellation_token: None,
-    };
+    rt.policy_mut()
+        .set_allowed_tools_if_absent(Some(&["echo".to_string()]));
+    let mut phase_ctx = test_tool_phase_context(
+        &tool_descriptors,
+        Some(session_check_behavior.as_ref()),
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+        &rt,
+        "real-thread-42",
+        &[],
+        None,
+    );
+    phase_ctx.execution_ctx = test_execution_ctx("tool-phase-run");
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
         .await
@@ -5280,10 +5343,9 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     ));
     let run_id = outcome
         .run_ctx
-        .run_config
-        .value("run_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or_else(|| panic!("run_loop must populate scope run_id"));
+        .execution_ctx()
+        .run_id_opt()
+        .unwrap_or_else(|| panic!("run_loop must populate execution run_id"));
 
     let parsed = uuid::Uuid::parse_str(run_id)
         .unwrap_or_else(|_| panic!("run_id must be parseable UUID, got: {run_id}"));
@@ -5700,18 +5762,10 @@ async fn test_stream_run_finish_has_matching_thread_id() {
 }
 
 #[test]
-fn test_scope_run_id_in_run_config() {
-    let mut run_config = tirea_contract::RunConfig::new();
-    run_config.set("run_id", "my-run").unwrap();
-    run_config.set("parent_run_id", "parent-run").unwrap();
-    assert_eq!(
-        run_config.value("run_id").and_then(|v| v.as_str()),
-        Some("my-run")
-    );
-    assert_eq!(
-        run_config.value("parent_run_id").and_then(|v| v.as_str()),
-        Some("parent-run")
-    );
+fn test_run_execution_context_tracks_run_ids() {
+    let execution_ctx = test_execution_ctx_with_parent("my-run", Some("parent-run"), None);
+    assert_eq!(execution_ctx.run_id_opt(), Some("my-run"));
+    assert_eq!(execution_ctx.parent_run_id_opt(), Some("parent-run"));
 }
 
 // ========================================================================
@@ -6117,9 +6171,7 @@ async fn test_nonstream_natural_end_wins_without_stop_policy() {
     ))]));
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let mut run_config = tirea_contract::RunConfig::default();
-    run_config.set("run_id", "run-natural-end").unwrap();
-    let run_ctx = RunContext::from_thread(&thread, run_config).unwrap();
+    let run_ctx = run_ctx_with_execution(&thread, "run-natural-end");
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -10259,7 +10311,6 @@ async fn test_stream_tool_execution_injects_scope_context_for_tools() {
         crate::contracts::runtime::tool_call::ToolStatus::Success
     );
     assert_eq!(tool_result.data["thread_id"], json!("stream-caller"));
-    assert_eq!(tool_result.data["state"]["k"], json!("v"));
     assert_eq!(tool_result.data["messages_len"], json!(2));
 }
 
@@ -10934,15 +10985,6 @@ async fn test_run_loop_patches_accumulate_across_steps() {
 // =============================================================================
 // Category 2: StateCommitter + version evolution
 // =============================================================================
-
-fn test_execution_ctx(run_id: &str) -> RunExecutionContext {
-    RunExecutionContext::new(
-        run_id.to_string(),
-        None,
-        "test-agent".to_string(),
-        crate::contracts::RunOrigin::default(),
-    )
-}
 
 /// commit_pending_delta with force=false is a no-op when delta is empty.
 #[tokio::test]
@@ -12774,9 +12816,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     let thread = Thread::with_initial_state("test", base_state)
         .with_patch(pending_patch)
         .with_message(Message::user("continue"));
-    let mut run_config = tirea_contract::RunConfig::default();
-    run_config.set("run_id", "run-unknown-decision").unwrap();
-    let run_ctx = RunContext::from_thread(&thread, run_config).expect("run ctx");
+    let run_ctx = run_ctx_with_execution(&thread, "run-unknown-decision");
     let config = BaseAgent::new("mock")
         .with_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();

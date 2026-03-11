@@ -22,8 +22,6 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const RUN_IN_BACKGROUND_PARAM: &str = "run_in_background";
-const OWNER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
-
 /// Context-free background execution trait.
 ///
 /// Tools implement this to opt into background execution support via
@@ -329,9 +327,8 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
     }
 
     fn extract_owner_thread_id(&self, ctx: &ToolCallContext<'_>) -> String {
-        ctx.run_config()
-            .value(OWNER_THREAD_ID_KEY)
-            .and_then(Value::as_str)
+        ctx.caller_context()
+            .thread_id()
             .unwrap_or(ctx.source())
             .to_string()
     }
@@ -557,11 +554,7 @@ impl<T: BackgroundExecutable + 'static> Tool for BackgroundCapable<T> {
         let existing_task_id = self.inner.task_id_from_args(&clean_args);
 
         // Determine parent task_id from scope if available.
-        let parent_task_id: Option<String> = ctx
-            .run_config()
-            .value("run_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let parent_task_id: Option<String> = ctx.execution_ctx().run_id_opt().map(str::to_string);
 
         if let Some(task_id) = existing_task_id {
             return self
@@ -755,12 +748,12 @@ mod tests {
         let wrapped = BackgroundCapable::new(EchoTool, mgr.clone());
 
         let mut fix = tirea_contract::testing::TestFixture::new();
-        fix.run_config = {
-            let mut rc = crate::contracts::RunConfig::new();
-            rc.set("__agent_tool_caller_thread_id", "thread-1".to_string())
-                .unwrap();
-            rc
-        };
+        fix.caller_context = crate::contracts::runtime::tool_call::CallerContext::new(
+            Some("thread-1".to_string()),
+            Some("caller-run".to_string()),
+            Some("caller".to_string()),
+            vec![],
+        );
 
         let result = wrapped
             .execute(
@@ -788,12 +781,12 @@ mod tests {
         let wrapped = BackgroundCapable::new(EchoTool, mgr.clone());
 
         let mut fix = tirea_contract::testing::TestFixture::new();
-        fix.run_config = {
-            let mut rc = crate::contracts::RunConfig::new();
-            rc.set("__agent_tool_caller_thread_id", "thread-1".to_string())
-                .unwrap();
-            rc
-        };
+        fix.caller_context = crate::contracts::runtime::tool_call::CallerContext::new(
+            Some("thread-1".to_string()),
+            Some("caller-run".to_string()),
+            Some("caller".to_string()),
+            vec![],
+        );
 
         let result = wrapped
             .execute(
@@ -866,12 +859,12 @@ mod tests {
         let wrapped = BackgroundCapable::new(SlowTool, mgr.clone());
 
         let mut fix = tirea_contract::testing::TestFixture::new();
-        fix.run_config = {
-            let mut rc = crate::contracts::RunConfig::new();
-            rc.set("__agent_tool_caller_thread_id", "thread-1".to_string())
-                .unwrap();
-            rc
-        };
+        fix.caller_context = crate::contracts::runtime::tool_call::CallerContext::new(
+            Some("thread-1".to_string()),
+            Some("caller-run".to_string()),
+            Some("caller".to_string()),
+            vec![],
+        );
 
         let result = wrapped
             .execute(

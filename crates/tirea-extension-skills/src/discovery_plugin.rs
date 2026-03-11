@@ -1,11 +1,10 @@
 use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
-use crate::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
-use tirea_contract::scope::is_scope_allowed;
+use tirea_contract::scope::{is_scope_allowed, ScopeDomain};
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -50,21 +49,14 @@ impl SkillDiscoveryPlugin {
     fn render_catalog(
         &self,
         _active: &HashSet<String>,
-        runtime: Option<&tirea_contract::RunConfig>,
+        policy: Option<&tirea_contract::runtime::ScopePolicy>,
     ) -> String {
         let mut metas: Vec<SkillMeta> = self
             .registry
             .snapshot()
             .values()
             .map(|s| s.meta().clone())
-            .filter(|m| {
-                is_scope_allowed(
-                    runtime,
-                    &m.id,
-                    SCOPE_ALLOWED_SKILLS_KEY,
-                    SCOPE_EXCLUDED_SKILLS_KEY,
-                )
-            })
+            .filter(|m| is_scope_allowed(policy, &m.id, ScopeDomain::Skill))
             .collect();
 
         if metas.is_empty() {
@@ -144,7 +136,7 @@ impl AgentBehavior for SkillDiscoveryPlugin {
             .map(|s| s.active.into_iter().collect())
             .unwrap_or_default();
 
-        let rendered = self.render_catalog(&active, Some(ctx.run_config()));
+        let rendered = self.render_catalog(&active, Some(ctx.run_config().policy()));
         if rendered.is_empty() {
             return ActionSet::empty();
         }
@@ -367,8 +359,8 @@ mod tests {
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let mut config = RunConfig::new();
         config
-            .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
-            .unwrap();
+            .policy_mut()
+            .set_allowed_skills_if_absent(Some(&["a-skill".to_string()]));
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;

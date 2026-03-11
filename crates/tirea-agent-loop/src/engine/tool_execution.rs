@@ -460,8 +460,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_single_tool_with_scope_reads() {
-        /// Tool that reads user_id from scope and returns it.
+    async fn test_execute_single_tool_with_scope_reads_typed_run_config() {
+        /// Tool that reads typed run-config data and returns it.
         struct ScopeReaderTool;
 
         #[async_trait]
@@ -475,19 +475,18 @@ mod tests {
                 _args: Value,
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let user_id = ctx
-                    .config_value("user_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
+                let parent_tool_call_id = ctx.run_config().parent_tool_call_id().unwrap_or("none");
                 Ok(ToolResult::success(
                     "scope_reader",
-                    json!({"user_id": user_id}),
+                    json!({"parent_tool_call_id": parent_tool_call_id}),
                 ))
             }
         }
 
         let mut scope = RunConfig::new();
-        scope.set("user_id", "u-42").unwrap();
+        scope
+            .set_parent_tool_call_id("call-parent")
+            .expect("set parent tool call id");
 
         let tool = ScopeReaderTool;
         let call = ToolCall::new("call_1", "scope_reader", json!({}));
@@ -496,12 +495,12 @@ mod tests {
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
 
         assert!(exec.result.is_success());
-        assert_eq!(exec.result.data["user_id"], "u-42");
+        assert_eq!(exec.result.data["parent_tool_call_id"], "call-parent");
     }
 
     #[tokio::test]
     async fn test_execute_single_tool_with_scope_none() {
-        /// Tool that checks scope_ref is None.
+        /// Tool that checks typed run-config defaults when no scope is supplied.
         struct ScopeCheckerTool;
 
         #[async_trait]
@@ -515,12 +514,12 @@ mod tests {
                 _args: Value,
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
-                // ToolCallContext always provides a scope reference (never None).
-                // We verify scope access works by probing for a known key.
-                let has_user_id = ctx.config_value("user_id").is_some();
                 Ok(ToolResult::success(
                     "scope_checker",
-                    json!({"has_scope": true, "has_user_id": has_user_id}),
+                    json!({
+                        "has_scope": true,
+                        "has_parent_tool_call_id": ctx.run_config().parent_tool_call_id().is_some()
+                    }),
                 ))
             }
         }
@@ -532,18 +531,18 @@ mod tests {
         // Without scope — ToolCallContext still provides a (default-empty) scope
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, None).await;
         assert_eq!(exec.result.data["has_scope"], true);
-        assert_eq!(exec.result.data["has_user_id"], false);
+        assert_eq!(exec.result.data["has_parent_tool_call_id"], false);
 
         // With scope (empty)
         let scope = RunConfig::new();
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
         assert_eq!(exec.result.data["has_scope"], true);
-        assert_eq!(exec.result.data["has_user_id"], false);
+        assert_eq!(exec.result.data["has_parent_tool_call_id"], false);
     }
 
     #[tokio::test]
     async fn test_execute_with_scope_sensitive_key() {
-        /// Tool that reads a sensitive key from scope.
+        /// Tool that reads typed policy values from scope.
         struct SensitiveReaderTool;
 
         #[async_trait]
@@ -557,18 +556,23 @@ mod tests {
                 _args: Value,
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let scope = ctx.run_config();
-                let token = scope.value("token").and_then(|v| v.as_str()).unwrap();
-                let is_sensitive = scope.is_sensitive("token");
+                let allowed_tools = ctx
+                    .run_config()
+                    .policy()
+                    .allowed_tools()
+                    .map(|items| items.to_vec())
+                    .unwrap_or_default();
                 Ok(ToolResult::success(
                     "sensitive",
-                    json!({"token_len": token.len(), "is_sensitive": is_sensitive}),
+                    json!({"allowed_tools": allowed_tools}),
                 ))
             }
         }
 
         let mut scope = RunConfig::new();
-        scope.set_sensitive("token", "super-secret-token").unwrap();
+        scope
+            .policy_mut()
+            .set_allowed_tools_if_absent(Some(&["sensitive".to_string(), "echo".to_string()]));
 
         let tool = SensitiveReaderTool;
         let call = ToolCall::new("call_1", "sensitive", json!({}));
@@ -577,8 +581,10 @@ mod tests {
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
 
         assert!(exec.result.is_success());
-        assert_eq!(exec.result.data["token_len"], 18);
-        assert_eq!(exec.result.data["is_sensitive"], true);
+        assert_eq!(
+            exec.result.data["allowed_tools"],
+            json!(["sensitive", "echo"])
+        );
     }
 
     // =========================================================================

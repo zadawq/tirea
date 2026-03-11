@@ -1,6 +1,6 @@
 use super::agent_tools::{
     AgentRecoveryPlugin, AgentRunTool, AgentToolsPlugin, AGENT_RECOVERY_PLUGIN_ID,
-    AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
+    AGENT_TOOLS_PLUGIN_ID,
 };
 use super::background_tasks::{
     BackgroundCapable, BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
@@ -394,8 +394,7 @@ impl AgentOs {
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
         let mut run_config = RunConfig::new();
-        run_config.set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string())?;
-        set_scope_filters_from_definition_if_absent(&mut run_config, &definition)?;
+        set_scope_filters_from_definition_if_absent(&mut run_config, &definition);
 
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();

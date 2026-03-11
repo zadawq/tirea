@@ -122,12 +122,3 @@ mod tests {
         assert!(done);
     }
 }
-
-/// Scope key: caller session id visible to tools.
-pub const TOOL_SCOPE_CALLER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
-/// Scope key: caller agent id visible to tools.
-pub const TOOL_SCOPE_CALLER_AGENT_ID_KEY: &str = "__agent_tool_caller_agent_id";
-/// Scope key: caller state snapshot visible to tools.
-pub const TOOL_SCOPE_CALLER_STATE_KEY: &str = "__agent_tool_caller_state";
-/// Scope key: caller message snapshot visible to tools.
-pub const TOOL_SCOPE_CALLER_MESSAGES_KEY: &str = "__agent_tool_caller_messages";

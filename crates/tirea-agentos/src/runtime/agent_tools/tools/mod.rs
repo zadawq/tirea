@@ -46,24 +46,6 @@ impl ToolArgError {
     }
 }
 
-pub(super) fn scope_string(scope: Option<&tirea_contract::RunConfig>, key: &str) -> Option<String> {
-    scope
-        .and_then(|scope: &tirea_contract::RunConfig| scope.value(key))
-        .and_then(|value: &serde_json::Value| value.as_str())
-        .map(|value| value.to_string())
-}
-
-pub(super) fn scope_run_id(scope: Option<&tirea_contract::RunConfig>) -> Option<String> {
-    scope_string(scope, SCOPE_RUN_ID_KEY)
-}
-
-pub(super) fn parse_caller_messages(
-    scope: Option<&tirea_contract::RunConfig>,
-) -> Option<Vec<Message>> {
-    let value = scope.and_then(|scope| scope.value(SCOPE_CALLER_MESSAGES_KEY))?;
-    serde_json::from_value::<Vec<Message>>(value.clone()).ok()
-}
-
 pub(super) fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
     let visible: Vec<Message> = messages
         .into_iter()
@@ -130,17 +112,12 @@ pub(super) fn is_target_agent_visible(
     registry: &dyn AgentRegistry,
     target: &str,
     caller: Option<&str>,
-    scope: Option<&tirea_contract::RunConfig>,
+    policy: Option<&tirea_contract::runtime::ScopePolicy>,
 ) -> bool {
     if caller.is_some_and(|c| c == target) {
         return false;
     }
-    if !is_scope_allowed(
-        scope,
-        target,
-        SCOPE_ALLOWED_AGENTS_KEY,
-        SCOPE_EXCLUDED_AGENTS_KEY,
-    ) {
+    if !is_scope_allowed(policy, target, crate::contracts::scope::ScopeDomain::Agent) {
         return false;
     }
     registry.get(target).is_some()

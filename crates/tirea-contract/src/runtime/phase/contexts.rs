@@ -1,4 +1,5 @@
 use crate::runtime::inference::{InferenceError, StreamResult};
+use crate::runtime::run::RunExecutionContext;
 use crate::runtime::run::{RunAction, TerminationReason};
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
@@ -17,11 +18,9 @@ pub trait PhaseContext {
     fn thread_id(&self) -> &str;
     fn messages(&self) -> &[Arc<Message>];
     fn run_config(&self) -> &RunConfig;
-    fn config_value(&self, key: &str) -> Option<&Value> {
-        self.run_config().value(key)
-    }
+    fn execution_ctx(&self) -> &RunExecutionContext;
     fn state_of<T: State>(&self) -> T::Ref<'_>;
-    fn snapshot(&self) -> Value;
+    fn snapshot(&self) -> serde_json::Value;
 }
 
 macro_rules! impl_phase_context {
@@ -54,11 +53,15 @@ macro_rules! impl_phase_context {
                 self.step.run_config()
             }
 
+            fn execution_ctx(&self) -> &RunExecutionContext {
+                self.step.execution_ctx()
+            }
+
             fn state_of<T: State>(&self) -> T::Ref<'_> {
                 self.step.state_of::<T>()
             }
 
-            fn snapshot(&self) -> Value {
+            fn snapshot(&self) -> serde_json::Value {
                 self.step.snapshot()
             }
         }

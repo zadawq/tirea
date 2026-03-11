@@ -5,6 +5,7 @@ use crate::runtime::phase::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
 };
+use crate::runtime::run::RunExecutionContext;
 use crate::runtime::state::StateScopeRegistry;
 use crate::runtime::state::{ScopeContext, StateActionDeserializerRegistry, StateScope, StateSpec};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
@@ -25,6 +26,7 @@ pub struct ReadOnlyContext<'a> {
     thread_id: &'a str,
     messages: &'a [Arc<Message>],
     run_config: &'a RunConfig,
+    execution_ctx: RunExecutionContext,
     doc: &'a DocCell,
     llm_response: Option<&'a LLMResponse>,
     tool_name: Option<&'a str>,
@@ -49,6 +51,7 @@ impl<'a> ReadOnlyContext<'a> {
             thread_id,
             messages,
             run_config,
+            execution_ctx: RunExecutionContext::default(),
             doc,
             llm_response: None,
             tool_name: None,
@@ -119,12 +122,12 @@ impl<'a> ReadOnlyContext<'a> {
         self.run_config
     }
 
-    pub fn doc(&self) -> &DocCell {
-        self.doc
+    pub fn execution_ctx(&self) -> &RunExecutionContext {
+        &self.execution_ctx
     }
 
-    pub fn config_value(&self, key: &str) -> Option<&Value> {
-        self.run_config.value(key)
+    pub fn doc(&self) -> &DocCell {
+        self.doc
     }
 
     pub fn response(&self) -> Option<&StreamResult> {
@@ -181,6 +184,12 @@ impl<'a> ReadOnlyContext<'a> {
 
     pub fn scope_ctx(&self) -> &ScopeContext {
         &self.scope_ctx
+    }
+
+    #[must_use]
+    pub fn with_execution_ctx(mut self, execution_ctx: &RunExecutionContext) -> Self {
+        self.execution_ctx = execution_ctx.clone();
+        self
     }
 }
 
@@ -274,7 +283,8 @@ pub fn build_read_only_context_from_step<'a>(
         step.messages(),
         step.run_config(),
         doc,
-    );
+    )
+    .with_execution_ctx(step.ctx().execution_ctx());
     ctx.initial_message_count = step.initial_message_count();
     if let Some(llm) = step.llm_response.as_ref() {
         ctx = ctx.with_llm_response(llm);

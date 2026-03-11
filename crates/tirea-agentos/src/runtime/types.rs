@@ -10,6 +10,7 @@ use crate::composition::{
     RegistrySet, StopPolicyRegistry, SystemWiring, ToolRegistry,
 };
 use crate::contracts::runtime::tool_call::Tool;
+use crate::contracts::runtime::RunExecutionContext;
 use crate::contracts::storage::{ThreadStore, VersionPrecondition};
 use crate::contracts::{AgentEvent, RunContext, ToolCallDecision};
 #[cfg(feature = "skills")]
@@ -64,7 +65,7 @@ pub struct PreparedRun {
     pub(crate) agent: Arc<dyn Agent>,
     pub(crate) tools: HashMap<String, Arc<dyn Tool>>,
     pub(crate) run_ctx: RunContext,
-    pub(crate) execution_ctx: crate::loop_runtime::loop_runner::RunExecutionContext,
+    pub(crate) execution_ctx: RunExecutionContext,
     pub(crate) cancellation_token: Option<RunCancellationToken>,
     pub(crate) state_committer: Option<Arc<dyn StateCommitter>>,
     pub(crate) decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,

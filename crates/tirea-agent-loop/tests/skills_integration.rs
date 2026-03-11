@@ -15,7 +15,7 @@ use tirea_contract::testing::TestFixture;
 use tirea_extension_permission::PermissionPlugin;
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
-    SkillScriptTool, SCOPE_ALLOWED_SKILLS_KEY,
+    SkillScriptTool,
 };
 
 struct TestToolBehavior {
@@ -192,8 +192,8 @@ async fn test_skill_activation_respects_scope_skill_policy() {
     let thread = Thread::with_initial_state("s", json!({}));
     let mut scope = tirea_contract::RunConfig::new();
     scope
-        .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["other-skill"])
-        .unwrap();
+        .policy_mut()
+        .set_allowed_skills_if_absent(Some(&["other-skill".to_string()]));
 
     let (_thread, result) = apply_tool_with_scope(
         thread,
@@ -212,8 +212,8 @@ async fn test_load_skill_resource_respects_scope_skill_policy() {
     let thread = Thread::with_initial_state("s", json!({}));
     let mut scope = tirea_contract::RunConfig::new();
     scope
-        .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["other-skill"])
-        .unwrap();
+        .policy_mut()
+        .set_allowed_skills_if_absent(Some(&["other-skill".to_string()]));
 
     let (_thread, result) = apply_tool_with_scope(
         thread,

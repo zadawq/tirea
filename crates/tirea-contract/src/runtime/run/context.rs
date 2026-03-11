@@ -1,9 +1,10 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::run::delta::RunDelta;
+use crate::runtime::run::RunExecutionContext;
 use crate::runtime::state::SerializedStateAction;
 use crate::runtime::suspended_calls_from_state;
-use crate::runtime::tool_call::SuspendedCall;
 use crate::runtime::tool_call::ToolCallContext;
+use crate::runtime::tool_call::{CallerContext, SuspendedCall};
 use crate::thread::Message;
 use crate::RunConfig;
 use serde_json::Value;
@@ -29,6 +30,7 @@ pub struct RunContext {
     thread_patches: DeltaTracked<TrackedPatch>,
     serialized_state_actions: DeltaTracked<SerializedStateAction>,
     pub run_config: RunConfig,
+    execution_ctx: RunExecutionContext,
     doc: DocCell,
     version: Option<u64>,
     version_timestamp: Option<u64>,
@@ -48,11 +50,12 @@ impl RunContext {
         messages: Vec<Arc<Message>>,
         run_config: RunConfig,
     ) -> Self {
-        Self::with_registry(
+        Self::with_registry_and_execution(
             thread_id,
             state,
             messages,
             run_config,
+            RunExecutionContext::default(),
             Arc::new(LatticeRegistry::new()),
         )
     }
@@ -65,6 +68,24 @@ impl RunContext {
         run_config: RunConfig,
         lattice_registry: Arc<LatticeRegistry>,
     ) -> Self {
+        Self::with_registry_and_execution(
+            thread_id,
+            state,
+            messages,
+            run_config,
+            RunExecutionContext::default(),
+            lattice_registry,
+        )
+    }
+
+    pub fn with_registry_and_execution(
+        thread_id: impl Into<String>,
+        state: Value,
+        messages: Vec<Arc<Message>>,
+        run_config: RunConfig,
+        execution_ctx: RunExecutionContext,
+        lattice_registry: Arc<LatticeRegistry>,
+    ) -> Self {
         let doc = DocCell::new(state.clone());
         Self {
             thread_id: thread_id.into(),
@@ -73,6 +94,7 @@ impl RunContext {
             thread_patches: DeltaTracked::empty(),
             serialized_state_actions: DeltaTracked::empty(),
             run_config,
+            execution_ctx,
             doc,
             version: None,
             version_timestamp: None,
@@ -87,6 +109,14 @@ impl RunContext {
     /// Thread identifier.
     pub fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    pub fn execution_ctx(&self) -> &RunExecutionContext {
+        &self.execution_ctx
+    }
+
+    pub fn set_execution_ctx(&mut self, execution_ctx: RunExecutionContext) {
+        self.execution_ctx = execution_ctx;
     }
 
     // =========================================================================
@@ -252,6 +282,12 @@ impl RunContext {
         pending_messages: &'ctx Mutex<Vec<Arc<Message>>>,
         activity_manager: Arc<dyn ActivityManager>,
     ) -> ToolCallContext<'ctx> {
+        let caller_context = CallerContext::new(
+            Some(self.thread_id.clone()),
+            self.execution_ctx.run_id_opt().map(ToOwned::to_owned),
+            self.execution_ctx.agent_id_opt().map(ToOwned::to_owned),
+            self.messages().to_vec(),
+        );
         ToolCallContext::new(
             &self.doc,
             ops,
@@ -261,6 +297,8 @@ impl RunContext {
             pending_messages,
             activity_manager,
         )
+        .with_execution_context(self.execution_ctx.clone())
+        .with_caller_context(caller_context)
     }
 }
 
@@ -274,7 +312,12 @@ impl RunContext {
         thread: &crate::thread::Thread,
         run_config: RunConfig,
     ) -> Result<Self, tirea_state::TireaError> {
-        Self::from_thread_with_registry(thread, run_config, Arc::new(LatticeRegistry::new()))
+        Self::from_thread_with_registry_and_execution(
+            thread,
+            run_config,
+            RunExecutionContext::default(),
+            Arc::new(LatticeRegistry::new()),
+        )
     }
 
     /// Convenience constructor from a `Thread` with a lattice registry.
@@ -283,13 +326,28 @@ impl RunContext {
         run_config: RunConfig,
         lattice_registry: Arc<LatticeRegistry>,
     ) -> Result<Self, tirea_state::TireaError> {
+        Self::from_thread_with_registry_and_execution(
+            thread,
+            run_config,
+            RunExecutionContext::default(),
+            lattice_registry,
+        )
+    }
+
+    pub fn from_thread_with_registry_and_execution(
+        thread: &crate::thread::Thread,
+        run_config: RunConfig,
+        execution_ctx: RunExecutionContext,
+        lattice_registry: Arc<LatticeRegistry>,
+    ) -> Result<Self, tirea_state::TireaError> {
         let state = thread.rebuild_state()?;
         let messages: Vec<Arc<Message>> = thread.messages.clone();
-        let mut ctx = Self::with_registry(
+        let mut ctx = Self::with_registry_and_execution(
             thread.id.clone(),
             state,
             messages,
             run_config,
+            execution_ctx,
             lattice_registry,
         );
         if let Some(v) = thread.metadata.version {

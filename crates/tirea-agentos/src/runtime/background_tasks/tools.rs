@@ -19,10 +19,7 @@ pub const TASK_CANCEL_TOOL_ID: &str = "task_cancel";
 pub const TASK_OUTPUT_TOOL_ID: &str = "task_output";
 
 fn owner_thread_id(ctx: &ToolCallContext<'_>) -> Option<String> {
-    ctx.run_config()
-        .value("__agent_tool_caller_thread_id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+    ctx.caller_context().thread_id().map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,28 +433,26 @@ impl TaskOutputTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::tool_call::Tool;
+    use crate::contracts::runtime::tool_call::{CallerContext, Tool};
     use crate::contracts::storage::{
         Committed, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, ThreadHead,
         ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
         VersionPrecondition,
     };
     use crate::contracts::thread::{Thread, ThreadChangeSet};
-    use crate::contracts::RunConfig;
     use crate::runtime::background_tasks::SpawnParams;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tirea_contract::testing::TestFixture;
 
-    const THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
-
     fn fixture_with_thread(thread_id: &str) -> TestFixture {
         let mut fix = TestFixture::new();
-        fix.run_config = {
-            let mut rc = RunConfig::new();
-            rc.set(THREAD_ID_KEY, thread_id.to_string()).unwrap();
-            rc
-        };
+        fix.caller_context = CallerContext::new(
+            Some(thread_id.to_string()),
+            Some("caller-run".to_string()),
+            Some("caller-agent".to_string()),
+            vec![],
+        );
         fix
     }
 
@@ -746,11 +741,12 @@ mod tests {
                 }
             }
         }));
-        fix.run_config = {
-            let mut rc = RunConfig::new();
-            rc.set(THREAD_ID_KEY, "thread-1").unwrap();
-            rc
-        };
+        fix.caller_context = CallerContext::new(
+            Some("thread-1".to_string()),
+            Some("caller-run".to_string()),
+            Some("caller-agent".to_string()),
+            vec![],
+        );
 
         let result = tool
             .execute(json!({"task_id": "ghost"}), &fix.ctx())
@@ -1278,11 +1274,12 @@ mod tests {
                 }
             }
         }));
-        fix.run_config = {
-            let mut rc = RunConfig::new();
-            rc.set(THREAD_ID_KEY, "thread-1").unwrap();
-            rc
-        };
+        fix.caller_context = CallerContext::new(
+            Some("thread-1".to_string()),
+            Some("caller-run".to_string()),
+            Some("caller-agent".to_string()),
+            vec![],
+        );
 
         let result = tool
             .execute(json!({"task_id": "ghost"}), &fix.ctx())

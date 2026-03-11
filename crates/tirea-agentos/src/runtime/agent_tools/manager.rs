@@ -33,10 +33,7 @@ fn bind_parent_tool_call_scope(
     else {
         return Ok(());
     };
-    run_config.set(
-        SCOPE_PARENT_TOOL_CALL_ID_KEY,
-        parent_tool_call_id.to_string(),
-    )
+    run_config.set_parent_tool_call_id(parent_tool_call_id.to_string())
 }
 
 pub(super) async fn execute_sub_agent(
@@ -220,19 +217,14 @@ mod tests {
         let mut run_config = crate::contracts::RunConfig::default();
         bind_parent_tool_call_scope(&mut run_config, Some("call_parent_1"))
             .expect("set parent tool call id");
-        assert_eq!(
-            run_config
-                .value(SCOPE_PARENT_TOOL_CALL_ID_KEY)
-                .and_then(serde_json::Value::as_str),
-            Some("call_parent_1")
-        );
+        assert_eq!(run_config.parent_tool_call_id(), Some("call_parent_1"));
     }
 
     #[test]
     fn bind_parent_tool_call_scope_ignores_blank_values() {
         let mut run_config = crate::contracts::RunConfig::default();
         bind_parent_tool_call_scope(&mut run_config, Some("   ")).expect("ignore blank id");
-        assert!(run_config.value(SCOPE_PARENT_TOOL_CALL_ID_KEY).is_none());
+        assert!(run_config.parent_tool_call_id().is_none());
     }
 
     #[tokio::test]
