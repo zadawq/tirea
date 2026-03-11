@@ -21,6 +21,7 @@ fn recovery_task_store() -> Arc<TaskStore> {
 struct FailingTaskAppendStore {
     inner: Arc<tirea_store_adapters::MemoryStore>,
     fail_task_appends: AtomicUsize,
+    fail_task_lists: AtomicUsize,
 }
 
 #[async_trait]
@@ -33,6 +34,21 @@ impl ThreadReader for FailingTaskAppendStore {
         &self,
         query: &ThreadListQuery,
     ) -> Result<ThreadListPage, ThreadStoreError> {
+        if self
+            .fail_task_lists
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                if remaining > 0 {
+                    Some(remaining - 1)
+                } else {
+                    None
+                }
+            })
+            .is_ok()
+        {
+            return Err(ThreadStoreError::Io(std::io::Error::other(
+                "injected task list failure",
+            )));
+        }
         self.inner.list_threads(query).await
     }
 
@@ -105,6 +121,7 @@ fn recovery_task_store_with_failing_backend() -> (Arc<TaskStore>, Arc<FailingTas
     let storage = Arc::new(FailingTaskAppendStore {
         inner: Arc::new(tirea_store_adapters::MemoryStore::new()),
         fail_task_appends: AtomicUsize::new(0),
+        fail_task_lists: AtomicUsize::new(0),
     });
     (
         Arc::new(TaskStore::new(storage.clone() as Arc<dyn ThreadStore>)),
@@ -610,6 +627,40 @@ async fn recovery_plugin_does_not_create_suspension_when_stop_persist_fails() {
     assert!(
         !has_suspended,
         "recovery interaction must not be created when orphan stop persistence fails"
+    );
+}
+
+#[tokio::test]
+async fn recovery_plugin_returns_no_actions_when_task_listing_fails() {
+    let (task_store, backend) = recovery_task_store_with_failing_backend();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    backend.fail_task_lists.store(1, Ordering::SeqCst);
+
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store.clone()));
+    let thread = Thread::with_initial_state("owner-1", json!({}));
+    let doc = thread.rebuild_state().unwrap();
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = owner_step(&fixture);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    assert_eq!(
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Running,
+        "listing failure should not mutate persisted task state"
+    );
+    assert_eq!(
+        fixture.updated_state(),
+        json!({}),
+        "recovery plugin should not emit suspension state when task listing fails"
     );
 }
 

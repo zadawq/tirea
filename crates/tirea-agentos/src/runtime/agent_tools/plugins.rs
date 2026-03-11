@@ -45,11 +45,17 @@ impl AgentBehavior for AgentRecoveryPlugin {
         };
         let state = ctx.snapshot();
         let mut tasks = match &self.task_store {
-            Some(task_store) => task_store
-                .list_tasks_for_owner(ctx.thread_id())
-                .await
-                .map(|tasks| tasks.into_iter().map(|task| task.summary()).collect())
-                .unwrap_or_default(),
+            Some(task_store) => match task_store.list_tasks_for_owner(ctx.thread_id()).await {
+                Ok(tasks) => tasks.into_iter().map(|task| task.summary()).collect(),
+                Err(error) => {
+                    tracing::warn!(
+                        owner_thread_id = %ctx.thread_id(),
+                        error = %error,
+                        "failed to list persisted background tasks for recovery"
+                    );
+                    Vec::new()
+                }
+            },
             None => Vec::new(),
         };
         tasks.sort_by(|a, b| {
@@ -77,7 +83,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
             }
             if !self.bg_manager.contains_any(&task.task_id).await {
                 if let Some(task_store) = &self.task_store {
-                    if task_store
+                    match task_store
                         .persist_foreground_result(
                             &task.task_id,
                             TaskStatus::Stopped,
@@ -88,9 +94,17 @@ impl AgentBehavior for AgentRecoveryPlugin {
                             None,
                         )
                         .await
-                        .is_ok()
                     {
-                        orphaned_run_ids.push(task.task_id.clone());
+                        Ok(()) => orphaned_run_ids.push(task.task_id.clone()),
+                        Err(error) => {
+                            tracing::warn!(
+                                owner_thread_id = %ctx.thread_id(),
+                                task_id = %task.task_id,
+                                task_type = %task.task_type,
+                                error = %error,
+                                "failed to persist orphaned background task as stopped"
+                            );
+                        }
                     }
                 }
             }

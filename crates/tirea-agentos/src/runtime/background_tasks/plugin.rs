@@ -55,9 +55,18 @@ impl BackgroundTasksPlugin {
         let mut by_id: HashMap<String, TaskSummary> = HashMap::new();
 
         if let Some(task_store) = &self.task_store {
-            if let Ok(tasks) = task_store.list_tasks_for_owner(thread_id).await {
-                for task in tasks {
-                    by_id.insert(task.id.clone(), task.summary());
+            match task_store.list_tasks_for_owner(thread_id).await {
+                Ok(tasks) => {
+                    for task in tasks {
+                        by_id.insert(task.id.clone(), task.summary());
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        owner_thread_id = %thread_id,
+                        error = %error,
+                        "failed to list persisted background tasks for derived task view"
+                    );
                 }
             }
         }
@@ -189,10 +198,98 @@ mod tests {
     use super::*;
     use crate::contracts::runtime::phase::Phase;
     use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
-    use crate::contracts::storage::ThreadStore;
+    use crate::contracts::storage::{
+        Committed, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, ThreadHead,
+        ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
+        VersionPrecondition,
+    };
+    use crate::contracts::thread::{Thread, ThreadChangeSet};
     use crate::contracts::RunConfig;
+    use async_trait::async_trait;
     use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tirea_state::DocCell;
+
+    struct FailingTaskListStore {
+        inner: Arc<tirea_store_adapters::MemoryStore>,
+        fail_task_lists: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ThreadReader for FailingTaskListStore {
+        async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+            self.inner.load(thread_id).await
+        }
+
+        async fn list_threads(
+            &self,
+            query: &ThreadListQuery,
+        ) -> Result<ThreadListPage, ThreadStoreError> {
+            if self
+                .fail_task_lists
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    if remaining > 0 {
+                        Some(remaining - 1)
+                    } else {
+                        None
+                    }
+                })
+                .is_ok()
+            {
+                return Err(ThreadStoreError::Io(std::io::Error::other(
+                    "injected task list failure",
+                )));
+            }
+            self.inner.list_threads(query).await
+        }
+
+        async fn load_messages(
+            &self,
+            thread_id: &str,
+            query: &MessageQuery,
+        ) -> Result<MessagePage, ThreadStoreError> {
+            self.inner.load_messages(thread_id, query).await
+        }
+
+        async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+            self.inner.load_run(run_id).await
+        }
+
+        async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+            self.inner.list_runs(query).await
+        }
+
+        async fn active_run_for_thread(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<RunRecord>, ThreadStoreError> {
+            self.inner.active_run_for_thread(thread_id).await
+        }
+    }
+
+    #[async_trait]
+    impl ThreadWriter for FailingTaskListStore {
+        async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+            self.inner.create(thread).await
+        }
+
+        async fn append(
+            &self,
+            thread_id: &str,
+            delta: &ThreadChangeSet,
+            precondition: VersionPrecondition,
+        ) -> Result<Committed, ThreadStoreError> {
+            self.inner.append(thread_id, delta, precondition).await
+        }
+
+        async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+            self.inner.delete(thread_id).await
+        }
+
+        async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+            self.inner.save(thread).await
+        }
+    }
 
     fn make_ctx<'a>(
         phase: Phase,
@@ -365,6 +462,39 @@ mod tests {
         let derived = derived_view(&doc);
         assert!(!derived.tasks.contains_key("stale-task"));
         assert!(derived.tasks.contains_key("task-fresh"));
+    }
+
+    #[tokio::test]
+    async fn run_start_falls_back_to_live_tasks_when_store_listing_fails() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let storage = Arc::new(FailingTaskListStore {
+            inner: Arc::new(tirea_store_adapters::MemoryStore::new()),
+            fail_task_lists: AtomicUsize::new(1),
+        });
+        let task_store = Arc::new(TaskStore::new(storage as Arc<dyn ThreadStore>));
+        mgr.spawn("thread-1", "shell", "live task", |cancel| async move {
+            cancel.cancelled().await;
+            super::super::types::TaskResult::Cancelled
+        })
+        .await;
+
+        let plugin = BackgroundTasksPlugin::new(mgr).with_task_store(Some(task_store));
+        let doc = DocCell::new(json!({}));
+        let rc = RunConfig::new();
+        let ctx = make_ctx(Phase::RunStart, "thread-1", &rc, &doc);
+
+        let actions = plugin.run_start(&ctx).await;
+        apply_state_actions(&doc, lifecycle_state_actions(actions));
+
+        let derived = derived_view(&doc);
+        assert_eq!(derived.tasks.len(), 1);
+        let task = derived
+            .tasks
+            .values()
+            .next()
+            .expect("live manager task should be used when store listing fails");
+        assert_eq!(task.description, "live task");
+        assert_eq!(task.status.as_str(), "running");
     }
 
     #[tokio::test]
