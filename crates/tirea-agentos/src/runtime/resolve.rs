@@ -6,10 +6,12 @@ use super::background_tasks::{
     BackgroundCapable, BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
     TaskStore, BACKGROUND_TASKS_PLUGIN_ID,
 };
+use super::plugin::context_manager::{ContextManagerPlugin, CONTEXT_MANAGER_PLUGIN_ID};
+use super::plugin::context_window::{
+    policy_for_model, ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID,
+};
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
-use super::plugin::context_manager::{ContextManagerPlugin, CONTEXT_MANAGER_PLUGIN_ID};
-use super::plugin::context_window::{ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID};
 use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use super::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
 use super::{behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy};
@@ -25,16 +27,23 @@ use crate::contracts::RunPolicy;
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
 use crate::runtime::loop_runner::{
-    BaseAgent, GenaiLlmExecutor, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
+    BaseAgent, GenaiLlmExecutor, LlmExecutor, ParallelToolExecutor, ResolvedRun,
+    SequentialToolExecutor,
 };
-use genai::Client;
+use genai::{chat::ChatOptions, Client};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::runtime::inference::ContextWindowPolicy;
 use tirea_contract::runtime::state::{StateActionDeserializerRegistry, StateScopeRegistry};
 use tirea_state::LatticeRegistry;
 
 use super::bundle_merge::{ensure_unique_behavior_ids, merge_wiring_bundles, ResolvedBehaviors};
+
+#[derive(Clone)]
+struct ResolvedModelRuntime {
+    model: String,
+    chat_options: Option<ChatOptions>,
+    llm_executor: Arc<dyn LlmExecutor>,
+}
 
 // ---------------------------------------------------------------------------
 // AgentOs wiring implementation
@@ -273,10 +282,11 @@ impl AgentOs {
             .into_plugins()
     }
 
-    pub fn wire_into(
+    fn wire_into(
         &self,
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
+        model_runtime: &ResolvedModelRuntime,
     ) -> Result<BaseAgent, AgentOsWiringError> {
         let resolved_plugins = self.resolve_behavior_id_list(&definition.behavior_ids)?;
         let frozen_agents = self.freeze_agent_registry();
@@ -308,8 +318,15 @@ impl AgentOs {
 
         // Context management plugins (context manager before context window so
         // boundary-based compression runs before budget truncation).
-        all_plugins.push(Arc::new(ContextManagerPlugin::new()));
-        all_plugins.push(Arc::new(ContextWindowPlugin::new(ContextWindowPolicy::default())));
+        let context_policy = policy_for_model(&model_runtime.model);
+        all_plugins.push(Arc::new(
+            ContextManagerPlugin::new(context_policy.clone()).with_llm_summarizer(
+                model_runtime.model.clone(),
+                model_runtime.llm_executor.clone(),
+                model_runtime.chat_options.clone(),
+            ),
+        ));
+        all_plugins.push(Arc::new(ContextWindowPlugin::new(context_policy)));
 
         // Resolve stop conditions from stop_condition_ids
         let stop_conditions =
@@ -324,29 +341,37 @@ impl AgentOs {
         Ok(build_base_agent_from_definition(definition, all_plugins))
     }
 
-    fn resolve_model(&self, cfg: &mut BaseAgent) -> Result<(), AgentOsResolveError> {
+    fn resolve_model_runtime(
+        &self,
+        definition: &AgentDefinition,
+    ) -> Result<ResolvedModelRuntime, AgentOsResolveError> {
         if self.models.is_empty() {
-            cfg.llm_executor = Some(Arc::new(GenaiLlmExecutor::new(self.default_client.clone())));
-            return Ok(());
+            return Ok(ResolvedModelRuntime {
+                model: definition.model.clone(),
+                chat_options: definition.chat_options.clone(),
+                llm_executor: Arc::new(GenaiLlmExecutor::new(self.default_client.clone())),
+            });
         }
 
-        let Some(def) = self.models.get(&cfg.model) else {
-            return Err(AgentOsResolveError::ModelNotFound(cfg.model.clone()));
+        let Some(def) = self.models.get(&definition.model) else {
+            return Err(AgentOsResolveError::ModelNotFound(definition.model.clone()));
         };
 
         let Some(client) = self.providers.get(&def.provider) else {
             return Err(AgentOsResolveError::ProviderNotFound {
                 provider_id: def.provider.clone(),
-                model_id: cfg.model.clone(),
+                model_id: definition.model.clone(),
             });
         };
 
-        cfg.model = def.model;
-        if let Some(opts) = def.chat_options {
-            cfg.chat_options = Some(opts);
-        }
-        cfg.llm_executor = Some(Arc::new(GenaiLlmExecutor::new(client)));
-        Ok(())
+        Ok(ResolvedModelRuntime {
+            model: def.model.clone(),
+            chat_options: def
+                .chat_options
+                .clone()
+                .or_else(|| definition.chat_options.clone()),
+            llm_executor: Arc::new(GenaiLlmExecutor::new(client)),
+        })
     }
 
     #[cfg(all(test, feature = "skills"))]
@@ -406,16 +431,19 @@ impl AgentOs {
         let mut run_policy = RunPolicy::new();
         set_runtime_policy_from_definition_if_absent(&mut run_policy, &definition);
 
+        let model_runtime = self.resolve_model_runtime(&definition)?;
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();
         let mut tools = self.base_tools.snapshot();
-        let mut cfg = self.wire_into(definition, &mut tools)?;
+        let mut cfg = self.wire_into(definition, &mut tools, &model_runtime)?;
         filter_tools_in_place(
             &mut tools,
             allowed_tools.as_deref(),
             excluded_tools.as_deref(),
         );
-        self.resolve_model(&mut cfg)?;
+        cfg.model = model_runtime.model;
+        cfg.chat_options = model_runtime.chat_options;
+        cfg.llm_executor = Some(model_runtime.llm_executor);
         Ok(ResolvedRun {
             agent: cfg,
             tools,

@@ -38,31 +38,41 @@ impl ContextWindowPlugin {
 
     /// Create with model-specific defaults.
     pub fn for_model(model: &str) -> Self {
-        let policy = match model {
-            m if m.contains("claude") => ContextWindowPolicy {
-                max_context_tokens: 200_000,
-                max_output_tokens: 16_384,
-                min_recent_messages: 10,
-                enable_prompt_cache: true,
-                autocompact_threshold: None,
-            },
-            m if m.contains("gpt-4o") => ContextWindowPolicy {
-                max_context_tokens: 128_000,
-                max_output_tokens: 16_384,
-                min_recent_messages: 10,
-                enable_prompt_cache: false,
-                autocompact_threshold: None,
-            },
-            m if m.contains("gpt-4") => ContextWindowPolicy {
-                max_context_tokens: 128_000,
-                max_output_tokens: 4_096,
-                min_recent_messages: 10,
-                enable_prompt_cache: false,
-                autocompact_threshold: None,
-            },
-            _ => ContextWindowPolicy::default(),
-        };
-        Self { policy }
+        Self {
+            policy: policy_for_model(model),
+        }
+    }
+}
+
+fn auto_compact_threshold(max_context_tokens: usize, max_output_tokens: usize) -> usize {
+    let available = max_context_tokens.saturating_sub(max_output_tokens);
+    available.saturating_mul(7) / 10
+}
+
+pub(crate) fn policy_for_model(model: &str) -> ContextWindowPolicy {
+    match model {
+        m if m.contains("claude") => ContextWindowPolicy {
+            max_context_tokens: 200_000,
+            max_output_tokens: 16_384,
+            min_recent_messages: 10,
+            enable_prompt_cache: true,
+            autocompact_threshold: Some(auto_compact_threshold(200_000, 16_384)),
+        },
+        m if m.contains("gpt-4o") => ContextWindowPolicy {
+            max_context_tokens: 128_000,
+            max_output_tokens: 16_384,
+            min_recent_messages: 10,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(auto_compact_threshold(128_000, 16_384)),
+        },
+        m if m.contains("gpt-4") => ContextWindowPolicy {
+            max_context_tokens: 128_000,
+            max_output_tokens: 4_096,
+            min_recent_messages: 10,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(auto_compact_threshold(128_000, 4_096)),
+        },
+        _ => ContextWindowPolicy::default(),
     }
 }
 
