@@ -8,9 +8,7 @@ use phoenix_test_helpers::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::tool_call::{
-    Tool, ToolDescriptor, ToolError, ToolResult,
-};
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::thread::{Message, Thread, ToolCall};
 use tirea_agentos::contracts::AgentBehavior;
 use tirea_agentos::contracts::{runtime::StreamResult, AgentEvent};

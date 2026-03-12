@@ -7,9 +7,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::tool_call::{
-    Tool, ToolDescriptor, ToolError, ToolResult,
-};
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::thread::Thread;
 use tirea_agentos::contracts::thread::{Message, ToolCall};
 use tirea_agentos::contracts::AgentBehavior;

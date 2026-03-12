@@ -6,9 +6,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tirea_agentos::engine::convert;
-use tirea_agentos::runtime::activity::ActivityHub;
-use tirea_agentos::runtime::loop_runner::AgentLoopError;
 use tirea_agentos::contracts::runtime::tool_call::{
     Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
@@ -17,7 +14,10 @@ use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
 use tirea_agentos::contracts::AnyStateAction;
 use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
+use tirea_agentos::engine::convert;
 use tirea_agentos::extensions::reminder::SystemReminder;
+use tirea_agentos::runtime::activity::ActivityHub;
+use tirea_agentos::runtime::loop_runner::AgentLoopError;
 use tirea_contract::runtime::state::StateSpec;
 use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, Role, ToolExecutionLocation};
@@ -814,13 +814,13 @@ async fn test_tool_reminder_integration() {
 
 use std::sync::Arc;
 use tempfile::TempDir;
+use tirea_agentos::contracts::runtime::StreamResult;
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadWriter};
+use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::runtime::loop_runner::{
     execute_tools, tool_map, BaseAgent, SequentialToolExecutor,
 };
 use tirea_agentos::runtime::streaming::StreamCollector;
-use tirea_agentos::contracts::runtime::StreamResult;
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadWriter};
-use tirea_agentos::contracts::thread::Message;
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::{FileStore, MemoryStore};
 type Thread = ConversationAgentState;
@@ -3060,9 +3060,7 @@ async fn test_parallel_execution_different_fields() {
 /// Test parallel vs sequential with same operations - different results
 #[tokio::test]
 async fn test_sequential_vs_parallel_execution_difference() {
-    use tirea_agentos::engine::tool_execution::{
-        execute_tools_parallel, execute_tools_sequential,
-    };
+    use tirea_agentos::engine::tool_execution::{execute_tools_parallel, execute_tools_sequential};
 
     let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
         std::collections::HashMap::new();

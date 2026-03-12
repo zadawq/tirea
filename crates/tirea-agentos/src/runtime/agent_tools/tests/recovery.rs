@@ -6,10 +6,10 @@ use crate::contracts::storage::{
     VersionPrecondition,
 };
 use crate::contracts::thread::{Thread, ThreadChangeSet};
-use crate::runtime::loop_runner::RunCancellationToken;
 use crate::runtime::background_tasks::{
     NewTaskSpec, SpawnParams, TaskResult, TaskStatus, TaskStore,
 };
+use crate::runtime::loop_runner::RunCancellationToken;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

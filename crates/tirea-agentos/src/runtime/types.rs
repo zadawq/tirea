@@ -15,9 +15,7 @@ use crate::contracts::storage::{ThreadStore, VersionPrecondition};
 use crate::contracts::{AgentEvent, RunContext, ToolCallDecision};
 #[cfg(feature = "skills")]
 use crate::extensions::skills::SkillRegistry;
-use crate::runtime::loop_runner::{
-    Agent, RunCancellationToken, StateCommitError, StateCommitter,
-};
+use crate::runtime::loop_runner::{Agent, RunCancellationToken, StateCommitError, StateCommitter};
 
 use super::background_tasks::{BackgroundTaskManager, TaskStore};
 use super::thread_run;
