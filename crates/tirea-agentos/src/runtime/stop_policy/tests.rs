@@ -1,5 +1,7 @@
 use super::conditions::*;
-use super::plugin::{condition_from_spec, derive_stats_from_messages, derive_stats_from_messages_with_response};
+use super::plugin::{
+    condition_from_spec, derive_stats_from_messages, derive_stats_from_messages_with_response,
+};
 use super::state::{StopPolicyRuntimeAction, StopPolicyRuntimeState};
 use super::StopPolicyPlugin;
 
@@ -317,8 +319,7 @@ fn stats_should_only_count_current_run_messages() {
     };
 
     // Only count messages from run_start onward.
-    let stats =
-        derive_stats_from_messages_with_response(&prior_messages[run_start..], &response);
+    let stats = derive_stats_from_messages_with_response(&prior_messages[run_start..], &response);
     assert_eq!(
         stats.step, 1,
         "step must be 1 (only the current run's assistant turn), not 6"
@@ -576,17 +577,14 @@ fn content_match_empty_pattern_never_fires() {
 
 #[test]
 fn content_match_fires_on_substring() {
-    let r =
-        eval_policy!(ContentMatch("DONE".into()), { last_text: "work is DONE now" }).unwrap();
+    let r = eval_policy!(ContentMatch("DONE".into()), { last_text: "work is DONE now" }).unwrap();
     assert_eq!(r.code, "content_matched");
     assert_eq!(r.detail.as_deref(), Some("DONE"));
 }
 
 #[test]
 fn content_match_no_match() {
-    assert!(
-        eval_policy!(ContentMatch("DONE".into()), { last_text: "still working" }).is_none()
-    );
+    assert!(eval_policy!(ContentMatch("DONE".into()), { last_text: "still working" }).is_none());
 }
 
 #[test]

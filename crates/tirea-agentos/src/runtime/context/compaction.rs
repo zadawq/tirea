@@ -15,7 +15,7 @@ use crate::runtime::loop_runner::LlmExecutor;
 
 use super::state::ContextState;
 use super::transform::is_pending_approval_notice;
-use super::{SUMMARY_MESSAGE_OPEN, SUMMARY_MESSAGE_CLOSE};
+use super::{SUMMARY_MESSAGE_CLOSE, SUMMARY_MESSAGE_OPEN};
 
 const SUMMARY_SYSTEM_PROMPT: &str = "You maintain a durable conversation summary for an agent runtime. Produce a concise but lossless working summary for future turns. Preserve user goals, constraints, preferences, decisions, completed work, important tool findings, file paths, identifiers, and unresolved follow-ups. Output plain text only; do not mention the summarization process.";
 const SUMMARY_RESPONSE_MAX_TOKENS: u32 = 1024;
@@ -411,9 +411,11 @@ pub(crate) fn trim_thread_to_latest_boundary(thread: &mut Thread) {
         return;
     };
 
-    let Some(idx) = thread.messages.iter().position(|m| {
-        m.id.as_deref() == Some(boundary.covers_through_message_id.as_str())
-    }) else {
+    let Some(idx) = thread
+        .messages
+        .iter()
+        .position(|m| m.id.as_deref() == Some(boundary.covers_through_message_id.as_str()))
+    else {
         return;
     };
 

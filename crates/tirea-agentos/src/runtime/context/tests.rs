@@ -9,11 +9,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tirea_contract::runtime::behavior::ReadOnlyContext;
 use tirea_contract::runtime::inference::{
     ContextCompactionMode, ContextWindowPolicy, InferenceRequestTransform,
 };
 use tirea_contract::runtime::phase::{AfterToolExecuteAction, BeforeInferenceAction, Phase};
-use tirea_contract::runtime::behavior::ReadOnlyContext;
 use tirea_contract::runtime::tool_call::{ToolDescriptor, ToolResult};
 use tirea_contract::thread::{Message, Role, Thread};
 use tirea_contract::RunPolicy;
@@ -30,10 +30,7 @@ fn make_msg_with_id(role: Role, content: &str, id: &str) -> Message {
     }
 }
 
-fn assistant_with_tool_calls(
-    id: &str,
-    calls: Vec<tirea_contract::thread::ToolCall>,
-) -> Message {
+fn assistant_with_tool_calls(id: &str, calls: Vec<tirea_contract::thread::ToolCall>) -> Message {
     Message::assistant_with_tool_calls("tool call", calls).with_id(id.to_string())
 }
 
@@ -947,10 +944,7 @@ fn latest_boundary_wins() {
 
 // -- Lazy trim tests --
 
-fn thread_with_context_state(
-    messages: Vec<Message>,
-    cm_state: &ContextState,
-) -> Thread {
+fn thread_with_context_state(messages: Vec<Message>, cm_state: &ContextState) -> Thread {
     let state = json!({
         <ContextState as State>::PATH: serde_json::to_value(cm_state).unwrap()
     });
@@ -1145,7 +1139,10 @@ fn compaction_plan_after_trim() {
         0,
     );
 
-    assert!(plan.is_some(), "should produce a compaction plan after trim");
+    assert!(
+        plan.is_some(),
+        "should produce a compaction plan after trim"
+    );
     let plan = plan.unwrap();
     assert_eq!(plan.start_index, 0);
     assert!(plan.boundary_index > 0);
@@ -1245,10 +1242,8 @@ fn transform_with_tool_descriptors_reduces_budget() {
         ..ContextWindowPolicy::default()
     };
 
-    let transform_no_tools =
-        ContextTransform::new(ContextState::default(), policy.clone());
-    let transform_with_tools =
-        ContextTransform::new(ContextState::default(), policy);
+    let transform_no_tools = ContextTransform::new(ContextState::default(), policy.clone());
+    let transform_with_tools = ContextTransform::new(ContextState::default(), policy);
 
     let mut messages = vec![Message::system("System.")];
     for i in 0..30 {
@@ -1257,23 +1252,19 @@ fn transform_with_tool_descriptors_reduces_budget() {
     }
 
     let tools = vec![
-        ToolDescriptor::new("search", "Search", "Search the web").with_parameters(
-            json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string" },
-                    "limit": { "type": "integer" }
-                }
-            }),
-        ),
-        ToolDescriptor::new("calc", "Calculator", "Evaluate math").with_parameters(
-            json!({
-                "type": "object",
-                "properties": {
-                    "expression": { "type": "string" }
-                }
-            }),
-        ),
+        ToolDescriptor::new("search", "Search", "Search the web").with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "limit": { "type": "integer" }
+            }
+        })),
+        ToolDescriptor::new("calc", "Calculator", "Evaluate math").with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "expression": { "type": "string" }
+            }
+        })),
     ];
 
     let output_no_tools = transform_no_tools.transform(messages.clone(), &[]);

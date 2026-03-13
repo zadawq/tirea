@@ -16,8 +16,8 @@ use crate::runtime::loop_runner::LlmExecutor;
 
 use super::compaction::{
     build_artifact_preview, find_compaction_plan, now_ms, render_messages_for_summary,
-    ContextSummarizer, LlmContextSummarizer,
-    DEFAULT_ARTIFACT_COMPACT_THRESHOLD_TOKENS, MIN_COMPACTION_GAIN_TOKENS, SummaryPayload,
+    ContextSummarizer, LlmContextSummarizer, SummaryPayload,
+    DEFAULT_ARTIFACT_COMPACT_THRESHOLD_TOKENS, MIN_COMPACTION_GAIN_TOKENS,
 };
 use super::state::{ArtifactRef, CompactBoundary, ContextAction, ContextState};
 use super::transform::ContextTransform;

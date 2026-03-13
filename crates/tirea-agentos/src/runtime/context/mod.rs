@@ -21,9 +21,9 @@ use tirea_contract::runtime::inference::{ContextCompactionMode, ContextWindowPol
 
 pub use plugin::ContextPlugin;
 // State types re-exported for sibling modules (tests, etc.) within the crate.
+pub(crate) use compaction::trim_thread_to_latest_boundary;
 #[allow(unused_imports)]
 pub(crate) use state::{ArtifactRef, CompactBoundary, ContextAction, ContextState};
-pub(crate) use compaction::trim_thread_to_latest_boundary;
 
 /// Behavior ID used for registration.
 pub const CONTEXT_PLUGIN_ID: &str = "context";

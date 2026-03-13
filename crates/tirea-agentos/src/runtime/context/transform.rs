@@ -10,7 +10,7 @@ use crate::engine::context_window::truncate_to_budget;
 use crate::engine::token_estimator::estimate_tool_tokens;
 
 use super::state::{ArtifactRef, ContextState};
-use super::{SUMMARY_MESSAGE_OPEN, SUMMARY_MESSAGE_CLOSE};
+use super::{SUMMARY_MESSAGE_CLOSE, SUMMARY_MESSAGE_OPEN};
 
 const PENDING_APPROVAL_NOTICE_PREFIX: &str = "Tool '";
 const PENDING_APPROVAL_NOTICE_SUFFIX: &str = "' is awaiting approval. Execution paused.";
