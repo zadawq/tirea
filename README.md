@@ -90,7 +90,7 @@ Connect a React frontend with `useChat()`, a CopilotKit app via AG-UI, or anothe
 |  | Tirea | LangGraph | CrewAI | OpenAI Agents | Mastra | PydanticAI | Letta |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **Language** | Rust | Python | Python | Python/TS | TypeScript | Python | Python |
-| **Multi-protocol server** | 4 (2 UI + 2 Agent) | ❌ | ❌ | ❌ | ❌ | AG-UI | REST |
+| **Multi-protocol server** | AG-UI · AI SDK · A2A · MCP | ❌ | ❌ | ❌ | ❌ | AG-UI | REST |
 | **Typed state** | ✅ derive macros | ◐ | ❌ | ❌ | ◐ | ◐ | ❌ |
 | **Concurrent state safety** | ✅ CRDT | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **State lifecycle scoping** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |

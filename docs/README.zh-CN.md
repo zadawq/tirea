@@ -90,7 +90,7 @@ let os = AgentOsBuilder::new()
 |  | Tirea | LangGraph | CrewAI | OpenAI Agents | Mastra | PydanticAI | Letta |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **语言** | Rust | Python | Python | Python/TS | TypeScript | Python | Python |
-| **多协议服务器** | 4 (2 UI + 2 Agent) | ❌ | ❌ | ❌ | ❌ | AG-UI | REST |
+| **多协议服务器** | AG-UI · AI SDK · A2A · MCP | ❌ | ❌ | ❌ | ❌ | AG-UI | REST |
 | **类型化状态** | ✅ derive 宏 | ◐ | ❌ | ❌ | ◐ | ◐ | ❌ |
 | **并发状态安全** | ✅ CRDT | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **状态生命周期作用域** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
