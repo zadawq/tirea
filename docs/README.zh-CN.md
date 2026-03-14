@@ -305,25 +305,51 @@ async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>)
 
 前端会收到带有待处理调用的暂停事件。当用户批准后，运行时会重放原始工具调用——这次将跳过权限检查。
 
-### 运行子智能体
+### 多智能体协作
 
-在构建时注册多个智能体，父智能体随后可通过内置工具对它们进行编排：
+多智能体编排是核心能力。在构建时注册智能体——运行时将智能体目录注入系统提示，编排者通过内置工具进行委派：
 
 ```rust
+let orchestrator = AgentDefinition::with_id("orchestrator", "deepseek-chat")
+    .with_system_prompt("Route tasks to the right agent.")
+    .with_allowed_agents(vec!["researcher".into(), "writer".into()]);
+
+let researcher = AgentDefinition::with_id("researcher", "deepseek-chat")
+    .with_system_prompt("Research topics and return summaries.")
+    .with_excluded_tools(vec!["agent_run".into()]); // no further delegation
+
 let os = AgentOsBuilder::new()
-    .with_agent_spec(AgentDefinitionSpec::local(planner_agent))
-    .with_agent_spec(AgentDefinitionSpec::local(researcher_agent))
-    .with_agent_spec(AgentDefinitionSpec::local(writer_agent))
+    .with_agent_spec(AgentDefinitionSpec::local(orchestrator))
+    .with_agent_spec(AgentDefinitionSpec::local(researcher))
+    // Remote agents via A2A protocol
+    .with_agent_spec(AgentDefinitionSpec::a2a_with_id(
+        "writer",
+        A2aAgentBinding::new("https://writer-service.example.com/v1/a2a", "writer-v2"),
+    ))
     .build()?;
 ```
 
-运行时会将可用的智能体目录注入到系统提示中。父智能体通过 ID 启动子智能体——每个子智能体在自己独立的对话线程中运行：
+**委派工具** — 每个子智能体在自己独立的线程中运行：
 
-- `agent_run` — 通过 `agent_id` 启动子智能体，或通过 `run_id` 恢复已有实例
-- `agent_stop` — 取消正在运行的子智能体
-- `agent_output` — 读取子智能体的运行结果
+- `agent_run` — 通过 `agent_id` 启动（前台或后台），或通过 `run_id` 恢复
+- `agent_stop` — 取消正在运行的子智能体（级联至所有后代）
+- `agent_output` — 从子智能体的线程中读取其运行结果
 
-子智能体必须在构建器中预先定义；LLM 从已注册的目录中选择，而非任意配置。孤立的子智能体会在父进程重启时自动恢复。
+**支持的协作模式：**
+
+| 模式 | 工作方式 |
+|---|---|
+| **协调者** | 编排者分析意图，路由到合适的专家 |
+| **流水线** | 智能体顺序执行——每个智能体对前一个的输出进行转换 |
+| **并行扇出** | 编排者并发启动多个智能体，汇总结果 |
+| **层级式** | 父级分解任务 → 子级进一步分解 → 递归委派 |
+| **生成-批评** | 生成者起草，批评者验证，生成者在循环中修订 |
+
+**前台与后台：** `agent_run(background=false)` 阻塞直到子智能体完成（进度实时回传）。`agent_run(background=true)` 立即返回一个 `run_id`——稍后通过 `agent_output` 检查状态。
+
+**本地 + 远程智能体：** 本地智能体在进程内运行。远程智能体通过 A2A 协议经 HTTP 通信——对编排者透明，使用相同的 `agent_run` 接口。
+
+智能体必须在构建器中预先定义。可见性通过 `allowed_agents` / `excluded_agents` 进行策略控制。孤立的子智能体会在重启时自动恢复。详见[多智能体设计模式指南](https://tirea-ai.github.io/tirea/explanation/multi-agent-design-patterns.html)。
 
 ### 跨对话管理状态
 
