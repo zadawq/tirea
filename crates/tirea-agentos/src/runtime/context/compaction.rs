@@ -157,7 +157,7 @@ fn protected_tail_start(
         .skip(start_index)
         .filter(|(_, message)| message.role == Role::User)
         .map(|(idx, _)| idx)
-        .last();
+        .next_back();
 
     let candidate = last_user_index.map_or(min_tail_start, |idx| idx.min(min_tail_start));
     candidate.max(start_index)
@@ -292,7 +292,7 @@ fn render_message_for_summary(message: &Message) -> String {
                 for call in tool_calls {
                     body.push_str("- ");
                     body.push_str(&call.name);
-                    body.push_str(" ");
+                    body.push(' ');
                     body.push_str(&call.arguments.to_string());
                     body.push('\n');
                 }
