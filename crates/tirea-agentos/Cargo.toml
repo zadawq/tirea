@@ -2,10 +2,10 @@
 name = "tirea-agentos"
 version.workspace = true
 edition = "2021"
-description = "Plugin orchestration, sub-agent management, and lifecycle composition for tirea AgentOS"
+description = "Agent runtime with streaming LLM integration, sub-agent orchestration, and context window management"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-keywords = ["agent", "llm", "orchestration", "plugin"]
+keywords = ["ai-agent", "llm", "agent-framework", "orchestration"]
 categories = ["asynchronous"]
 
 [dependencies]

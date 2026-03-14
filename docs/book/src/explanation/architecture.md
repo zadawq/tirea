@@ -21,7 +21,7 @@ Primary call path:
 `AgentOs` handles both pre-run orchestration and loop execution:
 
 **Orchestration** (`composition/`, `runtime/`):
-- Resolve agent/model/plugin wiring
+- Resolve agent/model/plugin wiring (plugins implement the `AgentBehavior` trait)
 - Load or create thread
 - Deduplicate incoming messages
 - Persist pre-run checkpoint

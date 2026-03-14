@@ -2,14 +2,16 @@
 
 Tools and plugins solve different problems. Keep the boundary strict.
 
+> In code, "plugin" refers to a type that implements the `AgentBehavior` trait.
+
 ## Tool Responsibility
 
 Tools implement domain actions:
 
-- Read/write state through `ToolCallContext`
+- Read state through `ToolCallContext` (snapshots or references)
 - Call external systems
 - Return structured `ToolResult`
-- Optionally emit `Action`s through `ToolExecutionEffect`
+- Emit state mutations and other `Action`s through `ToolExecutionEffect`
 
 Tools should not orchestrate loop policy globally.
 
@@ -37,9 +39,11 @@ This is why "tool execution" in Tirea can do more than return a payload. It can 
 
 From a tool, you can:
 
-- write typed state through `ToolCallContext`
+- read typed state through `ToolCallContext` (via `snapshot_of`, `snapshot_at`, or live references)
 - return a `ToolResult`
-- emit explicit `Action`s from `execute_effect`
+- emit state mutations and other `Action`s from `execute_effect` (via `ToolExecutionEffect` + `AnyStateAction`)
+
+> Direct state writes through `ctx.state::<T>().set_*()` are rejected at runtime. All state mutations must go through the action pipeline.
 
 Typical tool-emitted effects include:
 

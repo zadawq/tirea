@@ -258,9 +258,9 @@ RunLifecycleState::PATH  // "__run"
 New plugin-based context window management (optional):
 
 ```rust,ignore
-use tirea_agentos::runtime::ContextWindowPlugin;
+use tirea_agentos::runtime::ContextPlugin;
 
-let plugin = ContextWindowPlugin::for_model("claude");
+let plugin = ContextPlugin::for_model("claude");
 builder.with_registered_behavior("context_window", Arc::new(plugin));
 ```
 
@@ -383,8 +383,9 @@ Key type changes:
 | Single pending slot | Per-call `SuspendedCall` map |
 | Resume via outbox replay | Resume via `ToolCallDecision` on decision channel |
 
-Each `SuspendedCall` carries: `call_id`, `tool_name`, `arguments`, `suspension` payload,
-`pending` projection, and `resume_mode` (ReplayToolCall / UseDecisionAsToolResult / PassDecisionToTool).
+Each `SuspendedCall` carries: `call_id`, `tool_name`, `arguments`, and a `ticket: SuspendTicket`
+field that holds the `suspension` payload, `pending` projection, and `resume_mode`
+(ReplayToolCall / UseDecisionAsToolResult / PassDecisionToTool).
 
 ### Type Renames
 

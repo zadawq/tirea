@@ -42,10 +42,15 @@ Config flags:
 - `enabled`: registers skill tools (`skill`, `load_skill_resource`, `skill_script`)
 - `advertise_catalog`: injects available-skills catalog into inference context
 
-3. (Optional) use scope filters per run.
+3. (Optional) use scope filters per agent via `AgentDefinition`.
 
-- `__agent_policy_allowed_skills`
-- `__agent_policy_excluded_skills`
+```rust,ignore
+AgentDefinition::new("deepseek-chat")
+    .with_allowed_skills(vec!["code-review".to_string()])
+    .with_excluded_skills(vec!["dangerous-skill".to_string()])
+```
+
+These populate `RunPolicy.allowed_skills` / `RunPolicy.excluded_skills`, enforced at runtime when skills are resolved.
 
 ## Verify
 

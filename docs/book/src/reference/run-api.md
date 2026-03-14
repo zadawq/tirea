@@ -85,13 +85,17 @@ Minimal payload:
 }
 ```
 
-Supported aliases (compatibility):
+All accepted fields:
 
-- `agentId` / `agent_id`
-- `threadId` / `thread_id` / `contextId` / `context_id`
-- `runId` / `run_id` / `taskId` / `task_id`
-- `parentThreadId` / `parent_thread_id` / `parentContextId` / `parent_context_id`
-- `initialDecisions` / `initial_decisions` / `decisions`
+- `agentId` / `agent_id` (required)
+- `threadId` / `thread_id` / `contextId` / `context_id` (optional — generated if absent)
+- `runId` / `run_id` / `taskId` / `task_id` (optional — generated if absent)
+- `parentRunId` / `parent_run_id` (optional — links this run to a parent run for lineage tracking)
+- `parentThreadId` / `parent_thread_id` / `parentContextId` / `parent_context_id` (optional — links to a parent thread)
+- `resourceId` / `resource_id` (optional — associates the run with a resource identifier)
+- `state` (optional JSON object — initial state to merge into the thread before the run starts)
+- `messages` (optional array — user messages to start the run with)
+- `initialDecisions` / `initial_decisions` / `decisions` (optional array — pre-resolved tool call decisions)
 
 Example:
 

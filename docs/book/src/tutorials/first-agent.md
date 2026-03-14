@@ -9,6 +9,8 @@ Run one agent end-to-end and confirm you receive a complete event stream.
 ```toml
 [dependencies]
 tirea = "0.3.0"
+tirea-agentos-server = "0.3.0"
+tirea-store-adapters = "0.3.0"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
@@ -81,6 +83,7 @@ let os = AgentOsBuilder::new()
             state: None,
             messages: vec![Message::user("Say hello using the echo tool")],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await?;
 
@@ -172,9 +175,12 @@ To expose the same agent over HTTP, keep the `AgentOsBuilder` wiring and move it
 
 ```rust,ignore
 use std::sync::Arc;
-use tirea_agentos_server::service::AppState;
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_agentos_server::{http, protocol};
+use tirea_store_adapters::FileStore;
 
+let file_store = Arc::new(FileStore::new("./sessions"));
 let agent_os = AgentOsBuilder::new()
     .with_tools(tool_map([EchoTool]))
     .with_agent_spec(AgentDefinitionSpec::local_with_id(
@@ -183,7 +189,13 @@ let agent_os = AgentOsBuilder::new()
             .with_system_prompt("You are a helpful assistant.")
             .with_allowed_tools(vec!["echo".to_string()]),
     ))
+    .with_agent_state_store(file_store.clone() as Arc<dyn ThreadStore>)
     .build()?;
+
+let os = Arc::new(agent_os);
+let read_store: Arc<dyn ThreadReader> = file_store.clone();
+let mailbox_store: Arc<dyn MailboxStore> = file_store;
+let mailbox_svc = Arc::new(MailboxService::new(os.clone(), mailbox_store, "my-agent"));
 
 let app = axum::Router::new()
     .merge(http::health_routes())
@@ -191,10 +203,7 @@ let app = axum::Router::new()
     .merge(http::run_routes())
     .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
     .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
-    .with_state(AppState {
-        os: Arc::new(agent_os),
-        read_store,
-    });
+    .with_state(AppState::new(os, read_store, mailbox_svc));
 ```
 
 Then run the server with an Axum listener instead of immediately calling `run_stream(...)`.

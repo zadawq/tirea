@@ -4,8 +4,8 @@ version.workspace = true
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-description = "HTTP/SSE/NATS gateway for tirea AgentOS"
-keywords = ["agent", "llm", "server", "sse"]
+description = "Multi-protocol AI agent server: AG-UI, AI SDK v6, A2A, and NATS from a single binary"
+keywords = ["ai-agent", "llm", "ag-ui", "server"]
 categories = ["asynchronous", "web-programming::http-server"]
 
 [dependencies]

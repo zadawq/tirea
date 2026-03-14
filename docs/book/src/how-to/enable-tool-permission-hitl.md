@@ -46,12 +46,15 @@ let allow_server_info = permission_state_action(PermissionAction::SetTool {
 });
 ```
 
-3. Optional: constrain tools per run via scope keys.
+3. Optional: constrain tools per agent via `AgentDefinition`.
 
-- `__agent_policy_allowed_tools`
-- `__agent_policy_excluded_tools`
+```rust,ignore
+AgentDefinition::new("deepseek-chat")
+    .with_allowed_tools(vec!["search".to_string()])
+    .with_excluded_tools(vec!["dangerous_tool".to_string()])
+```
 
-These are enforced by `ToolPolicyPlugin` before tool execution.
+These populate `RunPolicy.allowed_tools` / `RunPolicy.excluded_tools`, which are enforced by `ToolPolicyPlugin` before tool execution.
 
 4. Forward approval decisions from client to active run.
 

@@ -1,8 +1,6 @@
 # Typed Tool
 
-`TypedTool` is the preferred way to implement most production tools with a fixed argument shape.
-
-Use plain `Tool` when you need fully custom JSON handling, dynamic schemas, or custom `execute_effect` behavior. Use `TypedTool` when arguments can be modeled as one Rust struct.
+`TypedTool` auto-generates JSON Schema from a Rust argument struct and handles deserialization.
 
 ## Why Prefer `TypedTool`
 
@@ -98,107 +96,117 @@ That means:
 
 ## State-Writing Example
 
-Assume `Counter` is the same state type introduced in [First Tool](../tutorials/first-tool.md).
+This example shows a state-writing tool using the plain `Tool` trait with `execute_effect`. State mutations must go through `ToolExecutionEffect` + `AnyStateAction` — the runtime rejects direct writes via `ctx.state::<T>().set_*()`.
 
 ```rust,ignore
 use async_trait::async_trait;
-use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::json;
-use tirea::contracts::runtime::tool_call::{ToolError, ToolResult, TypedTool};
-use tirea::contracts::ToolCallContext;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tirea::contracts::{AnyStateAction, ToolCallContext};
+use tirea::contracts::runtime::tool_call::{ToolExecutionEffect, ToolError, ToolResult};
+use tirea::prelude::*;
+use tirea_state_derive::State;
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct RenameArgs {
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(action = "CounterAction")]
+struct Counter {
+    value: i64,
     label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum CounterAction {
+    Increment(i64),
+    Rename(String),
+}
+
+impl Counter {
+    fn reduce(&mut self, action: CounterAction) {
+        match action {
+            CounterAction::Increment(n) => self.value += n,
+            CounterAction::Rename(name) => self.label = name,
+        }
+    }
 }
 
 struct RenameCounter;
 
 #[async_trait]
-impl TypedTool for RenameCounter {
-    type Args = RenameArgs;
-
-    fn tool_id(&self) -> &str { "rename_counter" }
-    fn name(&self) -> &str { "Rename Counter" }
-    fn description(&self) -> &str { "Update the counter label" }
-
-    fn validate(&self, args: &Self::Args) -> Result<(), String> {
-        if args.label.trim().is_empty() {
-            return Err("label cannot be empty".to_string());
-        }
-        Ok(())
+impl Tool for RenameCounter {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("rename_counter", "Rename Counter", "Update the counter label")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": { "label": { "type": "string" } },
+                "required": ["label"]
+            }))
     }
 
-    async fn execute(
-        &self,
-        args: RenameArgs,
-        ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolResult, ToolError> {
-        let state = ctx.state::<Counter>("counter");
-        state
-            .set_label(args.label.clone())
-            .map_err(|err| ToolError::ExecutionFailed(err.to_string()))?;
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx).await?.result)
+    }
 
-        Ok(ToolResult::success(
+    async fn execute_effect(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let label = args["label"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArguments("label is required".to_string()))?;
+
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "rename_counter",
-            json!({ "label": args.label }),
+            json!({ "label": label }),
         ))
+        .with_action(AnyStateAction::new::<Counter>(
+            CounterAction::Rename(label.to_string()),
+        )))
     }
 }
 ```
 
-## Reading And Writing State
+## Reading State
 
-Inside a tool, state access usually follows one of these patterns:
+Inside a tool, state reads follow one of two patterns:
 
-- `ctx.state_of::<T>()` when the state type already declares its canonical path with `#[tirea(path = "...")]`
-- `ctx.state::<T>("some.path")` when you want to read or write the same state shape at an explicit path
-
-Example:
+Use `ctx.snapshot_of::<T>()` to read the current state as a deserialized Rust value:
 
 ```rust,ignore
-#[derive(Debug, Clone, Serialize, Deserialize, State)]
-#[tirea(path = "workspace_file")]
-struct WorkspaceFile {
-    path: String,
-    content: String,
-}
-
-let file = ctx.state_of::<WorkspaceFile>();
-let current = file.content().unwrap_or_default();
-file.set_content(format!("{current}\n// updated"))?;
-
-let draft = ctx.state::<WorkspaceFile>("drafts.active_file");
-let draft_path = draft.path().unwrap_or_default();
+let file: WorkspaceFile = ctx.snapshot_of::<WorkspaceFile>().unwrap_or_default();
 ```
 
-A practical rule:
+For advanced cases where the same state type is reused at different paths, use `ctx.snapshot_at::<T>("some.path")`.
 
-- keep durable business data in typed state;
-- read the current value first;
-- derive the next value in Rust;
-- write through generated setters so the runtime records a patch.
+### Writing State
+
+All state writes use the action-based pattern:
+
+1. Read current state via `snapshot_of`
+2. Return `ToolExecutionEffect::new(result).with_action(AnyStateAction::new::<T>(action))`
+3. The runtime applies the action through the state's `reduce` method
+
+> The runtime rejects direct state writes through `ctx.state::<T>().set_*()`. All mutations must go through the action pipeline.
 
 ## State Scope Examples
 
 State scope is declared on the state type, not on the tool.
 
 ```rust,ignore
-#[derive(Debug, Clone, Serialize, Deserialize, State)]
-#[tirea(path = "files", action = "FileAccessAction", scope = "thread")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(action = "FileAccessAction", scope = "thread")]
 struct FileAccessState {
     opened_paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, State)]
-#[tirea(path = "__run.editor", action = "EditorRunAction", scope = "run")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(action = "EditorRunAction", scope = "run")]
 struct EditorRunState {
     current_goal: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, State)]
-#[tirea(path = "approval", action = "ApprovalAction", scope = "tool_call")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(action = "ApprovalAction", scope = "tool_call")]
 struct ApprovalState {
     requested: bool,
 }
@@ -217,8 +225,8 @@ If you need the full cleanup semantics, see [Persistence and Versioning](../expl
 Coding agents often need invariants such as "a file must be read before it can be edited". The simplest robust pattern is to persist read-tracking in thread-scoped state and reject writes that do not satisfy that precondition.
 
 ```rust,ignore
-#[derive(Debug, Clone, Serialize, Deserialize, State)]
-#[tirea(path = "file_access", action = "FileAccessAction", scope = "thread")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(action = "FileAccessAction", scope = "thread")]
 struct FileAccessState {
     opened_paths: Vec<String>,
 }
@@ -237,35 +245,47 @@ struct WriteFileArgs {
 struct ReadFileTool;
 struct WriteFileTool;
 
+// ReadFileTool uses the plain Tool trait (not TypedTool) so it can implement
+// execute_effect and emit state actions. Deserialize the typed args manually.
 #[async_trait]
-impl TypedTool for ReadFileTool {
-    type Args = ReadFileArgs;
+impl Tool for ReadFileTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("read_file", "Read File", "Read a file and record access")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }))
+    }
 
-    fn tool_id(&self) -> &str { "read_file" }
-    fn name(&self) -> &str { "Read File" }
-    fn description(&self) -> &str { "Read a file and record access" }
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx).await?.result)
+    }
 
-    async fn execute(
+    async fn execute_effect(
         &self,
-        args: ReadFileArgs,
+        args: Value,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolResult, ToolError> {
-        let content = std::fs::read_to_string(&args.path)
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let typed_args: ReadFileArgs = serde_json::from_value(args)
+            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+
+        let content = std::fs::read_to_string(&typed_args.path)
             .map_err(|err| ToolError::ExecutionFailed(err.to_string()))?;
 
-        let access = ctx.state_of::<FileAccessState>();
-        let mut opened = access.opened_paths().unwrap_or_default();
-        if !opened.contains(&args.path) {
-            opened.push(args.path.clone());
-            access
-                .set_opened_paths(opened)
-                .map_err(|err| ToolError::ExecutionFailed(err.to_string()))?;
+        let access: FileAccessState = ctx.snapshot_of::<FileAccessState>().unwrap_or_default();
+        let mut effect = ToolExecutionEffect::new(ToolResult::success(
+            "read_file",
+            json!({ "path": typed_args.path, "content": content }),
+        ));
+
+        if !access.opened_paths.contains(&typed_args.path) {
+            effect = effect.with_action(AnyStateAction::new::<FileAccessState>(
+                FileAccessAction::MarkOpened(typed_args.path),
+            ));
         }
 
-        Ok(ToolResult::success(
-            "read_file",
-            json!({ "path": args.path, "content": content }),
-        ))
+        Ok(effect)
     }
 }
 
@@ -289,9 +309,8 @@ impl TypedTool for WriteFileTool {
         args: WriteFileArgs,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let access = ctx.state_of::<FileAccessState>();
-        let opened = access.opened_paths().unwrap_or_default();
-        if !opened.contains(&args.path) {
+        let access: FileAccessState = ctx.snapshot_of::<FileAccessState>().unwrap_or_default();
+        if !access.opened_paths.contains(&args.path) {
             return Err(ToolError::Denied(format!(
                 "write_file requires a prior read_file for {}",
                 args.path
@@ -317,21 +336,7 @@ This pattern is usually enough when:
 
 If the same policy must apply to many tools uniformly, move the gate into a plugin or `BeforeToolExecute` policy instead of duplicating the check in each tool.
 
-## When To Use Plain `Tool` Instead
-
-Use `Tool` directly when at least one of these is true:
-
-- Input shape is not known at compile time
-- You need to accept arbitrary JSON and inspect it manually
-- You need custom schema handling not derived from one Rust type
-- You need to override `execute_effect` directly
-
-## Result Versus Effect
-
-In Tirea, a tool does not have to be limited to "JSON in, JSON result out".
-
-- `execute(...) -> ToolResult` is the simple form
-- `execute_effect(...) -> ToolExecutionEffect` is the richer form
+## `ToolExecutionEffect`
 
 `ToolExecutionEffect` lets a tool return:
 
@@ -339,13 +344,7 @@ In Tirea, a tool does not have to be limited to "JSON in, JSON result out".
 - state actions
 - non-state actions applied in `AfterToolExecute`
 
-This matters when a tool must do more than report a result. For example:
-
-- a skill activation tool may inject instructions into the message stream
-- a tool may update reducer-backed state that later plugins read
-- a domain tool may emit runtime actions in addition to patch-based state writes
-
-## Example: Result Plus Actions
+## Example: State Action + Message Injection
 
 ```rust,ignore
 use tirea::contracts::runtime::phase::AfterToolExecuteAction;
@@ -380,6 +379,7 @@ impl Tool for ActivateSkillTool {
                 "activate_skill",
                 serde_json::json!({ "ok": true }),
             ))
+            // SkillState and SkillStateAction come from tirea-extension-skills
             .with_action(AnyStateAction::new::<SkillState>(
                 SkillStateAction::Activate("docx".to_string()),
             ))

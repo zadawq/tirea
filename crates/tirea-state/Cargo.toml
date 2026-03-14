@@ -1,11 +1,11 @@
 [package]
 name = "tirea-state"
-description = "Typed view + JSON patch library for deterministic immutable state management"
+description = "Typed state management with derive macros, CRDT lattice merge, and deterministic patch replay"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["state", "json-patch", "immutable", "deterministic"]
+keywords = ["ai-agent", "crdt", "json-patch", "state"]
 categories = ["data-structures"]
 
 [dependencies]

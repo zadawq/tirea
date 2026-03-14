@@ -101,11 +101,15 @@ impl Tool for MyUntypedTool {
 
 ## State Access Checklist
 
-- Prefer `ctx.state_of::<T>()` when the state type has a canonical `#[tirea(path = "...")]`.
-- Use `ctx.state::<T>("custom.path")` when the same state shape is reused at a different path.
-- Put durable business data in `thread` scope, temporary run coordination in `run`, and per-call scratch data in `tool_call`.
+State is optional — many tools don't need it at all.
+
+- **Reading**: use `ctx.snapshot_of::<T>()` for read-only access. Use `snapshot_at` only for advanced cases with dynamic paths.
+- **Writing**: implement `execute_effect` and return `ToolExecutionEffect` + `AnyStateAction::new::<T>(action)`. Direct writes via `ctx.state::<T>().set_*()` are rejected at runtime.
+- **Scoping**: declare scope on the state type via `#[tirea(scope = "...")]`:
+  - `thread` (default) — persists across all runs in the conversation
+  - `run` — reset at the start of each agent run
+  - `tool_call` — exists only during a single tool execution
 - If one tool depends on another tool having run first, encode that precondition in state and reject invalid execution explicitly.
-- If the tool must return a result and also emit side effects such as state actions or message injection, implement `execute_effect` instead of stopping at `ToolResult`.
 
 For concrete examples, see [Typed Tool](../reference/typed-tool.md).
 

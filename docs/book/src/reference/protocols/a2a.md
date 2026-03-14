@@ -106,7 +106,7 @@ Response for decision forwarding (`202`):
 {
   "taskId": "run-1",
   "contextId": "thread-1",
-  "status": "completed",
+  "status": "done",
   "origin": "a2a",
   "terminationCode": null,
   "terminationDetail": null,

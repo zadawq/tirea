@@ -51,6 +51,7 @@ let app = axum::Router::new()
     .with_state(AppState {
         os: Arc::new(agent_os),
         read_store,
+        mailbox_service,
     });
 ```
 

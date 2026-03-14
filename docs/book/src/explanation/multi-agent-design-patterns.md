@@ -41,16 +41,16 @@ User -> [Orchestrator] -> intent analysis
 let os = AgentOs::builder()
     .with_agent_spec(AgentDefinitionSpec::local_with_id("billing", AgentDefinition::new("deepseek-chat")
         .with_system_prompt("You are a billing specialist.")
-        .with_excluded_tools(vec!["agent_run", "agent_stop"])))
+        .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()])))
     .with_agent_spec(AgentDefinitionSpec::local_with_id("support", AgentDefinition::new("deepseek-chat")
         .with_system_prompt("You are a technical support specialist.")
-        .with_excluded_tools(vec!["agent_run", "agent_stop"])))
+        .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()])))
     .with_agent_spec(AgentDefinitionSpec::local_with_id("orchestrator", AgentDefinition::new("deepseek-chat")
         .with_system_prompt("Route user requests to the appropriate specialist:
 - billing: payment, invoice, subscription issues
 - support: technical problems, bugs, errors
 Use agent_run to delegate. Use agent_output to read results.")
-        .with_allowed_agents(vec!["billing", "support"])))
+        .with_allowed_agents(vec!["billing".to_string(), "support".to_string()])))
     .build()?;
 ```
 
@@ -81,7 +81,7 @@ The orchestrator prompt drives the sequence:
 2. Call agent_run(\"extractor\") with the parsed text. Read output with agent_output.
 3. Call agent_run(\"summarizer\") with the extracted data. Read output with agent_output.
 Return the final summary to the user.")
-    .with_allowed_agents(vec!["parser", "extractor", "summarizer"])))
+    .with_allowed_agents(vec!["parser".to_string(), "extractor".to_string(), "summarizer".to_string()])))
 ```
 
 ### Limitations
@@ -120,7 +120,7 @@ The orchestrator prompt instructs the LLM to issue multiple `agent_run` tool cal
 4. Return the unified review.
 IMPORTANT: call all three agent_run tools at the same time, not one after another.")
     .with_allowed_agents(vec![
-        "security_auditor", "style_checker", "perf_analyst", "synthesizer"
+        "security_auditor".to_string(), "style_checker".to_string(), "perf_analyst".to_string(), "synthesizer".to_string()
     ])
     .with_tool_execution_mode(ToolExecutionMode::ParallelBatchApproval)))
 ```
@@ -161,10 +161,10 @@ Middle-layer agents also have delegation tools:
 ```rust,ignore
 .with_agent_spec(AgentDefinitionSpec::local_with_id("researcher", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Research the given topic. Use web_search for facts, summarizer for condensing.")
-    .with_allowed_agents(vec!["web_search", "summarizer"])))
+    .with_allowed_agents(vec!["web_search".to_string(), "summarizer".to_string()])))
 .with_agent_spec(AgentDefinitionSpec::local_with_id("report_writer", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Write a report. Delegate research to the researcher agent, formatting to the formatter agent.")
-    .with_allowed_agents(vec!["researcher", "formatter"])))
+    .with_allowed_agents(vec!["researcher".to_string(), "formatter".to_string()])))
 ```
 
 ### Key decisions
@@ -193,7 +193,7 @@ This is better than an orchestrator-mediated approach because the generator reta
 .with_agent_spec(AgentDefinitionSpec::local_with_id("critic", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Validate the SQL query. Output exactly PASS if correct. \
         Otherwise output FAIL followed by specific errors.")
-    .with_excluded_tools(vec!["agent_run", "agent_stop"])))
+    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()])))
 .with_agent_spec(AgentDefinitionSpec::local_with_id("generator", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("You are a SQL query writer with a built-in review process:
 1. Write a SQL query for the user's requirement.
@@ -202,7 +202,7 @@ This is better than an orchestrator-mediated approach because the generator reta
 4. Repeat until critic returns PASS or 5 attempts are reached.
 5. Return the final validated SQL.
 Always call the critic before finishing.")
-    .with_allowed_agents(vec!["critic"])
+    .with_allowed_agents(vec!["critic".to_string()])
     .with_max_rounds(20)))
 ```
 
@@ -300,4 +300,4 @@ Stay with a single agent when:
 - [Sub-Agent Delegation](./sub-agent-delegation.md) for the runtime model behind delegation tools
 - [Use Sub-Agent Delegation](../how-to/use-sub-agent-delegation.md) for setup instructions
 - [HITL and Decision Flow](./hitl-and-decision-flow.md) for suspension mechanics
-- [Architecture](./architecture.md) for the four-layer runtime model
+- [Architecture](./architecture.md) for the three-layer runtime model

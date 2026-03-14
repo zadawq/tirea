@@ -27,8 +27,10 @@ stateDiagram-v2
 | `Waiting` | Run is paused waiting for external resume decisions |
 | `Done` | Terminal — run finished with a `TerminationReason` |
 
-Terminal reasons: `NaturalEnd`, `BehaviorRequested`, `Stopped(code)`, `Cancelled`,
+Terminal reasons: `NaturalEnd`, `BehaviorRequested`, `Stopped(StoppedReason)`, `Cancelled`,
 `Suspended`, `Error`.
+
+`StoppedReason` carries `{ code: String, detail: Option<String> }` — both the stop code and an optional descriptive message.
 
 ### Layer 2: Tool Call Lifecycle (`ToolCallStatus`)
 
@@ -85,7 +87,7 @@ stateDiagram-v2
 ## Canonical Top-Level Flow
 
 1. `RunStart`
-2. `commit(UserMessage)` + optional resume replay (`drain_resume_decisions_and_replay`)
+2. `commit(UserMessage)` + optional resume replay (`apply_decisions_and_replay`)
 3. Loop:
    - `RESUME_TOOL_CALL` (apply inbound decisions + replay if any)
    - `StepStart`

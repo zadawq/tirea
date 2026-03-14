@@ -56,7 +56,7 @@ The published site is available at <https://tirea-ai.github.io/tirea/>.
 - [`Thread`](../doc/tirea_contract/struct.Thread.html) — Persisted thread model
 - [`RunContext`](../doc/tirea_contract/struct.RunContext.html) — Run-scoped execution context
 - [`RunRequest`](../doc/tirea_contract/struct.RunRequest.html) — Unified protocol request
-- [`Tool`](../doc/tirea_contract/trait.Tool.html) — Tool trait
+- [`Tool`](../doc/tirea_contract/runtime/tool_call/trait.Tool.html) — Tool trait
 - [`ThreadStore`](../doc/tirea_contract/trait.ThreadStore.html) — Persistence abstraction
 
 ### tirea_agentos

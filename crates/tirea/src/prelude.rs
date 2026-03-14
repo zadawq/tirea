@@ -66,7 +66,7 @@ pub use crate::contracts::{Suspension, SuspensionResponse};
 pub use crate::runtime::{AgentOs, PreparedRun, RunStream};
 
 #[cfg(feature = "core")]
-pub use crate::composition::{AgentDefinition, AgentOsBuilder};
+pub use crate::composition::{tool_map, tool_map_from_arc, AgentDefinition, AgentOsBuilder};
 
 // Plugin SPI
 pub use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};

@@ -4,8 +4,8 @@ version.workspace = true
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-description = "Thread and run storage backends (memory, file, PostgreSQL, NATS) for tirea"
-keywords = ["agent", "llm", "storage", "persistence"]
+description = "Pluggable storage backends (memory, file, PostgreSQL, NATS) for AI agent state and threads"
+keywords = ["ai-agent", "llm", "storage", "persistence"]
 categories = ["asynchronous", "database"]
 
 [dependencies]

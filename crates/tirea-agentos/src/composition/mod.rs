@@ -42,3 +42,7 @@ pub use registry::{
 };
 pub use stop_condition::StopConditionSpec;
 pub use wiring::{SystemWiring, WiringContext};
+
+// Re-exported from loop_runner for convenience — builder code and docs use
+// `tirea::composition::tool_map(...)` alongside `AgentOsBuilder`.
+pub use crate::runtime::loop_runner::{tool_map, tool_map_from_arc};

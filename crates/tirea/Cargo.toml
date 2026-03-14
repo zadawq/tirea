@@ -2,10 +2,10 @@
 name = "tirea"
 version.workspace = true
 edition = "2021"
-description = "Unified umbrella crate for the tirea agent framework"
+description = "Rust AI agent framework with typed state, CRDT conflict resolution, and multi-protocol serving"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-keywords = ["agent", "llm", "ai", "framework"]
+keywords = ["ai-agent", "llm", "crdt", "agent-framework"]
 categories = ["asynchronous"]
 
 [dependencies]

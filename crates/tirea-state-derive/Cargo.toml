@@ -1,11 +1,11 @@
 [package]
 name = "tirea-state-derive"
-description = "Derive macro for tirea-state State trait"
+description = "Derive macros for typed AI agent state with CRDT lattice support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["state", "derive", "macro", "json-patch"]
+keywords = ["ai-agent", "derive", "crdt", "state"]
 categories = ["rust-patterns"]
 
 [lib]

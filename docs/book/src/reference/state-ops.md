@@ -100,6 +100,8 @@ use serde_json::json;
 let op = Op::remove(path!("tags"), json!("deprecated"));
 ```
 
+Errors: `PathNotFound` when path does not exist; `TypeMismatch` when target exists but is not an array.
+
 ### `LatticeMerge`
 
 Merge CRDT/lattice delta at path.

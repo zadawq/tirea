@@ -7,7 +7,7 @@
 - `RunStart`
 - `StepStart`
 - `InferenceComplete`
-- `ToolCallStart` / `ToolCallDelta` / `ToolCallReady` / `ToolCallDone`
+- `ToolCallStart` / `ToolCallDelta` / `ToolCallReady` / `ToolCallDone` (see note below)
 - `StepEnd`
 - `RunFinish`
 
@@ -58,6 +58,16 @@ Compatibility:
 
 - consumers should still accept legacy `activity_type = "progress"`
 - consumers should ignore unknown fields for forward compatibility
+
+## ToolCallDone Wire Fields
+
+`ToolCallDone` carries additional fields on the wire that are not part of the in-process enum variant:
+
+- `patch` (optional) — `TrackedPatch` representing state changes produced by the tool call.
+- `message_id` — pre-generated ID for the stored tool result message.
+- `outcome` — `ToolCallOutcome` derived from the result (`succeeded`, `failed`, etc.). Computed automatically; not set by tools.
+
+Consumers receiving `ToolCallDone` over SSE or NATS will see all of these fields in the serialized event data.
 
 ## Terminal Semantics
 

@@ -26,6 +26,8 @@ Threads:
 - `GET /v1/threads/summaries`
 - `GET /v1/threads/:id`
 - `GET /v1/threads/:id/messages`
+- `POST /v1/threads/:id/interrupt`
+- `GET /v1/threads/:id/mailbox`
 - `PATCH /v1/threads/:id/metadata`
 - `DELETE /v1/threads/:id`
 
@@ -76,6 +78,33 @@ Load raw thread messages:
 ```bash
 curl 'http://127.0.0.1:8080/v1/threads/thread-1/messages?after=10&limit=20&order=asc&visibility=all&run_id=run-1'
 ```
+
+Interrupt thread (cancel active run and supersede queued entries):
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/threads/thread-1/interrupt
+```
+
+Response (`202`):
+
+```json
+{
+  "status": "interrupt_requested",
+  "thread_id": "thread-1",
+  "generation": 3,
+  "cancelled_run_id": "run-1",
+  "superseded_pending_count": 1,
+  "superseded_pending_entry_ids": ["entry-2"]
+}
+```
+
+List thread mailbox entries:
+
+```bash
+curl 'http://127.0.0.1:8080/v1/threads/thread-1/mailbox?offset=0&limit=50&status=queued&origin=external'
+```
+
+Query params: `offset`, `limit` (clamped `1..=200`, default `50`), `status` (`queued`, `claimed`, `accepted`, `superseded`, `cancelled`, `dead_letter`), `origin` (`external`, `internal`, `none`, default `external`), `visibility` (`internal`, `none`, default all).
 
 ## Stream Run Endpoints
 

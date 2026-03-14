@@ -20,7 +20,7 @@ Choose AG-UI/CopilotKit instead when you need richer shared state, frontend-exec
 - Backend is reachable (default `http://localhost:8080`).
 - AI SDK routes are enabled:
   - `POST /v1/ai-sdk/agents/:agent_id/runs`
-  - `GET /v1/ai-sdk/agents/:agent_id/runs/:chat_id/stream`
+  - `GET /v1/ai-sdk/agents/:agent_id/chats/:chat_id/stream`
   - `GET /v1/ai-sdk/threads/:id/messages`
 
 ## Minimum Architecture

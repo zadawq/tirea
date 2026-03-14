@@ -33,11 +33,12 @@ AI SDK payload (NATS path):
   "agentId": "assistant",
   "sessionId": "t1",
   "input": "hello",
+  "runId": "r1",
   "replySubject": "_INBOX.x"
 }
 ```
 
-Note: AI SDK NATS currently uses `sessionId/input`, while AI SDK HTTP v6 UI route uses `id/messages`.
+Note: AI SDK NATS currently uses `sessionId/input`, while AI SDK HTTP v6 UI route uses `id/messages`. `runId` is optional; when provided it is used as the run identifier for the started run.
 
 ## Reply Subject Resolution
 

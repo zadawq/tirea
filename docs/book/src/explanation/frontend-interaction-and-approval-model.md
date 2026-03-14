@@ -11,6 +11,8 @@ tool or plugin requests suspension
 -> runtime replays deterministically
 ```
 
+> In code, "plugin" refers to a type that implements the `AgentBehavior` trait.
+
 This is why frontend tools, approval dialogs, and other manual intervention points all fit the same machinery.
 
 ## The Problem This Model Solves
@@ -173,6 +175,9 @@ The permission plugin decides among:
 - `allow`
 - `deny`
 - `ask`
+
+In code these map to `ToolPermissionBehavior` variants: `Allow` (no action emitted),
+`Deny` → `BeforeToolExecuteAction::Block(reason)`, `Ask` → `BeforeToolExecuteAction::Suspend(ticket)`.
 
 `ask` becomes:
 

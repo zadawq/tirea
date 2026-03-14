@@ -48,6 +48,7 @@ let run = os.run_stream(RunRequest {
     state: None,
     messages: vec![Message::user("hello")],
     initial_decisions: vec![],
+    source_mailbox_entry_id: None,
 }).await?;
 ```
 
