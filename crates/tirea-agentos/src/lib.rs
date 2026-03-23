@@ -13,4 +13,4 @@ pub mod runtime;
 // ── Top-level re-exports for common entry points ────────────────────────
 
 pub use composition::{AgentDefinition, AgentOsBuilder, RegistrySet, ToolBehaviorBundle};
-pub use runtime::{AgentOs, AgentOsRunError, PreparedRun, RunStream};
+pub use runtime::{AgentOs, AgentOsRunError, PreparedRun, RunLaunchSpec, RunStream};

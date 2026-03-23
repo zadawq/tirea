@@ -91,15 +91,13 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
             .context_messages
             .push(crate::runtime::inference::ContextMessage {
                 key: key.into(),
+                role: crate::thread::Role::System,
                 content: content.into(),
+                visibility: crate::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             });
-    }
-
-    /// Append a session message.
-    pub fn add_session_message(&mut self, text: impl Into<String>) {
-        self.step.inference.session_context.push(text.into());
     }
 
     /// Exclude tool by id.
@@ -279,8 +277,8 @@ impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
             .expect("AfterToolExecuteContext.tool_result() requires tool result")
     }
 
-    pub fn add_system_reminder(&mut self, text: impl Into<String>) {
-        self.step.messaging.reminders.push(text.into());
+    pub fn add_message(&mut self, message: crate::runtime::inference::ContextMessage) {
+        self.step.messaging.push(message);
     }
 }
 

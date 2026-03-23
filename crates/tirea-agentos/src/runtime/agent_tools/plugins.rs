@@ -299,9 +299,12 @@ impl AgentBehavior for AgentToolsPlugin {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "agent_catalog".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: rendered,
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
         }
@@ -312,7 +315,9 @@ impl AgentBehavior for AgentToolsPlugin {
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
         match self.render_reminder(ctx.thread_id()).await {
-            Some(s) => ActionSet::single(AfterToolExecuteAction::AddSystemReminder(s)),
+            Some(s) => ActionSet::single(AfterToolExecuteAction::AddMessage(
+                tirea_contract::runtime::inference::ContextMessage::system_reminder(s),
+            )),
             None => ActionSet::empty(),
         }
     }

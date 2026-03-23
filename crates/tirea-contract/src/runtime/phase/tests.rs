@@ -12,9 +12,12 @@ use super::*;
 fn test_cm(key: &str, content: &str) -> crate::runtime::inference::ContextMessage {
     crate::runtime::inference::ContextMessage {
         key: key.into(),
+        role: crate::thread::Role::System,
         content: content.into(),
+        visibility: crate::thread::Visibility::Internal,
         cooldown_turns: 0,
         target: Default::default(),
+        consume_after_emit: false,
     }
 }
 
@@ -78,7 +81,6 @@ fn test_step_context_new() {
     let ctx = fix.step(mock_tools());
 
     assert!(ctx.inference.context_messages.is_empty());
-    assert!(ctx.inference.session_context.is_empty());
     assert_eq!(ctx.inference.tools.len(), 3);
     assert!(ctx.gate.is_none());
     assert!(ctx.llm_response.is_none());
@@ -92,16 +94,17 @@ fn test_step_context_reset() {
     let mut ctx = fix.step(mock_tools());
 
     ctx.inference.context_messages.push(test_cm("test", "test"));
-    ctx.inference.session_context.push("test".into());
-    ctx.messaging.reminders.push("test".into());
+    ctx.messaging
+        .push(crate::runtime::inference::ContextMessage::system_reminder(
+            "test",
+        ));
     ctx.flow.run_action = Some(RunAction::Terminate(TerminationReason::BehaviorRequested));
 
     ctx.reset();
 
     assert!(ctx.inference.context_messages.is_empty());
-    assert!(ctx.inference.session_context.is_empty());
     assert_eq!(ctx.inference.tools.len(), 3); // tools preserved
-    assert!(ctx.messaging.reminders.is_empty() && ctx.messaging.user_messages.is_empty());
+    assert!(ctx.messaging.messages.is_empty());
     assert!(ctx.flow.run_action.is_none());
     assert!(ctx.pending_patches.is_empty());
 }
@@ -172,26 +175,53 @@ fn test_clear_context_messages() {
 }
 
 #[test]
-fn test_session_context() {
+fn test_session_context_messages() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.session_context.push("Thread 1".into());
-    ctx.inference.session_context.push("Thread 2".into());
+    ctx.inference
+        .context_messages
+        .push(crate::runtime::inference::ContextMessage::session(
+            "thread_1", "Thread 1",
+        ));
+    ctx.inference
+        .context_messages
+        .push(crate::runtime::inference::ContextMessage::session(
+            "thread_2", "Thread 2",
+        ));
 
-    assert_eq!(ctx.inference.session_context.len(), 2);
+    assert_eq!(ctx.inference.context_messages.len(), 2);
+    assert_eq!(
+        ctx.inference.context_messages[0].target,
+        crate::runtime::inference::ContextMessageTarget::Session
+    );
+    assert_eq!(
+        ctx.inference.context_messages[1].target,
+        crate::runtime::inference::ContextMessageTarget::Session
+    );
 }
 
 #[test]
-fn test_set_session_context() {
+fn test_replace_session_context_messages() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.session_context.push("Thread 1".into());
-    ctx.inference.session_context = vec!["Replaced".to_string()];
+    ctx.inference
+        .context_messages
+        .push(crate::runtime::inference::ContextMessage::session(
+            "thread_1", "Thread 1",
+        ));
+    ctx.inference.context_messages = vec![crate::runtime::inference::ContextMessage::session(
+        "thread_replaced",
+        "Replaced",
+    )];
 
-    assert_eq!(ctx.inference.session_context.len(), 1);
-    assert_eq!(ctx.inference.session_context[0], "Replaced");
+    assert_eq!(ctx.inference.context_messages.len(), 1);
+    assert_eq!(ctx.inference.context_messages[0].content, "Replaced");
+    assert_eq!(
+        ctx.inference.context_messages[0].target,
+        crate::runtime::inference::ContextMessageTarget::Session
+    );
 }
 
 #[test]
@@ -199,10 +229,16 @@ fn test_reminder() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.messaging.reminders.push("Reminder 1".into());
-    ctx.messaging.reminders.push("Reminder 2".into());
+    ctx.messaging
+        .push(crate::runtime::inference::ContextMessage::system_reminder(
+            "Reminder 1",
+        ));
+    ctx.messaging
+        .push(crate::runtime::inference::ContextMessage::system_reminder(
+            "Reminder 2",
+        ));
 
-    assert_eq!(ctx.messaging.reminders.len(), 2);
+    assert_eq!(ctx.messaging.messages.len(), 2);
 }
 
 #[test]
@@ -210,10 +246,13 @@ fn test_clear_reminders() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.messaging.reminders.push("Reminder 1".into());
-    ctx.messaging.reminders.clear();
+    ctx.messaging
+        .push(crate::runtime::inference::ContextMessage::system_reminder(
+            "Reminder 1",
+        ));
+    ctx.messaging.messages.clear();
 
-    assert!(ctx.messaging.reminders.is_empty());
+    assert!(ctx.messaging.messages.is_empty());
 }
 
 // =========================================================================
@@ -594,10 +633,23 @@ fn test_step_context_multiple_session_contexts() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.session_context.push("Thread 1".into());
-    ctx.inference.session_context.push("Thread 2".into());
+    ctx.inference
+        .context_messages
+        .push(crate::runtime::inference::ContextMessage::session(
+            "thread_1", "Thread 1",
+        ));
+    ctx.inference
+        .context_messages
+        .push(crate::runtime::inference::ContextMessage::session(
+            "thread_2", "Thread 2",
+        ));
 
-    assert_eq!(ctx.inference.session_context.len(), 2);
+    assert_eq!(ctx.inference.context_messages.len(), 2);
+    assert!(ctx
+        .inference
+        .context_messages
+        .iter()
+        .all(|message| message.target == crate::runtime::inference::ContextMessageTarget::Session));
 }
 
 #[test]
@@ -605,11 +657,20 @@ fn test_step_context_multiple_reminders() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.messaging.reminders.push("Reminder 1".into());
-    ctx.messaging.reminders.push("Reminder 2".into());
-    ctx.messaging.reminders.push("Reminder 3".into());
+    ctx.messaging
+        .push(crate::runtime::inference::ContextMessage::system_reminder(
+            "Reminder 1",
+        ));
+    ctx.messaging
+        .push(crate::runtime::inference::ContextMessage::system_reminder(
+            "Reminder 2",
+        ));
+    ctx.messaging
+        .push(crate::runtime::inference::ContextMessage::system_reminder(
+            "Reminder 3",
+        ));
 
-    assert_eq!(ctx.messaging.reminders.len(), 3);
+    assert_eq!(ctx.messaging.messages.len(), 3);
 }
 
 #[test]
@@ -898,14 +959,31 @@ fn test_suspend_pending_without_tool_context_noop() {
 }
 
 #[test]
-fn test_set_clear_session_context() {
+fn test_replace_session_target_context_messages() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.session_context.push("Context 1".into());
-    ctx.inference.session_context.push("Context 2".into());
-    ctx.inference.session_context = vec!["Only this".to_string()];
+    ctx.inference
+        .context_messages
+        .push(crate::runtime::inference::ContextMessage::session(
+            "context_1",
+            "Context 1",
+        ));
+    ctx.inference
+        .context_messages
+        .push(crate::runtime::inference::ContextMessage::session(
+            "context_2",
+            "Context 2",
+        ));
+    ctx.inference.context_messages = vec![crate::runtime::inference::ContextMessage::session(
+        "only_this",
+        "Only this",
+    )];
 
-    assert_eq!(ctx.inference.session_context.len(), 1);
-    assert_eq!(ctx.inference.session_context[0], "Only this");
+    assert_eq!(ctx.inference.context_messages.len(), 1);
+    assert_eq!(ctx.inference.context_messages[0].content, "Only this");
+    assert_eq!(
+        ctx.inference.context_messages[0].target,
+        crate::runtime::inference::ContextMessageTarget::Session
+    );
 }

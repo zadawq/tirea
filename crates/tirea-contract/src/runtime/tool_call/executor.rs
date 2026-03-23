@@ -1,5 +1,6 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::behavior::AgentBehavior;
+use crate::runtime::inference::ContextMessage;
 use crate::runtime::run::RunIdentity;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
 use crate::runtime::tool_call::{CallerContext, Tool, ToolDescriptor, ToolResult};
@@ -70,9 +71,8 @@ pub struct ToolExecutionResult {
     pub outcome: ToolCallOutcome,
     /// Suspension payload for suspended outcomes.
     pub suspended_call: Option<SuspendedCall>,
-    pub reminders: Vec<String>,
-    /// User messages to append after tool execution.
-    pub user_messages: Vec<String>,
+    /// Unified runtime messages emitted during tool execution.
+    pub messages: Vec<ContextMessage>,
     pub pending_patches: Vec<TrackedPatch>,
     /// Serialized state actions captured during this tool execution (intent log).
     pub serialized_state_actions: Vec<crate::runtime::state::SerializedStateAction>,

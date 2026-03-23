@@ -25,6 +25,11 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tirea_contract::testing::{apply_before_inference_for_test, TestFixture};
 use tirea_contract::TerminationReason;
+#[cfg(all(feature = "skills", feature = "mcp"))]
+use tirea_extension_mcp::{
+    McpProgressUpdate, McpPromptDefinition, McpPromptMessage, McpPromptResult,
+    McpResourceDefinition, McpToolRegistryManager, McpToolTransport,
+};
 use tirea_extension_permission::{resolve_permission_behavior, ToolPermissionBehavior};
 #[cfg(feature = "skills")]
 use tirea_extension_skills::{
@@ -275,9 +280,10 @@ async fn wire_skills_inserts_tools_and_plugin() {
     assert!(tools.contains_key("skill_script"));
 
     let behavior_ids = cfg.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 2);
+    assert_eq!(behavior_ids.len(), 3);
     assert_eq!(behavior_ids[0], "skills_discovery");
-    assert_eq!(behavior_ids[1], "stop_policy");
+    assert_eq!(behavior_ids[1], "skills_active_instructions");
+    assert_eq!(behavior_ids[2], "stop_policy");
 
     // Verify injection does not panic and includes catalog.
     let state = json!({
@@ -309,10 +315,8 @@ async fn wire_skills_inserts_tools_and_plugin() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(merged.contains("<available_skills>"));
-    assert!(
-        !merged.contains("<skill_instructions skill=\"s1\">"),
-        "runtime skill instructions are delivered via ToolExecutionEffect user messages, not system context"
-    );
+    assert!(merged.contains("<active_skill_instructions>"));
+    assert!(merged.contains("Do X"));
 }
 
 #[cfg(feature = "skills")]
@@ -335,10 +339,12 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
-    // With advertise_catalog=false, no discovery plugin is registered — only tools.
+    // With advertise_catalog=false, discovery is disabled but active-skill
+    // hidden instructions are still injected at inference time.
     let behavior_ids = cfg.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 1);
-    assert_eq!(behavior_ids[0], "stop_policy");
+    assert_eq!(behavior_ids.len(), 2);
+    assert_eq!(behavior_ids[0], "skills_active_instructions");
+    assert_eq!(behavior_ids[1], "stop_policy");
 
     // Tools are still available even without the catalog plugin.
     assert!(tools.contains_key("skill"));
@@ -584,13 +590,15 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("task_cancel"));
     assert!(resolved.tools.contains_key("task_output"));
     let behavior_ids = resolved.agent.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 6);
+    assert_eq!(behavior_ids.len(), 8);
     assert_eq!(behavior_ids[0], "skills_discovery");
-    assert_eq!(behavior_ids[1], "agent_tools");
-    assert_eq!(behavior_ids[2], "agent_recovery");
-    assert_eq!(behavior_ids[3], "background_tasks");
-    assert_eq!(behavior_ids[4], "context");
-    assert_eq!(behavior_ids[5], "stop_policy");
+    assert_eq!(behavior_ids[1], "skills_active_instructions");
+    assert_eq!(behavior_ids[2], "agent_tools");
+    assert_eq!(behavior_ids[3], "agent_recovery");
+    assert_eq!(behavior_ids[4], "background_tasks");
+    assert_eq!(behavior_ids[5], "prompt_segments");
+    assert_eq!(behavior_ids[6], "context");
+    assert_eq!(behavior_ids[7], "stop_policy");
 }
 
 #[test]
@@ -1002,6 +1010,371 @@ fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
     assert!(manager.stop_periodic_refresh());
 }
 
+#[cfg(all(feature = "skills", feature = "mcp"))]
+#[tokio::test]
+async fn build_with_mcp_prompt_skills_wires_skill_activation() {
+    #[derive(Debug)]
+    struct PromptTransport;
+
+    #[async_trait]
+    impl McpToolTransport for PromptTransport {
+        async fn list_tools(
+            &self,
+        ) -> Result<Vec<mcp::McpToolDefinition>, mcp::transport::McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(
+            &self,
+        ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review prompt".to_string()),
+                arguments: Vec::new(),
+            }])
+        }
+
+        async fn get_prompt(
+            &self,
+            name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, mcp::transport::McpTransportError> {
+            Ok(McpPromptResult {
+                description: Some("Review prompt".to_string()),
+                messages: vec![McpPromptMessage {
+                    role: "user".to_string(),
+                    content: json!({
+                        "type": "text",
+                        "text": format!("MCP prompt: {name}")
+                    }),
+                }],
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<tokio::sync::mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<mcp::CallToolResult, mcp::transport::McpTransportError> {
+            Ok(mcp::CallToolResult {
+                content: Vec::new(),
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> mcp::transport::TransportTypeId {
+            mcp::transport::TransportTypeId::Stdio
+        }
+    }
+
+    let manager = Arc::new(
+        McpToolRegistryManager::from_transports([(
+            mcp::transport::McpServerConnectionConfig::stdio(
+                "github",
+                "node",
+                vec!["server.js".to_string()],
+            ),
+            Arc::new(PromptTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap(),
+    );
+
+    let os = AgentOs::builder()
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .with_mcp_prompt_skills(manager)
+        .await
+        .unwrap()
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            advertise_catalog: true,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    let resolved = os.resolve("root").expect("resolve");
+    let activate = resolved.tools.get("skill").cloned().expect("skill tool");
+
+    let fix = TestFixture::new();
+    let result = activate
+        .execute(
+            json!({"skill": "mcp:github:review"}),
+            &fix.ctx_with("call-mcp-skill", "tool:skill"),
+        )
+        .await
+        .expect("execute skill tool");
+
+    assert!(result.is_success());
+    assert_eq!(result.data["skill_id"], json!("mcp:github:review"));
+}
+
+#[cfg(all(feature = "skills", feature = "mcp"))]
+#[tokio::test]
+async fn build_with_mcp_prompt_skills_wires_skill_resource_loading() {
+    #[derive(Debug)]
+    struct PromptTransport;
+
+    #[async_trait]
+    impl McpToolTransport for PromptTransport {
+        async fn list_tools(
+            &self,
+        ) -> Result<Vec<mcp::McpToolDefinition>, mcp::transport::McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(
+            &self,
+        ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review prompt".to_string()),
+                arguments: Vec::new(),
+            }])
+        }
+
+        async fn get_prompt(
+            &self,
+            name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, mcp::transport::McpTransportError> {
+            Ok(McpPromptResult {
+                description: Some("Review prompt".to_string()),
+                messages: vec![McpPromptMessage {
+                    role: "user".to_string(),
+                    content: json!({
+                        "type": "text",
+                        "text": format!("MCP prompt: {name}")
+                    }),
+                }],
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<tokio::sync::mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<mcp::CallToolResult, mcp::transport::McpTransportError> {
+            Ok(mcp::CallToolResult {
+                content: Vec::new(),
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        async fn read_resource(
+            &self,
+            uri: &str,
+        ) -> Result<Value, mcp::transport::McpTransportError> {
+            Ok(json!({
+                "contents": [{
+                    "uri": uri,
+                    "text": "# MCP Guide",
+                    "mimeType": "text/markdown"
+                }]
+            }))
+        }
+
+        fn transport_type(&self) -> mcp::transport::TransportTypeId {
+            mcp::transport::TransportTypeId::Stdio
+        }
+    }
+
+    let manager = Arc::new(
+        McpToolRegistryManager::from_transports([(
+            mcp::transport::McpServerConnectionConfig::stdio(
+                "github",
+                "node",
+                vec!["server.js".to_string()],
+            ),
+            Arc::new(PromptTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap(),
+    );
+
+    let os = AgentOs::builder()
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .with_mcp_prompt_skills(manager)
+        .await
+        .unwrap()
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            advertise_catalog: true,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    let resolved = os.resolve("root").expect("resolve");
+    let load = resolved
+        .tools
+        .get("load_skill_resource")
+        .cloned()
+        .expect("load skill resource tool");
+
+    let fix = TestFixture::new();
+    let result = load
+        .execute(
+            json!({
+                "skill": "mcp:github:review",
+                "path": "references/file://guide.md"
+            }),
+            &fix.ctx_with("call-mcp-resource", "tool:load_skill_resource"),
+        )
+        .await
+        .expect("execute load resource tool");
+
+    assert!(result.is_success());
+    assert_eq!(result.data["skill_id"], json!("mcp:github:review"));
+    assert_eq!(result.data["kind"], json!("reference"));
+    assert_eq!(result.data["path"], json!("references/file://guide.md"));
+    assert_eq!(result.data["content"], json!("# MCP Guide"));
+}
+
+#[cfg(all(feature = "skills", feature = "mcp"))]
+#[tokio::test]
+async fn mcp_prompt_skills_catalog_includes_resource_hints() {
+    #[derive(Debug)]
+    struct PromptTransport;
+
+    #[async_trait]
+    impl McpToolTransport for PromptTransport {
+        async fn list_tools(
+            &self,
+        ) -> Result<Vec<mcp::McpToolDefinition>, mcp::transport::McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(
+            &self,
+        ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review prompt".to_string()),
+                arguments: Vec::new(),
+            }])
+        }
+
+        async fn list_resources(
+            &self,
+        ) -> Result<Vec<McpResourceDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpResourceDefinition {
+                uri: "file://guide.md".to_string(),
+                name: "guide".to_string(),
+                title: Some("Guide".to_string()),
+                description: Some("Guide".to_string()),
+                mime_type: Some("text/markdown".to_string()),
+                size: Some(1536),
+            }])
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, mcp::transport::McpTransportError> {
+            Ok(McpPromptResult {
+                description: Some("Review prompt".to_string()),
+                messages: vec![McpPromptMessage {
+                    role: "user".to_string(),
+                    content: json!({
+                        "type": "text",
+                        "text": "MCP prompt"
+                    }),
+                }],
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<tokio::sync::mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<mcp::CallToolResult, mcp::transport::McpTransportError> {
+            Ok(mcp::CallToolResult {
+                content: Vec::new(),
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> mcp::transport::TransportTypeId {
+            mcp::transport::TransportTypeId::Stdio
+        }
+    }
+
+    let manager = Arc::new(
+        McpToolRegistryManager::from_transports([(
+            mcp::transport::McpServerConnectionConfig::stdio(
+                "github",
+                "node",
+                vec!["server.js".to_string()],
+            ),
+            Arc::new(PromptTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap(),
+    );
+
+    let os = AgentOs::builder()
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .with_mcp_prompt_skills(manager)
+        .await
+        .unwrap()
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            advertise_catalog: true,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    let resolved = os.resolve("root").expect("resolve");
+
+    let doc = tirea_state::DocCell::new(json!({}));
+    let run_policy = crate::contracts::RunPolicy::new();
+    let ctx = ReadOnlyContext::new(
+        crate::contracts::runtime::phase::Phase::BeforeInference,
+        "thread_1",
+        &[],
+        &run_policy,
+        &doc,
+    );
+    let actions = resolved.agent.behavior.before_inference(&ctx).await;
+    let apply_fixture = TestFixture::new();
+    let mut apply_step = apply_fixture.step(vec![]);
+    apply_before_inference_for_test(&mut apply_step, actions);
+    let merged: String = apply_step
+        .inference
+        .context_messages
+        .iter()
+        .map(|cm| cm.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(merged.contains("mcp:github:review"));
+    assert!(merged.contains("file://guide.md (Guide) - Guide [text/markdown; 1.5 KiB]"));
+}
+
 #[tokio::test]
 async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested() {
     #[derive(Debug)]
@@ -1266,6 +1639,8 @@ async fn resolve_wires_agent_tools_by_default() {
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "agent_tools");
     assert_eq!(behavior_ids[1], "agent_recovery");
+    assert_eq!(behavior_ids[2], "background_tasks");
+    assert_eq!(behavior_ids[3], "prompt_segments");
 }
 
 #[tokio::test]
@@ -1403,9 +1778,12 @@ impl AgentBehavior for TestPlugin {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
             tirea_contract::runtime::inference::ContextMessage {
                 key: format!("plugin_{}", self.0),
+                role: tirea_contract::thread::Role::System,
                 content: format!("<plugin id=\"{}\"/>", self.0),
+                visibility: tirea_contract::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             },
         ))
     }
@@ -1464,8 +1842,9 @@ async fn resolve_wires_plugins_in_order() {
     assert_eq!(behavior_ids[0], "agent_tools");
     assert_eq!(behavior_ids[1], "agent_recovery");
     assert_eq!(behavior_ids[2], "background_tasks");
-    assert_eq!(behavior_ids[3], "policy1");
-    assert_eq!(behavior_ids[4], "p1");
+    assert_eq!(behavior_ids[3], "prompt_segments");
+    assert_eq!(behavior_ids[4], "policy1");
+    assert_eq!(behavior_ids[5], "p1");
 }
 
 #[cfg(feature = "skills")]
@@ -1503,11 +1882,13 @@ async fn resolve_wires_skills_before_plugins() {
 
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "skills_discovery");
-    assert_eq!(behavior_ids[1], "agent_tools");
-    assert_eq!(behavior_ids[2], "agent_recovery");
-    assert_eq!(behavior_ids[3], "background_tasks");
-    assert_eq!(behavior_ids[4], "policy1");
-    assert_eq!(behavior_ids[5], "p1");
+    assert_eq!(behavior_ids[1], "skills_active_instructions");
+    assert_eq!(behavior_ids[2], "agent_tools");
+    assert_eq!(behavior_ids[3], "agent_recovery");
+    assert_eq!(behavior_ids[4], "background_tasks");
+    assert_eq!(behavior_ids[5], "prompt_segments");
+    assert_eq!(behavior_ids[6], "policy1");
+    assert_eq!(behavior_ids[7], "p1");
 }
 
 #[test]
@@ -1960,6 +2341,48 @@ async fn prepare_run_sets_parent_thread_id_for_existing_thread_without_lineage()
         head.thread.parent_thread_id.as_deref(),
         Some("parent-thread-a")
     );
+}
+
+#[tokio::test]
+async fn prepare_run_with_spec_strips_lineage_for_dialog_launches() {
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    let prepared = os
+        .prepare_run_with_spec(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-dialog".to_string()),
+                run_id: Some("run-from-client".to_string()),
+                parent_run_id: Some("run-parent".to_string()),
+                parent_thread_id: Some("thread-parent".to_string()),
+                resource_id: None,
+                origin: RunOrigin::default(),
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("hello")],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+            resolved,
+            RunLaunchSpec::HTTP_DIALOG,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prepared.thread_id(), "t-dialog");
+    assert_ne!(prepared.run_id(), "run-from-client");
+    assert_eq!(prepared.run_ctx.run_identity().parent_run_id_opt(), None);
+    assert_eq!(prepared.run_ctx.run_identity().parent_thread_id_opt(), None);
 }
 
 #[tokio::test]
@@ -4475,9 +4898,10 @@ fn reserved_behavior_ids_without_wirings() {
     assert!(ids.contains(&"agent_tools"));
     assert!(ids.contains(&"agent_recovery"));
     assert!(ids.contains(&"background_tasks"));
+    assert!(ids.contains(&"prompt_segments"));
     assert!(ids.contains(&"stop_policy"));
     assert!(ids.contains(&"context"));
-    assert_eq!(ids.len(), 5, "only internal reserved ids: {ids:?}");
+    assert_eq!(ids.len(), 6, "only internal reserved ids: {ids:?}");
 }
 
 #[test]
@@ -4490,10 +4914,11 @@ fn reserved_behavior_ids_aggregates_from_wirings() {
     let ids = AgentOs::reserved_behavior_ids(&wirings);
     assert!(ids.contains(&"agent_tools"));
     assert!(ids.contains(&"agent_recovery"));
+    assert!(ids.contains(&"prompt_segments"));
     assert!(ids.contains(&"stop_policy"));
     assert!(ids.contains(&"ext1_reserved_a"));
     assert!(ids.contains(&"ext1_reserved_b"));
     assert!(ids.contains(&"ext2_reserved"));
     assert!(ids.contains(&"context"));
-    assert_eq!(ids.len(), 8, "should aggregate all reserved ids: {ids:?}");
+    assert_eq!(ids.len(), 9, "should aggregate all reserved ids: {ids:?}");
 }

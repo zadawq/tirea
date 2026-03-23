@@ -25,6 +25,7 @@ use crate::runtime::loop_runner::{
 use crate::runtime::policy::{
     filter_tools_in_place, populate_permission_config, set_runtime_policy_from_definition_if_absent,
 };
+use crate::runtime::prompt_segments::{PromptSegmentsPlugin, PROMPT_SEGMENTS_PLUGIN_ID};
 use crate::runtime::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use crate::runtime::{AgentOs, AgentOsResolveError, StopPolicy};
 use genai::{chat::ChatOptions, Client};
@@ -94,6 +95,7 @@ impl AgentOs {
             AGENT_TOOLS_PLUGIN_ID,
             AGENT_RECOVERY_PLUGIN_ID,
             BACKGROUND_TASKS_PLUGIN_ID,
+            PROMPT_SEGMENTS_PLUGIN_ID,
             CONTEXT_PLUGIN_ID,
             STOP_POLICY_PLUGIN_ID,
         ];
@@ -288,7 +290,7 @@ impl AgentOs {
         // Handoff plugin: auto-compute overlays from all agents in the registry.
         #[cfg(feature = "handoff")]
         {
-            use tirea_extension_handoff::{AgentOverlay, HandoffPlugin, HANDOFF_PLUGIN_ID};
+            use tirea_extension_handoff::{HandoffPlugin, HANDOFF_PLUGIN_ID};
 
             let all_agents = agents_registry.snapshot();
             if all_agents.len() > 1 {
@@ -356,6 +358,7 @@ impl AgentOs {
         let system_plugins = merge_wiring_bundles(&system_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()
             .with_global(system_plugins)
+            .with_global(vec![Arc::new(PromptSegmentsPlugin)])
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
 
@@ -612,6 +615,7 @@ fn agent_overlay_from_definition(
                             G::High => ReasoningEffort::High,
                             G::Max => ReasoningEffort::Max,
                             G::Budget(n) => ReasoningEffort::Budget(*n),
+                            _ => ReasoningEffort::Max,
                         }
                     }),
                 )

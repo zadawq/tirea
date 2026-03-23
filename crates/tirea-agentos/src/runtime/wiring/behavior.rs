@@ -247,9 +247,12 @@ mod tests {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: self.id.clone(),
+                    role: tirea_contract::thread::Role::System,
                     content: self.text.clone(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
         }
@@ -273,7 +276,12 @@ mod tests {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext(self.text.clone()))
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage::session(
+                    format!("ordered:{}", self.id),
+                    self.text.clone(),
+                ),
+            ))
         }
     }
 
@@ -286,7 +294,7 @@ mod tests {
             .into_vec()
             .into_iter()
             .filter_map(|a| match a {
-                BeforeInferenceAction::AddSystemContext(s) => Some(s),
+                BeforeInferenceAction::AddContextMessage(message) => Some(message.content),
                 _ => None,
             })
             .collect()

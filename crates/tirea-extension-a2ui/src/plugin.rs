@@ -77,9 +77,12 @@ impl AgentBehavior for A2uiPlugin {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
             tirea_contract::runtime::inference::ContextMessage {
                 key: "a2ui_instructions".into(),
+                role: tirea_contract::thread::Role::System,
                 content: self.instructions.clone(),
+                visibility: tirea_contract::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             },
         ))
     }

@@ -111,8 +111,6 @@ impl From<AnyStateAction> for ActionSet<LifecycleAction> {
 
 /// Actions valid in `BeforeInference`.
 pub enum BeforeInferenceAction {
-    /// Append a session message.
-    AddSessionContext(String),
     /// Inject a structured context message with throttle metadata.
     ///
     /// Messages are tracked by `key` and subject to `cooldown_turns`
@@ -239,10 +237,12 @@ impl From<AnyStateAction> for ActionSet<BeforeToolExecuteAction> {
 
 /// Actions valid in `AfterToolExecute`.
 pub enum AfterToolExecuteAction {
-    /// Append a system-role reminder after the tool result.
-    AddSystemReminder(String),
-    /// Append a user-role message after the tool result.
-    AddUserMessage(String),
+    /// Append a conversation message after the tool result.
+    ///
+    /// This is the unified message path aligned with reverts-style
+    /// `newMessages`. Conversation messages are not subject to prompt context
+    /// throttling.
+    AddMessage(ContextMessage),
     /// Emit a persistent state change.
     State(AnyStateAction),
 }
@@ -251,8 +251,7 @@ impl AfterToolExecuteAction {
     /// Human-readable label for diagnostics.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::AddSystemReminder(_) => "add_system_reminder",
-            Self::AddUserMessage(_) => "add_user_message",
+            Self::AddMessage(_) => "add_message",
             Self::State(_) => "state_action",
         }
     }

@@ -62,7 +62,7 @@ use crate::contracts::runtime::{
     ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
-use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, Role, ToolCall};
+use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -82,6 +82,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+use self::core::apply_context_messages_to_prompt;
 pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
     await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
@@ -94,9 +95,9 @@ pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
 use core::{
-    build_request_for_filtered_tools, inference_inputs_from_step, suspended_calls_from_ctx,
-    tool_call_states_from_ctx, transition_tool_call_state, upsert_tool_call_state,
-    ContextThrottleTracker, ToolCallStateSeed, ToolCallStateTransition,
+    build_request_for_filtered_tools, consume_emitted_prompt_segments, inference_inputs_from_step,
+    suspended_calls_from_ctx, tool_call_states_from_ctx, transition_tool_call_state,
+    upsert_tool_call_state, ContextThrottleTracker, ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -1485,16 +1486,11 @@ async fn drain_resuming_tool_calls_and_replay(
                     .with_id(replay_msg_id.clone());
                 run_ctx.add_message(Arc::new(replay_msg));
 
-                if !replay_result.reminders.is_empty() {
+                if !replay_result.messages.is_empty() {
                     let msgs: Vec<Arc<Message>> = replay_result
-                        .reminders
+                        .messages
                         .iter()
-                        .map(|reminder| {
-                            Arc::new(Message::internal_system(format!(
-                                "<system-reminder>{}</system-reminder>",
-                                reminder
-                            )))
-                        })
+                        .map(|m| Arc::new(m.to_message()))
                         .collect();
                     run_ctx.add_messages(msgs);
                 }
@@ -2204,21 +2200,20 @@ pub async fn run_loop_with_context(
         let request_transforms = prepared.request_transforms;
         let step_inference_override = prepared.inference_override;
 
-        // Insert throttle-filtered context entries after the base system
-        // prompt but before session context and conversation history.  This
-        // ordering maximises prompt-cache hit rates: the static base prompt
-        // stays cached even when dynamic plugin segments change.
-        let insert_pos = if messages.first().map_or(false, |m| m.role == Role::System) {
-            1
-        } else {
-            0
-        };
-        for (i, entry) in context_tracker
-            .filter(prepared.context_messages, step_counter)
-            .into_iter()
-            .enumerate()
-        {
-            messages.insert(insert_pos + i, Message::system(entry.content));
+        let consumed_prompt_segments = apply_context_messages_to_prompt(
+            &mut messages,
+            &mut context_tracker,
+            prepared.context_messages,
+            step_counter,
+            !agent.system_prompt().is_empty(),
+        );
+        if let Err(e) = consume_emitted_prompt_segments(&mut run_ctx, consumed_prompt_segments) {
+            let msg = e.to_string();
+            terminate_run!(
+                TerminationReason::Error(msg.clone()),
+                None,
+                Some(outcome::LoopFailure::State(msg))
+            );
         }
         step_counter = step_counter.saturating_add(1);
         let chat_options =

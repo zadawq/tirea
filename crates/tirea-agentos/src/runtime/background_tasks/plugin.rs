@@ -173,9 +173,12 @@ impl AgentBehavior for BackgroundTasksPlugin {
                 BeforeInferenceAction::AddContextMessage(
                     tirea_contract::runtime::inference::ContextMessage {
                         key: "background_tasks".into(),
+                        role: tirea_contract::thread::Role::System,
                         content,
+                        visibility: tirea_contract::thread::Visibility::Internal,
                         cooldown_turns: 0,
                         target: Default::default(),
+                        consume_after_emit: false,
                     },
                 )
             })
@@ -196,7 +199,9 @@ impl AgentBehavior for BackgroundTasksPlugin {
             actions = actions.and(AfterToolExecuteAction::State(state));
         }
         if let Some(reminder) = Self::render_task_view(&view) {
-            actions = actions.and(AfterToolExecuteAction::AddSystemReminder(reminder));
+            actions = actions.and(AfterToolExecuteAction::AddMessage(
+                tirea_contract::runtime::inference::ContextMessage::system_reminder(reminder),
+            ));
         }
         actions
     }
@@ -340,8 +345,13 @@ mod tests {
         for action in actions {
             match action {
                 AfterToolExecuteAction::State(action) => state_actions.push(action),
-                AfterToolExecuteAction::AddSystemReminder(text) => reminders.push(text),
-                AfterToolExecuteAction::AddUserMessage(_) => {}
+                AfterToolExecuteAction::AddMessage(message) => {
+                    if message.role == tirea_contract::thread::Role::System
+                        && message.visibility == tirea_contract::thread::Visibility::Internal
+                    {
+                        reminders.push(message.content);
+                    }
+                }
             }
         }
         (state_actions, reminders)
@@ -356,8 +366,7 @@ mod tests {
             match action {
                 BeforeInferenceAction::State(action) => state_actions.push(action),
                 BeforeInferenceAction::AddContextMessage(entry) => contexts.push(entry.content),
-                BeforeInferenceAction::AddSessionContext(_)
-                | BeforeInferenceAction::ExcludeTool(_)
+                BeforeInferenceAction::ExcludeTool(_)
                 | BeforeInferenceAction::IncludeOnlyTools(_)
                 | BeforeInferenceAction::AddRequestTransform(_)
                 | BeforeInferenceAction::OverrideModel(_)

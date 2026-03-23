@@ -1032,8 +1032,7 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
             result: ToolResult::success("test_tool", json!({"ok": true})),
             patch,
         },
-        reminders: Vec::new(),
-        user_messages: Vec::new(),
+        messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -1041,15 +1040,8 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
     }
 }
 
-fn skill_activation_result(
-    call_id: &str,
-    skill_id: &str,
-    instruction: Option<&str>,
-) -> ToolExecutionResult {
+fn skill_activation_result(call_id: &str, skill_id: &str) -> ToolExecutionResult {
     let result = ToolResult::success("skill", json!({ "activated": true, "skill_id": skill_id }));
-    let user_messages = instruction
-        .map(|text| vec![text.to_string()])
-        .unwrap_or_default();
 
     ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
@@ -1061,8 +1053,7 @@ fn skill_activation_result(
             result,
             patch: None,
         },
-        reminders: Vec::new(),
-        user_messages,
+        messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -1966,13 +1957,19 @@ impl AgentBehavior for TestPhasePlugin {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
             tirea_contract::runtime::inference::ContextMessage {
                 key: "test_system".into(),
+                role: tirea_contract::thread::Role::System,
                 content: "Test system context".into(),
+                visibility: tirea_contract::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             },
         ))
-        .and(ActionSet::single(BeforeInferenceAction::AddSessionContext(
-            "Test thread context".into(),
+        .and(ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage::session(
+                "test_thread",
+                "Test thread context",
+            ),
         )))
     }
 
@@ -1981,8 +1978,10 @@ impl AgentBehavior for TestPhasePlugin {
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
-            ActionSet::single(AfterToolExecuteAction::AddSystemReminder(
-                "Check the echo result".into(),
+            ActionSet::single(AfterToolExecuteAction::AddMessage(
+                tirea_contract::runtime::inference::ContextMessage::system_reminder(
+                    "Check the echo result",
+                ),
             ))
         } else {
             ActionSet::empty()
@@ -2222,8 +2221,10 @@ impl AgentBehavior for ReminderPhasePlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        ActionSet::single(AfterToolExecuteAction::AddSystemReminder(
-            "Tool execution completed".into(),
+        ActionSet::single(AfterToolExecuteAction::AddMessage(
+            tirea_contract::runtime::inference::ContextMessage::system_reminder(
+                "Tool execution completed",
+            ),
         ))
     }
 }
@@ -2268,17 +2269,20 @@ fn test_build_messages_with_context() {
     fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
-    // Context messages are now injected by the loop runner after
-    // build_messages, so only session context is set here.
-    step.inference.session_context.push("Thread context".into());
+    // Prompt-only context is applied after build_messages, so this helper only
+    // returns the base system prompt plus conversation history.
+    step.inference.context_messages.push(
+        tirea_contract::runtime::inference::ContextMessage::session(
+            "thread_context",
+            "Thread context",
+        ),
+    );
 
     let messages = build_messages(&step, "Base system prompt");
 
-    // Base prompt + session context + user message.
-    assert_eq!(messages.len(), 3);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "Base system prompt");
-    assert_eq!(messages[1].content, "Thread context");
-    assert_eq!(messages[2].content, "Hello");
+    assert_eq!(messages[1].content, "Hello");
 }
 
 #[test]
@@ -2786,9 +2790,12 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "from_before_inference".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "from_before_inference".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
             .and(ActionSet::single(BeforeInferenceAction::Terminate(
@@ -3256,33 +3263,28 @@ fn test_apply_tool_results_suspends_all_interactions() {
 }
 
 #[test]
-fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
+fn test_apply_tool_results_skill_activation_only_persists_tool_message() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let result = skill_activation_result("call_1", "docx", Some("## DOCX\nUse docx-js."));
+    let result = skill_activation_result("call_1", "docx");
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
         .expect("apply_tool_results_to_session should succeed");
 
-    assert_eq!(run_ctx.messages().len(), 2);
+    assert_eq!(run_ctx.messages().len(), 1);
     assert_eq!(
         run_ctx.messages()[0].role,
         crate::contracts::thread::Role::Tool
     );
-    assert_eq!(
-        run_ctx.messages()[1].role,
-        crate::contracts::thread::Role::User
-    );
-    assert_eq!(run_ctx.messages()[1].content, "## DOCX\nUse docx-js.");
 }
 
 #[test]
-fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
+fn test_apply_tool_results_skill_activation_attaches_metadata_to_tool_message() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let result = skill_activation_result("call_1", "docx", Some("Use docx-js."));
+    let result = skill_activation_result("call_1", "docx");
     let meta = MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(3),
@@ -3292,10 +3294,10 @@ fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
         apply_tool_results_to_session(&mut run_ctx, &[result], Some(meta.clone()), false)
             .expect("apply_tool_results_to_session should succeed");
 
-    assert_eq!(run_ctx.messages().len(), 2);
-    let user_msg = &run_ctx.messages()[1];
-    assert_eq!(user_msg.role, crate::contracts::thread::Role::User);
-    assert_eq!(user_msg.metadata.as_ref(), Some(&meta));
+    assert_eq!(run_ctx.messages().len(), 1);
+    let tool_msg = &run_ctx.messages()[0];
+    assert_eq!(tool_msg.role, crate::contracts::thread::Role::Tool);
+    assert_eq!(tool_msg.metadata.as_ref(), Some(&meta));
 }
 
 #[test]
@@ -3303,7 +3305,7 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let result = skill_activation_result("call_1", "docx", None);
+    let result = skill_activation_result("call_1", "docx");
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
         .expect("apply_tool_results_to_session should succeed");
@@ -3326,8 +3328,10 @@ fn test_apply_tool_results_appends_user_messages_from_effect() {
             result: ToolResult::success("any_tool", json!({"ok": true})),
             patch: None,
         },
-        reminders: Vec::new(),
-        user_messages: vec!["first".to_string(), "second".to_string()],
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("first"),
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("second"),
+        ],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -3365,8 +3369,10 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
             result: ToolResult::success("any_tool", json!({"ok": true})),
             patch: None,
         },
-        reminders: Vec::new(),
-        user_messages: vec!["".to_string(), "   ".to_string()],
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_user(""),
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("   "),
+        ],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -3384,26 +3390,140 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
 }
 
 #[test]
-fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
+fn test_apply_tool_results_preserves_internal_visibility_for_unified_messages() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
-    let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
+    let result = ToolExecutionResult {
+        execution: crate::engine::tool_execution::ToolExecution {
+            call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: None,
+        },
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_internal_system(
+                "<system-reminder>check status</system-reminder>",
+            ),
+        ],
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
+        pending_patches: Vec::new(),
+        serialized_state_actions: vec![],
+    };
+
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
+        .expect("apply should succeed");
+
+    assert_eq!(run_ctx.messages().len(), 2);
+    assert_eq!(
+        run_ctx.messages()[1].role,
+        crate::contracts::thread::Role::System
+    );
+    assert_eq!(
+        run_ctx.messages()[1].visibility,
+        crate::contracts::thread::Visibility::Internal
+    );
+    assert!(run_ctx.messages()[1].content.contains("<system-reminder>"));
+}
+
+#[test]
+fn test_apply_tool_results_mixed_message_types_preserves_order_and_roles() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let result = ToolExecutionResult {
+        execution: crate::engine::tool_execution::ToolExecution {
+            call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: None,
+        },
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("user note"),
+            tirea_contract::runtime::inference::ContextMessage::conversation_internal_system(
+                "<system-reminder>remember this</system-reminder>",
+            ),
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("second note"),
+        ],
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
+        pending_patches: Vec::new(),
+        serialized_state_actions: vec![],
+    };
+
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
+        .expect("apply should succeed");
+
+    // tool response + 3 messages = 4
+    assert_eq!(run_ctx.messages().len(), 4);
+    assert_eq!(
+        run_ctx.messages()[0].role,
+        crate::contracts::thread::Role::Tool
+    );
+    assert_eq!(
+        run_ctx.messages()[1].role,
+        crate::contracts::thread::Role::User
+    );
+    assert_eq!(run_ctx.messages()[1].content, "user note");
+    assert_eq!(
+        run_ctx.messages()[2].role,
+        crate::contracts::thread::Role::System
+    );
+    assert_eq!(
+        run_ctx.messages()[2].visibility,
+        crate::contracts::thread::Visibility::Internal
+    );
+    assert_eq!(
+        run_ctx.messages()[3].role,
+        crate::contracts::thread::Role::User
+    );
+    assert_eq!(run_ctx.messages()[3].content, "second note");
+}
+
+#[test]
+fn test_apply_tool_results_empty_messages_only_produces_tool_response() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let result = ToolExecutionResult {
+        execution: crate::engine::tool_execution::ToolExecution {
+            call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: None,
+        },
+        messages: Vec::new(),
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
+        pending_patches: Vec::new(),
+        serialized_state_actions: vec![],
+    };
+
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
+        .expect("apply should succeed");
+
+    assert_eq!(run_ctx.messages().len(), 1);
+    assert_eq!(
+        run_ctx.messages()[0].role,
+        crate::contracts::thread::Role::Tool
+    );
+}
+
+#[test]
+fn test_apply_tool_results_keeps_skill_activation_tool_message_order_stable() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let first = skill_activation_result("call_2", "beta");
+    let second = skill_activation_result("call_1", "alpha");
 
     let _applied =
         apply_tool_results_to_session(&mut run_ctx, &[first, second], None, true).expect("apply");
     let messages = run_ctx.messages();
 
-    assert_eq!(messages.len(), 4);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, crate::contracts::thread::Role::Tool);
     assert_eq!(messages[0].tool_call_id.as_deref(), Some("call_2"));
     assert_eq!(messages[1].role, crate::contracts::thread::Role::Tool);
     assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
-    assert_eq!(messages[2].role, crate::contracts::thread::Role::User);
-    assert_eq!(messages[2].content, "Instruction B");
-    assert_eq!(messages[3].role, crate::contracts::thread::Role::User);
-    assert_eq!(messages[3].content, "Instruction A");
 }
 
 #[test]
@@ -3501,7 +3621,7 @@ fn test_execute_tools_with_config_basic() {
 }
 
 // Scope-based tool policy enforcement is tested via RunContext at the
-// orchestrator level (prepare_run / run_stream_with_context), where RunPolicy
+// orchestrator level (prepare_run / execute_prepared), where RunPolicy
 // is explicitly wired. The low-level execute_tools_with_config path uses
 // RunPolicy::default() and is not the right place to test scope filtering.
 
@@ -5539,9 +5659,12 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "base".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "base".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
             .and(ActionSet::single(BeforeInferenceAction::Terminate(
@@ -5564,9 +5687,12 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "replaced".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "replaced".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
         }
@@ -5620,7 +5746,7 @@ async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() 
     .await;
 
     // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
-    // AddSessionContext cannot be placed there (compile-time type safety).
+    // AddContextMessage cannot be placed there (compile-time type safety).
     // The stream should complete normally.
     assert!(
         matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
@@ -5639,7 +5765,7 @@ impl AgentBehavior for BlockBeforeToolPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeToolExecuteAction> {
-        // With typed ActionSet<BeforeToolExecuteAction>, AddSystemReminder cannot be placed here
+        // With typed ActionSet<BeforeToolExecuteAction>, AddMessage cannot be placed here
         // (it belongs to AfterToolExecuteAction). This is type-safe by construction.
         // Block is the valid before_tool_execute action that prevents tool execution.
         ActionSet::single(BeforeToolExecuteAction::Block(
@@ -5650,7 +5776,7 @@ impl AgentBehavior for BlockBeforeToolPlugin {
 
 #[test]
 fn test_execute_tools_reminder_mutation_outside_after_tool_execute_is_type_safe() {
-    // With typed ActionSet, AddSystemReminder cannot be placed in BeforeToolExecuteAction
+    // With typed ActionSet, AddMessage cannot be placed in BeforeToolExecuteAction
     // at compile time. Verify that Block (a valid BeforeToolExecute action) works correctly.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -5697,7 +5823,9 @@ impl AgentBehavior for ReminderAppendPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("first".into()))
+        ActionSet::single(AfterToolExecuteAction::AddMessage(
+            tirea_contract::runtime::inference::ContextMessage::system_reminder("first"),
+        ))
     }
 }
 
@@ -5712,7 +5840,9 @@ impl AgentBehavior for ReminderReplacePlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("second".into()))
+        ActionSet::single(AfterToolExecuteAction::AddMessage(
+            tirea_contract::runtime::inference::ContextMessage::system_reminder("second"),
+        ))
     }
 }
 

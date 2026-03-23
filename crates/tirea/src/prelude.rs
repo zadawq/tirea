@@ -19,8 +19,7 @@
 //!
 //!     async fn execute(&self, args: Value, ctx: &Thread) -> Result<ToolResult, ToolError> {
 //!         // Extension traits are auto-imported (requires "core" feature)
-//!         ctx.allow_tool("follow_up");           // PermissionContextExt
-//!         ctx.add_reminder("Remember to check"); // ReminderContextExt
+//!         ctx.allow_tool("follow_up"); // PermissionContextExt
 //!
 //!         Ok(ToolResult::success("my_tool", json!({"status": "done"})))
 //!     }
@@ -71,18 +70,18 @@ pub use crate::composition::{tool_map, tool_map_from_arc, AgentDefinition, Agent
 // Plugin SPI
 pub use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 pub use crate::contracts::AgentBehavior;
+#[cfg(feature = "core")]
+pub use crate::runtime::prompt_segments::{
+    consume_after_emit_context_messages_action, remove_context_message_action,
+    remove_context_messages_by_prefix_action, upsert_context_message_action, PromptSegmentAction,
+    PromptSegmentState,
+};
 
 // ── Extension types (require "core" feature) ─────────────────────────────
 
 #[cfg(feature = "core")]
 pub use tirea_extension_permission::{
     PermissionAction, PermissionPlugin, ToolPermissionBehavior, ToolPolicyPlugin,
-};
-
-#[cfg(feature = "core")]
-pub use tirea_extension_reminder::{
-    add_reminder_action, clear_reminder_action, inject_reminders, ReminderAction, ReminderPlugin,
-    SystemReminder,
 };
 
 // ── Skills extension (require "skills" feature) ──────────────────────────

@@ -366,7 +366,7 @@ pub(super) fn apply_tool_results_impl(
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
 
-    // Add tool result messages for all executions.
+    // Add tool result messages and emitted runtime messages for all executions.
     let tool_messages: Vec<Arc<Message>> = results
         .iter()
         .flat_map(|r| {
@@ -383,11 +383,14 @@ pub(super) fn apply_tool_results_impl(
                 }
                 vec![tool_msg]
             };
-            for reminder in &r.reminders {
-                msgs.push(Message::internal_system(format!(
-                    "<system-reminder>{}</system-reminder>",
-                    reminder
-                )));
+            for emitted in &r.messages {
+                if emitted.target
+                    == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
+                    && emitted.content.trim().is_empty()
+                {
+                    continue;
+                }
+                msgs.push(emitted.to_message());
             }
             if let Some(ref meta) = metadata {
                 for msg in &mut msgs {
@@ -399,28 +402,6 @@ pub(super) fn apply_tool_results_impl(
         .collect();
 
     run_ctx.add_messages(tool_messages);
-
-    // Append user messages produced by tool effects and AfterToolExecute plugins.
-    let user_messages: Vec<Arc<Message>> = results
-        .iter()
-        .flat_map(|r| {
-            r.user_messages
-                .iter()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(|text| {
-                    let mut msg = Message::user(text.to_string());
-                    if let Some(ref meta) = metadata {
-                        msg.metadata = Some(meta.clone());
-                    }
-                    Arc::new(msg)
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    if !user_messages.is_empty() {
-        run_ctx.add_messages(user_messages);
-    }
     if !suspended.is_empty() {
         let state = run_ctx
             .snapshot()
@@ -499,17 +480,6 @@ fn tool_result_metadata_from_run_ctx(
     } else {
         Some(MessageMetadata { run_id, step_index })
     }
-}
-
-#[allow(dead_code)]
-pub(super) fn next_step_index(run_ctx: &RunContext) -> u32 {
-    run_ctx
-        .messages()
-        .iter()
-        .filter_map(|m| m.metadata.as_ref().and_then(|meta| meta.step_index))
-        .max()
-        .map(|v| v.saturating_add(1))
-        .unwrap_or(0)
 }
 
 pub(super) fn step_metadata(run_id: Option<String>, step_index: u32) -> MessageMetadata {
@@ -1049,11 +1019,14 @@ async fn execute_single_tool_with_phases_impl(
     for action in tool_actions {
         match action {
             AfterToolExecuteAction::State(sa) => tool_state_actions.push(sa),
-            AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.reminders.push(text);
-            }
-            AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.user_messages.push(text);
+            AfterToolExecuteAction::AddMessage(message) => {
+                step.messaging.push(
+                    message
+                        .with_target(
+                            tirea_contract::runtime::inference::ContextMessageTarget::Conversation,
+                        )
+                        .with_consume_after_emit(false),
+                );
             }
         }
     }
@@ -1135,8 +1108,7 @@ async fn execute_single_tool_with_phases_impl(
         &call.id,
     )?;
 
-    let reminders = step.messaging.reminders.clone();
-    let user_messages = std::mem::take(&mut step.messaging.user_messages);
+    let messages = std::mem::take(&mut step.messaging.messages);
 
     // Merge plugin-phase serialized actions with tool-level ones.
     serialized_state_actions.extend(step.take_pending_serialized_state_actions());
@@ -1145,8 +1117,7 @@ async fn execute_single_tool_with_phases_impl(
         execution,
         outcome,
         suspended_call,
-        reminders,
-        user_messages,
+        messages,
         pending_patches,
         serialized_state_actions,
     })

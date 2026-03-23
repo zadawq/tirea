@@ -4593,7 +4593,6 @@ dependencies = [
  "tirea-extension-mcp",
  "tirea-extension-observability",
  "tirea-extension-permission",
- "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-protocol-acp",
  "tirea-protocol-ag-ui",
@@ -4631,7 +4630,6 @@ dependencies = [
  "tirea-extension-mcp",
  "tirea-extension-observability",
  "tirea-extension-permission",
- "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-state",
  "tirea-store-adapters",
@@ -4759,6 +4757,7 @@ dependencies = [
  "async-trait",
  "model-context-protocol",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tirea-contract",
@@ -4801,23 +4800,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "tirea-extension-reminder"
-version = "0.5.0-alpha.1"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "tirea-contract",
- "tirea-state",
- "tokio",
-]
-
-[[package]]
 name = "tirea-extension-skills"
 version = "0.5.0-alpha.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "model-context-protocol",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -4825,6 +4813,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tirea-contract",
+ "tirea-extension-mcp",
  "tirea-state",
  "tokio",
  "tracing",
@@ -4855,7 +4844,6 @@ dependencies = [
  "tirea-contract",
  "tirea-extension-observability",
  "tirea-extension-permission",
- "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-state",
  "tirea-store-adapters",

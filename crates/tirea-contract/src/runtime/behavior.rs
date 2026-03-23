@@ -414,9 +414,12 @@ mod tests {
                 ActionSet::single(BeforeInferenceAction::AddContextMessage(
                     crate::runtime::inference::ContextMessage {
                         key: "from_agent".into(),
+                        role: crate::thread::Role::System,
                         content: "from agent".into(),
+                        visibility: crate::thread::Visibility::Internal,
                         cooldown_turns: 0,
                         target: Default::default(),
+                        consume_after_emit: false,
                     },
                 ))
             }
